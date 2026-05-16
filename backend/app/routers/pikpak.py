@@ -110,3 +110,44 @@ async def file_url(file_id: str):
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
     return {"url": url}
+
+
+@router.get("/files/search", response_model=list[PikPakFile])
+async def search_files(q: str = Query(..., min_length=1), parent_id: str = ""):
+    try:
+        return await pikpak_service.search_files(q, parent_id=parent_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+
+@router.post("/share")
+async def share_files(
+    file_ids: list[str] = Body(..., embed=True),
+    pass_code_option: str = Body("NOT_REQUIRED", embed=True),
+):
+    try:
+        return await pikpak_service.create_share(file_ids, pass_code_option=pass_code_option)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+
+@router.post("/offline/bulk", response_model=list[PikPakTask])
+async def offline_download_bulk(items: list[OfflineSubmit]):
+    tasks: list[PikPakTask] = []
+    for it in items:
+        try:
+            tasks.append(await pikpak_service.offline_download(it))
+        except Exception as exc:  # noqa: BLE001
+            tasks.append(
+                PikPakTask(
+                    id="",
+                    name=it.code or it.magnet[:40],
+                    phase="ERROR",
+                    progress=0,
+                    file_id=None,
+                    file_size=None,
+                    message=str(exc),
+                    created_time=None,
+                )
+            )
+    return tasks

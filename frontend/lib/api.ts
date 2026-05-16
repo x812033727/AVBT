@@ -12,7 +12,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
+    let msg = text || `${res.status} ${res.statusText}`;
+    try {
+      const j = JSON.parse(text);
+      if (j && typeof j === "object" && j.detail) msg = String(j.detail);
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(msg);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;

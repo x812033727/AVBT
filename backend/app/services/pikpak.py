@@ -157,5 +157,44 @@ class PikPakService:
             )
         return str(resp or "")
 
+    async def search_files(self, keyword: str, parent_id: str = "") -> list[PikPakFile]:
+        client = await self._ensure()
+        # PikPakAPI exposes file_list_search or similar; fall back to a
+        # client-side filter if not available in the installed version.
+        if hasattr(client, "file_search"):
+            resp = await client.file_search(keyword, parent_id=parent_id)
+            files_raw = resp.get("files", []) if isinstance(resp, dict) else []
+        else:
+            resp = await client.file_list(parent_id=parent_id, size=500)
+            all_files = resp.get("files", []) if isinstance(resp, dict) else []
+            kw = keyword.lower()
+            files_raw = [f for f in all_files if kw in (f.get("name") or "").lower()]
+        return [
+            PikPakFile(
+                id=f.get("id", ""),
+                name=f.get("name", ""),
+                kind=f.get("kind", ""),
+                size=int(f.get("size")) if f.get("size") else None,
+                parent_id=f.get("parent_id"),
+                created_time=f.get("created_time"),
+                thumbnail_link=f.get("thumbnail_link"),
+            )
+            for f in files_raw
+        ]
+
+    async def create_share(self, file_ids: list[str], pass_code_option: str = "NOT_REQUIRED") -> dict:
+        """Create a share link. Returns {url, pass_code}."""
+        client = await self._ensure()
+        if not hasattr(client, "file_batch_share"):
+            raise PikPakError("此版本 PikPakAPI 不支援建立分享連結")
+        resp = await client.file_batch_share(file_ids, pass_code_option=pass_code_option)
+        if not isinstance(resp, dict):
+            resp = {"raw": resp}
+        return {
+            "url": resp.get("share_url") or resp.get("url") or "",
+            "pass_code": resp.get("pass_code") or "",
+            "share_id": resp.get("share_id") or "",
+        }
+
 
 pikpak_service = PikPakService()

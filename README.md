@@ -8,11 +8,12 @@ JavBus 磁力擷取 + PikPak 離線下載管理站。
 
 ## 功能
 
-- 依番號 / 關鍵字搜尋 JavBus
+- 依番號 / 關鍵字搜尋 JavBus，自動處理年齡驗證 gate
 - 解析詳細頁的磁力連結（含高清 / 字幕標記、檔案大小、日期）
-- 一鍵把磁力丟到 PikPak 雲端離線下載
-- 本地收藏（標記已下載 / 待看）
-- PikPak 雲端檔案瀏覽、離線任務狀態、刪除、取得直鏈
+- **批次選取**磁力一次送 PikPak（含「僅選高清」快速鍵）
+- 本地收藏（待看 / 下載中 / 完成 狀態切換）
+- PikPak 離線任務管理：自動刷新進度、重試失敗、刪除
+- PikPak 雲端檔案：資料夾瀏覽、檔案搜尋、批次建立分享連結、移至垃圾桶
 
 ## 快速啟動
 
@@ -61,5 +62,10 @@ NEXT_PUBLIC_API_BASE=http://localhost:8000
 ## 注意
 
 - 本工具僅作為個人本機使用，不提供公開部署
-- JavBus 偶有 Cloudflare 防護，必要時可在 `.env` 設定 `HTTP_PROXY`
+- **JavBus 年齡驗證 / 地區阻擋**：部分 IP（特別是非亞洲機房）會被強制顯示
+  年齡驗證頁，即使送出表單也無法通過。後端會在這種情況回 HTTP 451，
+  並顯示「請在 .env 設定 HTTP_PROXY 或改用鏡像站」。常見解法：
+  - 改用本地（亞洲家用 IP）執行
+  - 設定 `HTTP_PROXY=http://...` 走代理
+  - 把 `JAVBUS_BASE_URL` 改為可用鏡像（例如 `https://www.busjav.work`）
 - PikPak 使用第三方逆向 API（[PikPakAPI](https://github.com/52funny/PikPakAPI)），帳號自負風險

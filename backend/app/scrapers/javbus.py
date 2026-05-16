@@ -7,6 +7,11 @@ The site loads the magnet table asynchronously after the detail page, via:
 The required tokens (gid / uc / img) are embedded as JS variables on the
 detail HTML. We parse them with regex, then issue the AJAX call with the
 detail URL as Referer (the server enforces that).
+
+Region-based age gate: requests from some IPs (mostly outside Asia) are
+redirected to ``/doc/driver-verify``. We auto-POST the verify form once
+per request, but the server may still refuse if the IP is geo-blocked —
+in that case use ``HTTP_PROXY`` or change ``JAVBUS_BASE_URL`` to a mirror.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from __future__ import annotations
 import random
 import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -35,6 +40,12 @@ GID_RE = re.compile(r"var\s+gid\s*=\s*(\d+)")
 UC_RE = re.compile(r"var\s+uc\s*=\s*(\d+)")
 IMG_RE = re.compile(r"var\s+img\s*=\s*['\"]([^'\"]+)['\"]")
 
+AGE_GATE_MARKERS = ("driver-verify", "Age Verification")
+
+
+class JavbusBlocked(RuntimeError):
+    """Raised when JavBus refuses to serve content (region-blocked)."""
+
 
 def _client(**overrides: Any) -> httpx.AsyncClient:
     kwargs: dict[str, Any] = dict(
@@ -50,6 +61,44 @@ def _client(**overrides: Any) -> httpx.AsyncClient:
         kwargs["proxy"] = settings.http_proxy
     kwargs.update(overrides)
     return httpx.AsyncClient(**kwargs)
+
+
+def _is_age_gate(html: str) -> bool:
+    return any(marker in html for marker in AGE_GATE_MARKERS)
+
+
+async def _bypass_age_gate(cli: httpx.AsyncClient, target_url: str) -> bool:
+    """POST the age-verification form. Returns True on success."""
+    base = settings.javbus_base_url.rstrip("/")
+    verify_url = f"{base}/doc/driver-verify?referer={quote(target_url, safe='')}"
+    try:
+        await cli.get(verify_url)
+        resp = await cli.post(
+            verify_url,
+            data={"Submit": "確認"},
+            headers={"Referer": verify_url},
+        )
+        return not _is_age_gate(resp.text)
+    except httpx.HTTPError:
+        return False
+
+
+async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None) -> str:
+    headers = {"Referer": referer} if referer else None
+    resp = await cli.get(url, headers=headers)
+    if resp.status_code == 404:
+        return ""
+    resp.raise_for_status()
+    if _is_age_gate(resp.text):
+        ok = await _bypass_age_gate(cli, url)
+        if not ok:
+            raise JavbusBlocked(
+                "JavBus 持續要求年齡驗證 — 此 IP 可能被地區阻擋。"
+                "請在 .env 設定 HTTP_PROXY 或改用鏡像站 (JAVBUS_BASE_URL)。"
+            )
+        resp = await cli.get(url, headers=headers)
+        resp.raise_for_status()
+    return resp.text
 
 
 def _abs(url: str) -> str:
@@ -79,12 +128,9 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
     url = f"{base}{prefix}/{keyword}/{max(1, page)}"
 
     async with _client() as cli:
-        resp = await cli.get(url)
-        # JavBus returns 404 when the keyword matches nothing.
-        if resp.status_code == 404:
+        html = await _fetch(cli, url)
+        if not html:
             return SearchResult(items=[], page=page, has_next=False)
-        resp.raise_for_status()
-        html = resp.text
 
     soup = BeautifulSoup(html, "lxml")
     items: list[MovieListItem] = []
@@ -127,9 +173,9 @@ async def fetch_detail(code: str) -> MovieDetail:
     url = f"{base}/{code}"
 
     async with _client() as cli:
-        resp = await cli.get(url)
-        resp.raise_for_status()
-        html = resp.text
+        html = await _fetch(cli, url)
+        if not html:
+            return MovieDetail(code=code, title="")
 
         detail = _parse_detail(html, code)
 

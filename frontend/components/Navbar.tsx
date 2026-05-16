@@ -7,6 +7,7 @@ const TABS = [
   { href: "/", label: "搜尋" },
   { href: "/collection", label: "收藏" },
   { href: "/pikpak", label: "PikPak" },
+  { href: "/history", label: "紀錄" },
 ];
 
 export default function Navbar() {

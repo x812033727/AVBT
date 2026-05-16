@@ -32,6 +32,50 @@ export const api = {
   del: <T>(p: string) => request<T>(p, { method: "DELETE" }),
 };
 
+/** POST + read newline-delimited JSON events. Invokes onEvent for each. */
+export async function streamNdjson(
+  path: string,
+  body: unknown,
+  onEvent: (event: any) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        onEvent(JSON.parse(line));
+      } catch {
+        /* ignore malformed line */
+      }
+    }
+  }
+  if (buf.trim()) {
+    try {
+      onEvent(JSON.parse(buf));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // ---------- types ----------
 
 export type MovieListItem = {
@@ -130,4 +174,25 @@ export type ArchiverStatus = {
   last_run: string | null;
   archived_total: number;
   last_error: string;
+};
+
+export type HistoryItem = {
+  id: number;
+  code: string;
+  magnet: string;
+  task_id: string;
+  file_id: string;
+  name: string;
+  phase: string;
+  message: string;
+  archived: boolean;
+  archived_at: string | null;
+  created_at: string;
+};
+
+export type HistoryPage = {
+  items: HistoryItem[];
+  total: number;
+  offset: number;
+  limit: number;
 };

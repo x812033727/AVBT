@@ -1,9 +1,16 @@
-"""Bulk-submit every movie of a JavBus actress / genre to PikPak."""
+"""Bulk-submit every movie of a JavBus actress / genre to PikPak.
+
+Provides an async-generator API (``send_all_stream``) so the HTTP layer
+can stream progress events to the browser as NDJSON, plus a convenience
+wrapper (``send_all``) that drains the generator and returns the final
+summary for non-streaming callers.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import AsyncIterator
 
 from sqlalchemy import insert, select
 
@@ -17,10 +24,7 @@ from .pikpak import pikpak_service
 logger = logging.getLogger(__name__)
 
 
-async def _collect_codes(
-    *, kind: str, slug: str, options: SendAllOptions
-) -> list[str]:
-    """Walk pages of /star or /genre and return a list of movie codes."""
+async def _collect_codes(*, kind: str, slug: str, options: SendAllOptions) -> list[str]:
     if kind == "star":
         fetch = scraper.fetch_star
     elif kind == "genre":
@@ -54,19 +58,20 @@ async def _process_code(
     sent_hashes: set[str],
     result: SendAllResult,
     lock: asyncio.Lock,
-) -> None:
+) -> dict:
+    """Process one movie. Returns a dict describing what happened."""
     try:
         detail = await scraper.fetch_detail(code)
     except Exception as exc:  # noqa: BLE001
         async with lock:
             result.failed += 1
             result.errors.append(f"{code}: 抓取詳細頁失敗 ({exc})")
-        return
+        return {"status": "failed", "message": str(exc)}
 
     if not detail.magnets:
         async with lock:
             result.skipped_no_magnet += 1
-        return
+        return {"status": "skipped_no_magnet"}
 
     async with lock:
         best = pick_best_magnet(
@@ -76,16 +81,15 @@ async def _process_code(
             skip_hashes=sent_hashes if options.skip_sent else set(),
         )
     if best is None:
-        # Either filtered to nothing or every candidate is already sent.
         any_already = any(
             extract_btih(m.link) in sent_hashes for m in detail.magnets
         )
         async with lock:
             if options.skip_sent and any_already:
                 result.skipped_already_sent += 1
-            else:
-                result.skipped_no_magnet += 1
-        return
+                return {"status": "skipped_already_sent"}
+            result.skipped_no_magnet += 1
+            return {"status": "skipped_no_magnet"}
 
     try:
         task = await pikpak_service.offline_download(
@@ -95,7 +99,7 @@ async def _process_code(
         async with lock:
             result.failed += 1
             result.errors.append(f"{code}: 送 PikPak 失敗 ({exc})")
-        return
+        return {"status": "failed", "message": str(exc)}
 
     async with SessionLocal() as session:
         await session.execute(
@@ -116,29 +120,69 @@ async def _process_code(
         if h:
             sent_hashes.add(h)
         result.sent += 1
+    return {
+        "status": "sent",
+        "magnet_name": best.name,
+        "size": best.size,
+        "is_hd": best.is_hd,
+        "has_subtitle": best.has_subtitle,
+    }
 
 
-async def send_all(
+async def send_all_stream(
     kind: str, slug: str, options: SendAllOptions
-) -> SendAllResult:
+) -> AsyncIterator[dict]:
+    """Yield progress events. Final event has type='done' with summary."""
     codes = await _collect_codes(kind=kind, slug=slug, options=options)
+    yield {
+        "type": "start",
+        "total": len(codes),
+        "preview": codes[:8] + (["…"] if len(codes) > 8 else []),
+    }
+
+    if not codes:
+        yield {"type": "done", "result": SendAllResult().model_dump()}
+        return
+
     sent_hashes = await _load_sent_hashes() if options.skip_sent else set()
     result = SendAllResult(total_movies=len(codes))
-    if not codes:
-        return result
-
+    queue: asyncio.Queue = asyncio.Queue()
     lock = asyncio.Lock()
     sem = asyncio.Semaphore(3)
 
-    async def guarded(code: str) -> None:
+    async def worker(idx: int, code: str) -> None:
         async with sem:
-            await _process_code(
-                code,
-                options=options,
-                sent_hashes=sent_hashes,
-                result=result,
-                lock=lock,
-            )
+            try:
+                event = await _process_code(
+                    code,
+                    options=options,
+                    sent_hashes=sent_hashes,
+                    result=result,
+                    lock=lock,
+                )
+            except Exception as exc:  # noqa: BLE001
+                async with lock:
+                    result.failed += 1
+                    result.errors.append(f"{code}: {exc}")
+                event = {"status": "failed", "message": str(exc)}
+            await queue.put({"type": "progress", "current": idx + 1, "code": code, **event})
 
-    await asyncio.gather(*(guarded(c) for c in codes))
-    return result
+    tasks = [asyncio.create_task(worker(i, c)) for i, c in enumerate(codes)]
+    try:
+        for _ in range(len(codes)):
+            yield await queue.get()
+    except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
+        raise
+    await asyncio.gather(*tasks, return_exceptions=True)
+    yield {"type": "done", "result": result.model_dump()}
+
+
+async def send_all(kind: str, slug: str, options: SendAllOptions) -> SendAllResult:
+    """Drain the stream and return the final summary."""
+    final = SendAllResult()
+    async for event in send_all_stream(kind, slug, options):
+        if event["type"] == "done":
+            final = SendAllResult(**event["result"])
+    return final

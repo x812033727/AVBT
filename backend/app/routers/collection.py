@@ -1,12 +1,12 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_session
 from ..models import CollectedMovie, OfflineTaskLog
-from ..schemas import CollectionIn, CollectionOut
+from ..schemas import CollectionIn, CollectionOut, HistoryItem, HistoryPage
 from ..scrapers.javbus import extract_btih
 
 router = APIRouter(prefix="/api/collection", tags=["collection"])
@@ -99,3 +99,53 @@ async def sent_hashes(session: AsyncSession = Depends(get_session)):
         if h:
             seen.add(h)
     return sorted(seen)
+
+
+@router.get("/history", response_model=HistoryPage)
+async def history(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    code: str | None = None,
+    archived: bool | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    stmt = select(OfflineTaskLog)
+    count_stmt = select(func.count()).select_from(OfflineTaskLog)
+    if code:
+        cond = OfflineTaskLog.code == code.strip().upper()
+        stmt = stmt.where(cond)
+        count_stmt = count_stmt.where(cond)
+    if archived is not None:
+        stmt = stmt.where(OfflineTaskLog.archived == archived)
+        count_stmt = count_stmt.where(OfflineTaskLog.archived == archived)
+    stmt = stmt.order_by(OfflineTaskLog.created_at.desc()).limit(limit).offset(offset)
+
+    rows = (await session.execute(stmt)).scalars().all()
+    total = (await session.execute(count_stmt)).scalar_one()
+    items = [
+        HistoryItem(
+            id=r.id,
+            code=r.code,
+            magnet=r.magnet,
+            task_id=r.task_id,
+            file_id=r.file_id,
+            name=r.name,
+            phase=r.phase,
+            message=r.message,
+            archived=bool(r.archived),
+            archived_at=r.archived_at,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+    return HistoryPage(items=items, total=int(total), offset=offset, limit=limit)
+
+
+@router.delete("/history/{item_id}")
+async def delete_history(item_id: int, session: AsyncSession = Depends(get_session)):
+    row = await session.get(OfflineTaskLog, item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    await session.delete(row)
+    await session.commit()
+    return {"ok": True}

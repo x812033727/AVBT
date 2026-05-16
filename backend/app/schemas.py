@@ -70,6 +70,27 @@ class CollectionIn(BaseModel):
     status: str = "wishlist"
 
 
+class HistoryItem(BaseModel):
+    id: int
+    code: str = ""
+    magnet: str
+    task_id: str = ""
+    file_id: str = ""
+    name: str = ""
+    phase: str = ""
+    message: str = ""
+    archived: bool = False
+    archived_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class HistoryPage(BaseModel):
+    items: list[HistoryItem]
+    total: int
+    offset: int
+    limit: int
+
+
 class CollectionOut(CollectionIn):
     created_at: datetime
     updated_at: datetime

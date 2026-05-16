@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { MovieListItem } from "@/lib/api";
+import { imgProxy, type MovieListItem } from "@/lib/api";
 
 export default function MovieCard({ item }: { item: MovieListItem }) {
   return (
@@ -11,7 +11,7 @@ export default function MovieCard({ item }: { item: MovieListItem }) {
         {item.cover && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.cover}
+            src={imgProxy(item.cover)}
             alt={item.title}
             loading="lazy"
             referrerPolicy="no-referrer"

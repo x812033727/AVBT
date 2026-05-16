@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import {
   api,
+  imgProxy,
   type ArchiverStatus,
   type CollectionItem,
   type HistoryPage,
@@ -250,7 +251,7 @@ export default function DashboardPage() {
                   {t.avatar ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={t.avatar}
+                      src={imgProxy(t.avatar)}
                       alt={t.name}
                       referrerPolicy="no-referrer"
                       className="h-8 w-8 flex-none rounded-full object-cover"

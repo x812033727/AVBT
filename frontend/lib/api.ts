@@ -1,6 +1,21 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
+/**
+ * Route a remote image through our backend proxy. JavBus' image CDN has
+ * hot-link protection that blocks browser-direct requests, so the
+ * backend re-fetches with the right Referer and serves the bytes back.
+ *
+ * - Empty / data URIs are returned untouched
+ * - Already-relative URLs (start with /) are returned untouched
+ */
+export function imgProxy(url: string | null | undefined): string {
+  if (!url) return "";
+  if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+  if (url.startsWith("/") && !url.startsWith("//")) return url;
+  return `${API_BASE}/api/img/proxy?url=${encodeURIComponent(url)}`;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,

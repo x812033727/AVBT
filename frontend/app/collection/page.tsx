@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
-import { api, type CollectionItem } from "@/lib/api";
+import { api, imgProxy, type CollectionItem } from "@/lib/api";
 
 const STATUS_TABS = [
   { value: "", label: "全部" },
@@ -205,7 +205,7 @@ export default function CollectionPage() {
             {it.cover && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={it.cover}
+                src={imgProxy(it.cover)}
                 alt={it.code}
                 referrerPolicy="no-referrer"
                 className="h-24 w-36 flex-none rounded object-cover"

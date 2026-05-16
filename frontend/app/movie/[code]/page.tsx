@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import MagnetTable from "@/components/MagnetTable";
-import { api, type MovieDetail } from "@/lib/api";
+import { api, imgProxy, type MovieDetail } from "@/lib/api";
 
 export default function MoviePage({ params }: { params: { code: string } }) {
   const code = decodeURIComponent(params.code);
@@ -69,7 +69,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           {data.cover && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={data.cover}
+              src={imgProxy(data.cover)}
               alt={data.code}
               referrerPolicy="no-referrer"
               className="w-full rounded-lg border border-white/10"
@@ -158,7 +158,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={s}
-                src={s}
+                src={imgProxy(s)}
                 alt=""
                 referrerPolicy="no-referrer"
                 className="rounded border border-white/10"

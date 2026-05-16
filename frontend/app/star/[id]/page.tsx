@@ -5,6 +5,7 @@ import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
 import {
   api,
+  imgProxy,
   type SearchResult,
   type StarProfile,
   type TrackedActress,
@@ -97,7 +98,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
         {profile?.avatar ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={profile.avatar}
+            src={imgProxy(profile.avatar)}
             alt={profile.name || id}
             referrerPolicy="no-referrer"
             className="h-32 w-24 flex-none rounded object-cover"

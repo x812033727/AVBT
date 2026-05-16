@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   TRACKED_LABELS,
   api,
+  imgProxy,
   type CheckListingResult,
   type TrackedKind,
   type TrackedListing,
@@ -264,7 +265,7 @@ export default function TrackedPage() {
             {it.avatar ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={it.avatar}
+                src={imgProxy(it.avatar)}
                 alt={it.name}
                 referrerPolicy="no-referrer"
                 className="h-20 w-16 flex-none rounded object-cover"

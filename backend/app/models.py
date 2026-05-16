@@ -22,6 +22,21 @@ class CollectedMovie(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TrackedActress(Base):
+    __tablename__ = "tracked_actresses"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # JavBus slug
+    name: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(1024), default="")
+    uncensored: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_send: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_code: Mapped[str] = mapped_column(String(64), default="")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class OfflineTaskLog(Base):
     __tablename__ = "offline_task_log"
 

@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
 
+    # Actress tracker: every N seconds, check JavBus for new works of
+    # every TrackedActress row.
+    tracker_enabled: bool = True
+    tracker_interval_seconds: int = 3600  # 1 hour
+    tracker_auto_send_hd_only: bool = True
+    tracker_auto_send_skip_sent: bool = True
+
     http_proxy: str = ""
 
     # Optional webhook fired after each successful auto-archive. Body is

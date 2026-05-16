@@ -211,3 +211,23 @@ export type HistoryPage = {
   offset: number;
   limit: number;
 };
+
+export type TrackedActress = {
+  id: string;
+  name: string;
+  avatar: string;
+  uncensored: boolean;
+  auto_send: boolean;
+  last_seen_code: string;
+  last_checked_at: string | null;
+  last_error: string;
+  new_count: number;
+  created_at: string;
+};
+
+export type CheckActressResult = {
+  id: string;
+  name: string;
+  new_codes: string[];
+  error: string;
+};

@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
-import { api, type SearchResult, type StarProfile } from "@/lib/api";
+import {
+  api,
+  type SearchResult,
+  type StarProfile,
+  type TrackedActress,
+} from "@/lib/api";
 
 export default function StarPage({ params }: { params: { id: string } }) {
   const id = decodeURIComponent(params.id);
@@ -11,6 +16,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
   const [profile, setProfile] = useState<StarProfile | null>(null);
+  const [tracked, setTracked] = useState<TrackedActress | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,16 +26,41 @@ export default function StarPage({ params }: { params: { id: string } }) {
       .get<StarProfile | null>(
         `/api/javbus/star/${encodeURIComponent(id)}/profile?uncensored=${uncensored}`
       )
-      .then((p) => {
-        if (alive) setProfile(p);
-      })
-      .catch(() => {
-        if (alive) setProfile(null);
-      });
+      .then((p) => alive && setProfile(p))
+      .catch(() => alive && setProfile(null));
+    api
+      .get<TrackedActress>(`/api/tracked/${encodeURIComponent(id)}`)
+      .then((t) => alive && setTracked(t))
+      .catch(() => alive && setTracked(null));
     return () => {
       alive = false;
     };
   }, [id, uncensored]);
+
+  async function toggleTrack() {
+    if (tracked) {
+      await api.del(`/api/tracked/${encodeURIComponent(id)}`);
+      setTracked(null);
+    } else {
+      const t = await api.post<TrackedActress>("/api/tracked", {
+        id,
+        name: profile?.name || id,
+        avatar: profile?.avatar || "",
+        uncensored,
+        auto_send: false,
+      });
+      setTracked(t);
+    }
+  }
+
+  async function toggleAutoSend() {
+    if (!tracked) return;
+    const t = await api.post<TrackedActress>("/api/tracked", {
+      ...tracked,
+      auto_send: !tracked.auto_send,
+    });
+    setTracked(t);
+  }
 
   const run = useCallback(
     async (p: number) => {
@@ -135,6 +166,22 @@ export default function StarPage({ params }: { params: { id: string } }) {
             />
             無碼
           </label>
+          <button
+            onClick={toggleTrack}
+            className={tracked ? "btn-ghost" : "btn-primary"}
+          >
+            {tracked ? "✓ 已追蹤" : "★ 追蹤"}
+          </button>
+          {tracked && (
+            <label className="flex items-center gap-1 text-xs text-white/60">
+              <input
+                type="checkbox"
+                checked={tracked.auto_send}
+                onChange={toggleAutoSend}
+              />
+              新作品自動送 PikPak
+            </label>
+          )}
           <BulkSendButton
             streamPath={`/api/javbus/star/${encodeURIComponent(id)}/send-all/stream`}
             title={`送女優「${profile?.name || id}」全部`}

@@ -20,25 +20,15 @@ import re
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
 from ..models import OfflineTaskLog
+from .notify import send_webhook
 from .pikpak import PikPakError, pikpak_service
 
 logger = logging.getLogger(__name__)
-
-
-async def _notify(message: str) -> None:
-    if not settings.webhook_url:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10) as cli:
-            await cli.post(settings.webhook_url, json={"content": message})
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("webhook failed: %s", exc)
 
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_\-]+")
 
@@ -129,7 +119,7 @@ async def archive_once() -> int:
         if moved:
             await session.commit()
             for msg in notifications:
-                asyncio.create_task(_notify(msg))
+                asyncio.create_task(send_webhook(msg))
 
     state.archived_total += moved
     return moved

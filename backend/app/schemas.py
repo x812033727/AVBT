@@ -106,6 +106,29 @@ class HistoryPage(BaseModel):
     limit: int
 
 
+class TrackedActressIn(BaseModel):
+    id: str
+    name: str = ""
+    avatar: str = ""
+    uncensored: bool = False
+    auto_send: bool = False
+
+
+class TrackedActressOut(TrackedActressIn):
+    last_seen_code: str = ""
+    last_checked_at: Optional[datetime] = None
+    last_error: str = ""
+    new_count: int = 0
+    created_at: datetime
+
+
+class CheckActressResult(BaseModel):
+    id: str
+    name: str = ""
+    new_codes: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
 class CollectionOut(CollectionIn):
     created_at: datetime
     updated_at: datetime

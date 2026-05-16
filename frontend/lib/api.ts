@@ -280,3 +280,51 @@ export type TrackerStatus = {
   last_error: string;
   last_new_total: number;
 };
+
+export type MissingCodesResult = {
+  kind: TrackedKind;
+  id: string;
+  name: string;
+  total: number;
+  present_codes: string[];
+  missing: MovieListItem[];
+  pages_scanned: number;
+  built_at: string;
+};
+
+export type MissingSummaryItem = {
+  kind: TrackedKind;
+  id: string;
+  name: string;
+  total: number;
+  missing_count: number;
+  pages_scanned: number;
+  error: string;
+};
+
+export type MissingSummary = {
+  built_at: string;
+  presence_built_at: string | null;
+  items: MissingSummaryItem[];
+};
+
+export type AggregatedMissingItem = {
+  kind: TrackedKind;
+  id: string;
+  name: string;
+  missing: MovieListItem[];
+};
+
+export type AggregatedMissing = {
+  built_at: string;
+  presence_built_at: string | null;
+  items: AggregatedMissingItem[];
+};
+
+export type PresenceStatus = {
+  built_at: string | null;
+  size: number;
+  last_error: string;
+  ttl_seconds: number;
+  ready: boolean;
+};

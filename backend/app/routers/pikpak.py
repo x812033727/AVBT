@@ -12,6 +12,8 @@ from ..schemas import (
     PikPakLogin,
     PikPakQuota,
     PikPakTask,
+    PresenceStatus,
+    ReorganizeOptions,
 )
 from sqlalchemy import select
 
@@ -20,6 +22,8 @@ from ..models import OfflineTaskLog
 from ..scrapers.javbus import extract_btih
 from ..services import archiver
 from ..services.pikpak import PikPakError, pikpak_service
+from ..services.pikpak_presence import presence_index
+from ..services.reorganize import reorganize_stream
 
 
 class DuplicateMagnetError(PikPakError):
@@ -205,6 +209,29 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
             async for event in pikpak_service.cleanup_folder_stream(
                 folder_id, dry_run=dry_run
             ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@router.get("/presence/status", response_model=PresenceStatus)
+async def presence_status():
+    return PresenceStatus(**presence_index.status())
+
+
+@router.post("/presence/refresh", response_model=PresenceStatus)
+async def presence_refresh():
+    await presence_index.rebuild()
+    return PresenceStatus(**presence_index.status())
+
+
+@router.post("/reorganize")
+async def reorganize_endpoint(opts: ReorganizeOptions):
+    async def gen():
+        try:
+            async for event in reorganize_stream(dry_run=opts.dry_run):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"

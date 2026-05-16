@@ -7,6 +7,8 @@ import {
   api,
   imgProxy,
   type CheckListingResult,
+  type MissingSummary,
+  type MissingSummaryItem,
   type TrackedKind,
   type TrackedListing,
 } from "@/lib/api";
@@ -47,6 +49,10 @@ export default function TrackedPage() {
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
   const [lastCheck, setLastCheck] = useState<CheckListingResult | null>(null);
   const [filter, setFilter] = useState<TrackedKind | "">("");
+  const [missing, setMissing] = useState<Map<string, MissingSummaryItem> | null>(
+    null
+  );
+  const [missingLoading, setMissingLoading] = useState(false);
 
   // Manual-add form state
   const [addKind, setAddKind] = useState<TrackedKind>("studio");
@@ -67,6 +73,27 @@ export default function TrackedPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadMissing = useCallback(async (refresh = false) => {
+    setMissingLoading(true);
+    try {
+      const qs = refresh ? "?refresh=true" : "";
+      const res = await api.get<MissingSummary>(
+        `/api/tracked/missing-summary${qs}`
+      );
+      const m = new Map<string, MissingSummaryItem>();
+      for (const it of res.items) m.set(`${it.kind}:${it.id}`, it);
+      setMissing(m);
+    } catch {
+      setMissing(null);
+    } finally {
+      setMissingLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMissing(false);
+  }, [loadMissing]);
 
   function keyOf(it: TrackedListing) {
     return `${it.kind}:${it.id}`;
@@ -170,13 +197,23 @@ export default function TrackedPage() {
           ))}
         </div>
         {filtered.length > 0 && (
-          <button
-            className="ml-auto btn-ghost"
-            onClick={checkAll}
-            disabled={!!checkingKey}
-          >
-            {checkingKey ? "檢查中…" : "全部立即檢查"}
-          </button>
+          <div className="ml-auto flex gap-2">
+            <button
+              className="btn-ghost"
+              onClick={() => loadMissing(true)}
+              disabled={missingLoading}
+              title="重新掃 PikPak 資料夾並重算缺漏"
+            >
+              {missingLoading ? "重算缺漏…" : "重算缺漏"}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={checkAll}
+              disabled={!!checkingKey}
+            >
+              {checkingKey ? "檢查中…" : "全部立即檢查"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -306,6 +343,45 @@ export default function TrackedPage() {
                     {it.new_count} 新
                   </button>
                 )}
+                {(() => {
+                  const m = missing?.get(keyOf(it));
+                  if (missingLoading && !m) {
+                    return (
+                      <span className="rounded bg-white/5 px-2 py-0.5 text-xs text-white/30">
+                        缺漏…
+                      </span>
+                    );
+                  }
+                  if (!m) return null;
+                  if (m.error) {
+                    return (
+                      <span
+                        className="rounded bg-red-500/15 px-2 py-0.5 text-xs text-red-300"
+                        title={m.error}
+                      >
+                        缺漏 ?
+                      </span>
+                    );
+                  }
+                  if (m.missing_count > 0) {
+                    return (
+                      <span
+                        className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-300"
+                        title={`全集 ${m.total} 部，掃 ${m.pages_scanned} 頁`}
+                      >
+                        {m.missing_count} 個未下載
+                      </span>
+                    );
+                  }
+                  return (
+                    <span
+                      className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300"
+                      title={`全集 ${m.total} 部都已下載`}
+                    >
+                      全收齊
+                    </span>
+                  );
+                })()}
                 {it.uncensored && <span className="tag">無碼</span>}
               </div>
               <div className="text-xs text-white/40">

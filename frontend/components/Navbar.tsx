@@ -8,6 +8,7 @@ const TABS = [
   { href: "/search", label: "搜尋" },
   { href: "/collection", label: "收藏" },
   { href: "/tracked", label: "追蹤" },
+  { href: "/missing", label: "缺漏" },
   { href: "/pikpak", label: "PikPak" },
   { href: "/history", label: "紀錄" },
   { href: "/settings", label: "設定" },

@@ -139,6 +139,7 @@ class CollectionOut(CollectionIn):
 class PikPakLogin(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
+    remember: bool = True
 
 
 class OfflineSubmit(BaseModel):

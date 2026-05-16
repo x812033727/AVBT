@@ -9,6 +9,7 @@ const TABS = [
   { href: "/tracked", label: "追蹤" },
   { href: "/pikpak", label: "PikPak" },
   { href: "/history", label: "紀錄" },
+  { href: "/settings", label: "設定" },
 ];
 
 export default function Navbar() {

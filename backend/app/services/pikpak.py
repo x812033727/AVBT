@@ -8,6 +8,8 @@ operations we need: login, offline_download, list tasks/files, delete, etc.
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from typing import Any, Optional
 
 from pikpakapi import PikPakApi
@@ -20,31 +22,132 @@ class PikPakError(RuntimeError):
     pass
 
 
+TOKEN_FILE = Path("data/pikpak_token.txt")
+
+
 class PikPakService:
     def __init__(self) -> None:
         self._client: Optional[PikPakApi] = None
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
+        self._username: str = ""
 
-    async def _ensure(self, username: Optional[str] = None, password: Optional[str] = None) -> PikPakApi:
+    # ---------- token persistence ----------
+
+    def _load_token(self) -> str | None:
+        if TOKEN_FILE.exists():
+            try:
+                return TOKEN_FILE.read_text(encoding="utf-8").strip() or None
+            except OSError:
+                return None
+        return None
+
+    def _save_token(self, token: str) -> None:
+        if not token:
+            return
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(token, encoding="utf-8")
+        try:
+            os.chmod(TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+
+    def _clear_token(self) -> None:
+        try:
+            TOKEN_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _maybe_encode_token(self, client: PikPakApi) -> None:
+        if hasattr(client, "encode_token"):
+            try:
+                token = client.encode_token()
+                if token:
+                    self._save_token(token)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _build_kwargs(self, **base: Any) -> dict[str, Any]:
+        kwargs = dict(base)
+        if settings.http_proxy:
+            kwargs["httpx_client_args"] = {"proxy": settings.http_proxy}
+        return kwargs
+
+    # ---------- public ----------
+
+    def status(self) -> dict:
+        return {
+            "logged_in": self._client is not None,
+            "username": self._username,
+            "has_stored_token": TOKEN_FILE.exists(),
+            "has_env_credentials": bool(
+                settings.pikpak_username and settings.pikpak_password
+            ),
+        }
+
+    def logout(self) -> None:
+        self._client = None
+        self._username = ""
+        self._folder_cache.clear()
+        self._clear_token()
+
+    async def _ensure(
+        self, username: Optional[str] = None, password: Optional[str] = None
+    ) -> PikPakApi:
         async with self._lock:
-            user = username or settings.pikpak_username
-            pwd = password or settings.pikpak_password
-            if not user or not pwd:
-                raise PikPakError("PikPak credentials are not configured")
-
-            if self._client is None or getattr(self._client, "username", None) != user:
-                kwargs: dict[str, Any] = {"username": user, "password": pwd}
-                if settings.http_proxy:
-                    kwargs["httpx_client_args"] = {"proxy": settings.http_proxy}
-                self._client = PikPakApi(**kwargs)
-                await self._client.login()
+            # Explicit credentials → force re-login
+            if username and password:
+                client = PikPakApi(
+                    **self._build_kwargs(username=username, password=password)
+                )
+                await client.login()
+                self._maybe_encode_token(client)
+                self._client = client
+                self._username = username
                 self._folder_cache.clear()
+                return self._client
+
+            if self._client is not None:
+                return self._client
+
+            # Try stored token first.
+            token = self._load_token()
+            if token:
+                try:
+                    self._client = PikPakApi(**self._build_kwargs(encoded_token=token))
+                    self._username = getattr(self._client, "username", "") or ""
+                    return self._client
+                except Exception:  # noqa: BLE001
+                    self._clear_token()
+                    self._client = None
+
+            # Fall back to .env credentials.
+            env_user = settings.pikpak_username
+            env_pwd = settings.pikpak_password
+            if not env_user or not env_pwd:
+                raise PikPakError(
+                    "PikPak 尚未登入。請到 /settings 填入帳密，或在 .env 設定 "
+                    "PIKPAK_USERNAME / PIKPAK_PASSWORD。"
+                )
+
+            client = PikPakApi(
+                **self._build_kwargs(username=env_user, password=env_pwd)
+            )
+            await client.login()
+            self._maybe_encode_token(client)
+            self._client = client
+            self._username = env_user
+            self._folder_cache.clear()
             return self._client
 
-    async def login(self, username: Optional[str] = None, password: Optional[str] = None) -> dict:
+    async def login(
+        self, username: Optional[str] = None, password: Optional[str] = None
+    ) -> dict:
         client = await self._ensure(username, password)
-        return {"username": client.username, "user_id": getattr(client, "user_id", None)}
+        return {
+            "username": getattr(client, "username", "") or self._username,
+            "user_id": getattr(client, "user_id", None),
+        }
 
     async def quota(self) -> PikPakQuota:
         client = await self._ensure()

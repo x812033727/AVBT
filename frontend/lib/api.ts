@@ -231,3 +231,20 @@ export type CheckActressResult = {
   new_codes: string[];
   error: string;
 };
+
+export type PikPakStatus = {
+  logged_in: boolean;
+  username: string;
+  has_stored_token: boolean;
+  has_env_credentials: boolean;
+  quota?: PikPakQuota;
+  quota_error?: string;
+};
+
+export type TrackerStatus = {
+  enabled: boolean;
+  interval_seconds: number;
+  last_run: string | null;
+  last_error: string;
+  last_new_total: number;
+};

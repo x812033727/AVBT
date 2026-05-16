@@ -29,6 +29,24 @@ async def login(payload: PikPakLogin):
         raise _wrap(exc) from exc
 
 
+@router.get("/status")
+async def status():
+    info = pikpak_service.status()
+    if info["logged_in"]:
+        try:
+            quota = await pikpak_service.quota()
+            info["quota"] = quota.model_dump()
+        except Exception as exc:  # noqa: BLE001
+            info["quota_error"] = str(exc)
+    return info
+
+
+@router.post("/logout")
+async def logout():
+    pikpak_service.logout()
+    return {"ok": True}
+
+
 @router.get("/quota", response_model=PikPakQuota)
 async def quota():
     try:

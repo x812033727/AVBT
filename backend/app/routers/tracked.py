@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,32 @@ from ..schemas import CheckActressResult, TrackedActressIn, TrackedActressOut
 from ..services import tracker
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
+
+
+@router.get("/status")
+async def tracker_status():
+    return tracker.state.to_dict()
+
+
+@router.post("/status/toggle")
+async def tracker_toggle(enabled: bool = Body(..., embed=True)):
+    tracker.state.enabled = enabled
+    return tracker.state.to_dict()
+
+
+@router.post("/status/run-now")
+async def tracker_run_now():
+    results = await tracker.check_all()
+    new_total = sum(len(r.get("new_codes") or []) for r in results)
+    tracker.state.last_new_total = new_total
+    from datetime import datetime as _dt
+
+    tracker.state.last_run = _dt.utcnow()
+    return {
+        "results": results,
+        "new_total": new_total,
+        **tracker.state.to_dict(),
+    }
 
 
 def _to_out(r: TrackedActress) -> TrackedActressOut:

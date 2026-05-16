@@ -8,6 +8,8 @@ import asyncio
 import logging
 from datetime import datetime
 
+from typing import Any
+
 from sqlalchemy import select
 
 from ..config import settings
@@ -19,6 +21,26 @@ from .bulk import send_codes_stream
 from .notify import send_webhook
 
 logger = logging.getLogger(__name__)
+
+
+class TrackerState:
+    def __init__(self) -> None:
+        self.enabled: bool = settings.tracker_enabled
+        self.last_run: datetime | None = None
+        self.last_error: str = ""
+        self.last_new_total: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "interval_seconds": settings.tracker_interval_seconds,
+            "last_run": self.last_run.isoformat() if self.last_run else None,
+            "last_error": self.last_error,
+            "last_new_total": self.last_new_total,
+        }
+
+
+state = TrackerState()
 
 
 async def _auto_send(codes: list[str]) -> None:
@@ -112,10 +134,15 @@ async def check_all() -> list[dict]:
 async def run_loop() -> None:
     while True:
         try:
-            if settings.tracker_enabled:
-                await check_all()
+            if state.enabled:
+                results = await check_all()
+                state.last_new_total = sum(len(r.get("new_codes") or []) for r in results)
+                state.last_error = ""
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            state.last_error = str(exc)
             logger.exception("tracker loop iteration failed")
+        finally:
+            state.last_run = datetime.utcnow()
         await asyncio.sleep(max(60, settings.tracker_interval_seconds))

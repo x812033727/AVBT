@@ -115,7 +115,14 @@ export default function TrackedPage() {
 
   async function manualAdd(e: React.FormEvent) {
     e.preventDefault();
-    const slug = addSlug.trim();
+    // Be forgiving: strip leading kind/ and surrounding slashes so the
+    // user can paste either "ca" or "studio/ca" or "/studio/ca/" and
+    // we end up with just "ca".
+    let slug = addSlug.trim().replace(/^\/+|\/+$/g, "");
+    if (slug.toLowerCase().startsWith(`${addKind.toLowerCase()}/`)) {
+      slug = slug.slice(addKind.length + 1);
+    }
+    slug = slug.replace(/^\/+|\/+$/g, "");
     if (!slug) return;
     setAddBusy(true);
     setError(null);

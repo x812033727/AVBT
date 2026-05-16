@@ -84,6 +84,18 @@ async def upsert_tracked(
 ):
     kind = payload.kind.strip()
     slug = payload.id.strip()
+    # Be forgiving when callers paste a URL fragment like "series/11pb"
+    # or a fully-qualified "/series/11pb/" — trim the kind prefix and
+    # any surrounding slashes so we always store a clean slug.
+    slug = slug.strip("/")
+    if slug.lower().startswith(f"{kind.lower()}/"):
+        slug = slug[len(kind) + 1:]
+    slug = slug.strip("/")
+    if "/" in slug:
+        raise HTTPException(
+            status_code=400,
+            detail=f"slug 不可含斜線（你給的：{payload.id!r}）",
+        )
     if kind not in _ALLOWED:
         raise HTTPException(status_code=400, detail=f"不支援的 kind: {kind}")
     if not slug:
@@ -123,7 +135,12 @@ async def upsert_tracked(
     return _to_out(row)
 
 
-@router.get("/{kind}/{slug}", response_model=TrackedListingOut)
+# slug:path so legacy / mis-entered slugs that contain a slash (e.g.
+# "series/11pb") can still be looked up and deleted. New writes go
+# through upsert_tracked which strips the prefix.
+
+
+@router.get("/{kind}/{slug:path}", response_model=TrackedListingOut)
 async def get_tracked(
     kind: str, slug: str, session: AsyncSession = Depends(get_session)
 ):
@@ -133,7 +150,7 @@ async def get_tracked(
     return _to_out(row)
 
 
-@router.delete("/{kind}/{slug}")
+@router.delete("/{kind}/{slug:path}")
 async def untrack(
     kind: str, slug: str, session: AsyncSession = Depends(get_session)
 ):
@@ -145,12 +162,12 @@ async def untrack(
     return {"ok": True}
 
 
-@router.post("/{kind}/{slug}/check", response_model=CheckListingResult)
+@router.post("/{kind}/{slug:path}/check", response_model=CheckListingResult)
 async def check_now(kind: str, slug: str):
     return CheckListingResult(**await tracker.check_listing(kind, slug))
 
 
-@router.post("/{kind}/{slug}/reset-new-count")
+@router.post("/{kind}/{slug:path}/reset-new-count")
 async def reset_new_count(
     kind: str, slug: str, session: AsyncSession = Depends(get_session)
 ):

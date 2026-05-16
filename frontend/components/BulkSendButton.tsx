@@ -9,6 +9,8 @@ type Options = {
   hd_only: boolean;
   subtitle_only: boolean;
   skip_sent: boolean;
+  min_size_mb: number | null;
+  max_size_mb: number | null;
 };
 
 type Result = {
@@ -41,6 +43,8 @@ const DEFAULT_OPTIONS: Options = {
   hd_only: true,
   subtitle_only: false,
   skip_sent: true,
+  min_size_mb: null,
+  max_size_mb: null,
 };
 
 export default function BulkSendButton({
@@ -188,6 +192,45 @@ export default function BulkSendButton({
                   />
                   <span>跳過已送過的</span>
                 </label>
+                <div className="flex items-center justify-between">
+                  <span className="text-white/70">檔案大小 (MB)</span>
+                  <div className="flex items-center gap-1 text-xs">
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="不限"
+                      value={opts.min_size_mb ?? ""}
+                      onChange={(e) =>
+                        setOpts({
+                          ...opts,
+                          min_size_mb: e.target.value
+                            ? parseFloat(e.target.value)
+                            : null,
+                        })
+                      }
+                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                    />
+                    <span>~</span>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="不限"
+                      value={opts.max_size_mb ?? ""}
+                      onChange={(e) =>
+                        setOpts({
+                          ...opts,
+                          max_size_mb: e.target.value
+                            ? parseFloat(e.target.value)
+                            : null,
+                        })
+                      }
+                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-white/40">
+                  範圍外或不在範圍內的磁力會跳過；大小未標示的磁力不會被過濾。
+                </p>
               </div>
             )}
 

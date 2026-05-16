@@ -10,8 +10,27 @@ from ..schemas import (
     PikPakQuota,
     PikPakTask,
 )
+from sqlalchemy import select
+
+from ..database import SessionLocal
+from ..models import OfflineTaskLog
+from ..scrapers.javbus import extract_btih
 from ..services import archiver
 from ..services.pikpak import PikPakError, pikpak_service
+
+
+class DuplicateMagnetError(PikPakError):
+    """Raised when a magnet hash is already in offline_task_log and the
+    caller did not opt in via ``force=true``."""
+
+
+async def _is_duplicate(magnet: str) -> bool:
+    h = extract_btih(magnet)
+    if not h:
+        return False
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
+    return any(extract_btih(m or "") == h for m in rows)
 
 router = APIRouter(prefix="/api/pikpak", tags=["pikpak"])
 
@@ -57,6 +76,11 @@ async def quota():
 
 @router.post("/offline", response_model=PikPakTask)
 async def offline_download(payload: OfflineSubmit):
+    if not payload.force and await _is_duplicate(payload.magnet):
+        raise HTTPException(
+            status_code=409,
+            detail="此磁力已經送過 PikPak。若要再送一次，請帶 force=true。",
+        )
     try:
         task = await pikpak_service.offline_download(payload)
     except Exception as exc:  # noqa: BLE001
@@ -174,10 +198,34 @@ async def archiver_toggle(enabled: bool = Body(..., embed=True)):
 
 @router.post("/offline/bulk", response_model=list[PikPakTask])
 async def offline_download_bulk(items: list[OfflineSubmit]):
+    # Pre-load every previously-submitted hash once so we can dedup the
+    # batch without N round-trips.
+    async with SessionLocal() as session:
+        sent_rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
+    sent_hashes = {h for m in sent_rows if (h := extract_btih(m or ""))}
+
     tasks: list[PikPakTask] = []
     for it in items:
+        h = extract_btih(it.magnet)
+        if not it.force and h and h in sent_hashes:
+            tasks.append(
+                PikPakTask(
+                    id="",
+                    name=it.code or it.magnet[:40],
+                    phase="DUPLICATE",
+                    progress=0,
+                    file_id=None,
+                    file_size=None,
+                    message="已送過，跳過（force=true 可強制送）",
+                    created_time=None,
+                )
+            )
+            continue
         try:
-            tasks.append(await pikpak_service.offline_download(it))
+            task = await pikpak_service.offline_download(it)
+            tasks.append(task)
+            if h:
+                sent_hashes.add(h)
         except Exception as exc:  # noqa: BLE001
             tasks.append(
                 PikPakTask(

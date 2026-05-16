@@ -57,18 +57,40 @@ def parse_size(s: str) -> float:
     return n * mult.get(unit, 1.0)
 
 
+_MB = 1024.0 ** 2
+
+
 def pick_best_magnet(
     magnets,
     *,
     hd_only: bool = True,
     subtitle_only: bool = False,
     skip_hashes: set[str] | None = None,
+    min_size_mb: float | None = None,
+    max_size_mb: float | None = None,
 ):
     """Return the highest-quality magnet that hasn't been sent before.
 
-    Preference: subtitle > HD > size > date. Filters: hd_only/subtitle_only.
+    Preference: subtitle > HD > size > date.
+    Filters: hd_only, subtitle_only, skip_hashes, and an optional
+    [min_size_mb, max_size_mb] byte-size window. Magnets whose advertised
+    size can't be parsed (empty string etc.) are kept regardless of the
+    size window so we don't silently drop the only candidate.
     """
     skip_hashes = skip_hashes or set()
+    min_b = (min_size_mb or 0) * _MB
+    max_b = (max_size_mb or 0) * _MB
+
+    def within_size(m) -> bool:
+        size = parse_size(m.size)
+        if size <= 0:
+            return True  # unknown size, don't reject
+        if min_b and size < min_b:
+            return False
+        if max_b and size > max_b:
+            return False
+        return True
+
     candidates = list(magnets)
     if hd_only:
         hd = [m for m in candidates if m.is_hd]
@@ -79,6 +101,7 @@ def pick_best_magnet(
         if sub:
             candidates = sub
     candidates = [m for m in candidates if extract_btih(m.link) not in skip_hashes]
+    candidates = [m for m in candidates if within_size(m)]
     if not candidates:
         return None
     candidates.sort(

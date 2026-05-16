@@ -146,6 +146,7 @@ class OfflineSubmit(BaseModel):
     magnet: str
     code: str = ""
     folder: Optional[str] = None
+    force: bool = False  # send even if this btih hash is already in the log
 
 
 class SendAllOptions(BaseModel):
@@ -155,6 +156,9 @@ class SendAllOptions(BaseModel):
     subtitle_only: bool = False
     skip_sent: bool = True
     folder: Optional[str] = None
+    # File-size filters in megabytes; 0 / None = unbounded
+    min_size_mb: Optional[float] = None
+    max_size_mb: Optional[float] = None
 
 
 class SendAllResult(BaseModel):

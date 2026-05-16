@@ -79,6 +79,8 @@ async def _process_code(
             hd_only=options.hd_only,
             subtitle_only=options.subtitle_only,
             skip_hashes=sent_hashes if options.skip_sent else set(),
+            min_size_mb=options.min_size_mb,
+            max_size_mb=options.max_size_mb,
         )
     if best is None:
         any_already = any(

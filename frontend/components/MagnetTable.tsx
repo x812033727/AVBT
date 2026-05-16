@@ -34,10 +34,21 @@ export default function MagnetTable({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
   const [sort, setSort] = useState<SortMode>("recommended");
+  const [minMb, setMinMb] = useState("");
+  const [maxMb, setMaxMb] = useState("");
 
   const sorted = useMemo(() => {
-    if (sort === "raw") return magnets;
-    const arr = [...magnets];
+    const minB = (parseFloat(minMb) || 0) * 1024 * 1024;
+    const maxB = (parseFloat(maxMb) || 0) * 1024 * 1024;
+    let arr = magnets.filter((m) => {
+      const b = sizeBytes(m.size);
+      if (b <= 0) return true; // unknown size → keep
+      if (minB && b < minB) return false;
+      if (maxB && b > maxB) return false;
+      return true;
+    });
+    if (sort === "raw") return arr;
+    arr = [...arr];
     if (sort === "date") {
       arr.sort((a, b) => b.date.localeCompare(a.date));
       return arr;
@@ -51,7 +62,7 @@ export default function MagnetTable({
       return b.date.localeCompare(a.date);
     });
     return arr;
-  }, [magnets, sort]);
+  }, [magnets, sort, minMb, maxMb]);
 
   const hdLinks = useMemo(
     () => sorted.filter((m) => m.is_hd).map((m) => m.link),
@@ -74,42 +85,64 @@ export default function MagnetTable({
     setSelected(new Set(hdLinks));
   }
 
-  async function sendOne(m: Magnet) {
+  async function sendOne(m: Magnet, force = false) {
     setBusy(true);
     setStatus(null);
     try {
       const task = await api.post<{ id: string; name: string; phase: string }>(
         "/api/pikpak/offline",
-        { magnet: m.link, code }
+        { magnet: m.link, code, force }
       );
       setStatus({
         kind: "ok",
         text: `已送出：${task.name || task.id} (${task.phase || "pending"})`,
       });
     } catch (e: any) {
-      setStatus({ kind: "err", text: `失敗：${e.message}` });
+      const msg = e.message || "";
+      if (!force && msg.includes("已經送過")) {
+        if (confirm(`${msg}\n\n要強制再送一次嗎？`)) {
+          return sendOne(m, true);
+        }
+        setStatus({ kind: "err", text: msg });
+      } else {
+        setStatus({ kind: "err", text: `失敗：${msg}` });
+      }
     } finally {
       setBusy(false);
     }
   }
 
-  async function sendSelected() {
+  async function sendSelected(force = false) {
     if (!selected.size) return;
     setBusy(true);
     setStatus(null);
     try {
       const items = sorted
         .filter((m) => selected.has(m.link))
-        .map((m) => ({ magnet: m.link, code }));
+        .map((m) => ({ magnet: m.link, code, force }));
       const tasks = await api.post<
         { id: string; name: string; phase: string; message: string | null }[]
       >("/api/pikpak/offline/bulk", items);
-      const ok = tasks.filter((t) => t.phase !== "ERROR").length;
-      const fail = tasks.length - ok;
+      const ok = tasks.filter(
+        (t) => t.phase !== "ERROR" && t.phase !== "DUPLICATE"
+      ).length;
+      const dup = tasks.filter((t) => t.phase === "DUPLICATE").length;
+      const fail = tasks.filter((t) => t.phase === "ERROR").length;
+      const parts = [`成功 ${ok}`];
+      if (dup) parts.push(`已送過 ${dup}`);
+      if (fail) parts.push(`失敗 ${fail}`);
       setStatus({
         kind: fail ? "err" : "ok",
-        text: `共 ${tasks.length} 個任務：成功 ${ok}，失敗 ${fail}`,
+        text: `共 ${tasks.length} 個：${parts.join("，")}`,
       });
+      if (dup && !force) {
+        if (
+          confirm(`有 ${dup} 個磁力已送過。要強制再送一次嗎？`)
+        ) {
+          // Re-send only the duplicates with force=true
+          return sendSelected(true);
+        }
+      }
       setSelected(new Set());
     } catch (e: any) {
       setStatus({ kind: "err", text: `批次失敗：${e.message}` });
@@ -141,11 +174,32 @@ export default function MagnetTable({
         )}
         <button
           className="btn-primary disabled:opacity-50"
-          onClick={sendSelected}
+          onClick={() => sendSelected(false)}
           disabled={busy || !selected.size}
         >
           送 PikPak ({selected.size})
         </button>
+        <div className="flex items-center gap-1 text-xs text-white/60">
+          <span>大小</span>
+          <input
+            type="number"
+            min={0}
+            placeholder="min"
+            value={minMb}
+            onChange={(e) => setMinMb(e.target.value)}
+            className="w-16 rounded border border-white/10 bg-ink px-2 py-1 text-right outline-none focus:border-accent"
+          />
+          <span>~</span>
+          <input
+            type="number"
+            min={0}
+            placeholder="max"
+            value={maxMb}
+            onChange={(e) => setMaxMb(e.target.value)}
+            className="w-16 rounded border border-white/10 bg-ink px-2 py-1 text-right outline-none focus:border-accent"
+          />
+          <span>MB</span>
+        </div>
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value as SortMode)}
@@ -156,6 +210,15 @@ export default function MagnetTable({
           <option value="date">依日期</option>
           <option value="raw">原始順序</option>
         </select>
+      </div>
+      <div className="text-xs text-white/40">
+        顯示 {sorted.length} / {magnets.length} 筆
+        {(minMb || maxMb) && (
+          <>
+            {" "}（過濾：{minMb || "0"} ~ {maxMb || "∞"} MB；
+            未標示大小的不會被過濾）
+          </>
+        )}
       </div>
 
       {status && (

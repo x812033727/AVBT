@@ -230,6 +230,9 @@ def _text(node) -> str:
     return node.get_text(strip=True) if node else ""
 
 
+_NEXT_TEXT_RE = re.compile(r"下一頁|next|»|>$", re.I)
+
+
 def _parse_listing(html: str, page: int) -> SearchResult:
     soup = BeautifulSoup(html, "lxml")
     items: list[MovieListItem] = []
@@ -247,19 +250,42 @@ def _parse_listing(html: str, page: int) -> SearchResult:
             MovieListItem(code=code, title=title, cover=cover, detail_url=href, date=date)
         )
 
-    pagination = soup.select_one("ul.pagination")
+    # JavBus paginates in a couple of slightly different shapes depending
+    # on which listing page you're on (search vs. star vs. series etc.).
+    # We try the canonical ul.pagination first, then fall back to any
+    # anchor whose text or rel attribute looks like a "next" link.
     has_next = False
     total_pages: int | None = None
+
+    pagination = soup.select_one("ul.pagination") or soup.select_one(
+        "ul.pagination-clean, nav .pagination"
+    )
     if pagination:
-        page_links = pagination.select("li a")
+        page_links = pagination.select("li a, a")
         nums = [int(_text(pl)) for pl in page_links if _text(pl).isdigit()]
         if nums:
             total_pages = max(nums)
             has_next = page < total_pages
-        has_next = has_next or any(
-            "下一頁" in _text(pl) or _text(pl).lower().startswith("next")
-            for pl in page_links
-        )
+        if not has_next:
+            for pl in page_links:
+                txt = _text(pl)
+                rel = " ".join(pl.get("rel") or [])
+                if _NEXT_TEXT_RE.search(txt) or "next" in rel.lower():
+                    has_next = True
+                    break
+
+    if not has_next:
+        # Last-resort scan: any <a> below the grid whose text looks like
+        # a "next" indicator (and whose href isn't a JS no-op).
+        for a in soup.find_all("a"):
+            txt = _text(a)
+            if not txt or not _NEXT_TEXT_RE.search(txt):
+                continue
+            href = (a.get("href") or "").strip()
+            if not href or href.startswith(("#", "javascript:")):
+                continue
+            has_next = True
+            break
 
     return SearchResult(items=items, page=page, has_next=has_next, total_pages=total_pages)
 

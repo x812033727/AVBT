@@ -7,7 +7,7 @@ export default function MovieCard({ item }: { item: MovieListItem }) {
       href={`/movie/${encodeURIComponent(item.code)}`}
       className="group block overflow-hidden rounded-lg border border-white/10 bg-panel transition hover:border-accent/60"
     >
-      <div className="aspect-[3/2] w-full overflow-hidden bg-black">
+      <div className="aspect-[16/11] w-full overflow-hidden bg-black">
         {item.cover && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -15,7 +15,7 @@ export default function MovieCard({ item }: { item: MovieListItem }) {
             alt={item.title}
             loading="lazy"
             referrerPolicy="no-referrer"
-            className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+            className="h-full w-full object-cover object-right transition group-hover:scale-[1.02]"
           />
         )}
       </div>

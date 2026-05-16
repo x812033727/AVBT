@@ -33,6 +33,10 @@ export default function SearchPage() {
         const res = await api.get<SearchResult>(
           `/api/javbus/search?${params.toString()}`
         );
+        if (res.items.length === 0 && p > 1) {
+          setError(`已是最後一頁（第 ${p} 頁無內容）`);
+          return;
+        }
         setData(res);
         setPage(p);
       } catch (e: any) {
@@ -94,12 +98,12 @@ export default function SearchPage() {
             {data.total_pages ? ` / 共 ${data.total_pages} 頁` : ""}，共{" "}
             {data.items.length} 筆
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {data.items.map((it) => (
               <MovieCard key={it.code + it.detail_url} item={it} />
             ))}
           </div>
-          <div className="flex justify-center gap-2 pt-2">
+          <div className="flex items-center justify-center gap-2 pt-2">
             <button
               className="btn-ghost"
               disabled={loading || page <= 1}
@@ -109,11 +113,15 @@ export default function SearchPage() {
             </button>
             <button
               className="btn-ghost"
-              disabled={loading || !data.has_next}
+              disabled={loading}
               onClick={() => run(page + 1, q, uncensored)}
+              title={!data.has_next ? "後端沒偵測到下一頁，但仍可嘗試" : undefined}
             >
               下一頁
             </button>
+            {!data.has_next && (
+              <span className="text-xs text-white/40">（已到底）</span>
+            )}
           </div>
         </>
       )}

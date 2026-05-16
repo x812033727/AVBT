@@ -71,7 +71,19 @@ class PikPakService:
         kwargs = dict(base)
         if settings.http_proxy:
             kwargs["httpx_client_args"] = {"proxy": settings.http_proxy}
+        # Persist the refreshed token back to disk every time pikpakapi
+        # rotates access/refresh tokens internally, so the file we read
+        # on the next startup is always current.
+        kwargs.setdefault("token_refresh_callback", self._on_token_refresh)
         return kwargs
+
+    async def _on_token_refresh(self, client: "PikPakApi", **_: Any) -> None:
+        try:
+            token = getattr(client, "encoded_token", "") or ""
+            if token:
+                self._save_token(token)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------- public ----------
 

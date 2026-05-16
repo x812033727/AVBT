@@ -1,4 +1,7 @@
+import json
+
 from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import insert
 
 from ..database import SessionLocal
@@ -185,6 +188,28 @@ async def share_files(
         )
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.post("/files/cleanup/stream")
+async def cleanup_folder_stream(payload: dict = Body(...)):
+    """Stream cleanup events (NDJSON) for the direct children of a folder.
+
+    Body: ``{folder_id: str, dry_run: bool=True}``.
+    Events: ``start`` | ``progress`` | ``done`` | ``error``.
+    """
+    folder_id = (payload.get("folder_id") or "").strip()
+    dry_run = bool(payload.get("dry_run", True))
+
+    async def gen():
+        try:
+            async for event in pikpak_service.cleanup_folder_stream(
+                folder_id, dry_run=dry_run
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.get("/archiver")

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import CleanupButton from "@/components/CleanupButton";
 import {
   api,
   type ArchiverStatus,
@@ -285,6 +286,7 @@ export default function PikpakPage() {
           onCrumb={gotoCrumb}
           onTrash={trashFiles}
           onShare={shareFiles}
+          onRefresh={() => loadFiles(currentParent)}
         />
       )}
     </div>
@@ -390,6 +392,7 @@ function FilesPanel({
   onCrumb,
   onTrash,
   onShare,
+  onRefresh,
 }: {
   files: PikPakFile[];
   parents: { id: string; name: string }[];
@@ -400,6 +403,7 @@ function FilesPanel({
   onCrumb: (idx: number) => void;
   onTrash: (ids: string[]) => void;
   onShare: (ids: string[]) => void;
+  onRefresh: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -425,8 +429,16 @@ function FilesPanel({
             </span>
           ))}
         </div>
+        <div className="ml-auto">
+          <CleanupButton
+            folder_id={parents[parents.length - 1].id}
+            folder_name={parents[parents.length - 1].name}
+            disabled={parents.length <= 1}
+            onDone={onRefresh}
+          />
+        </div>
         <form
-          className="ml-auto flex gap-1"
+          className="flex gap-1"
           onSubmit={(e) => {
             e.preventDefault();
             onSubmitSearch();

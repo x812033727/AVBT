@@ -8,14 +8,19 @@ operations we need: login, offline_download, list tasks/files, delete, etc.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from pikpakapi import PikPakApi
 
 from ..config import settings
 from ..schemas import OfflineSubmit, PikPakFile, PikPakQuota, PikPakTask
+from .jav_code import ext_of, extract_jav_code, is_video
+
+
+logger = logging.getLogger(__name__)
 
 
 class PikPakError(RuntimeError):
@@ -293,6 +298,10 @@ class PikPakService:
         client = await self._ensure()
         return await client.file_batch_move(ids, to_parent_id)
 
+    async def rename_file(self, file_id: str, new_name: str) -> dict:
+        client = await self._ensure()
+        return await client.file_rename(file_id, new_name)
+
     async def download_url(self, file_id: str) -> str:
         client = await self._ensure()
         resp = await client.get_download_url(file_id)
@@ -352,6 +361,136 @@ class PikPakService:
             "pass_code": resp.get("pass_code") or "",
             "share_id": resp.get("share_id") or "",
         }
+
+
+    async def cleanup_folder_stream(
+        self, folder_id: str, *, dry_run: bool = True
+    ) -> AsyncIterator[dict]:
+        """Walk every direct child of ``folder_id`` and try to normalise its
+        name to a clean JAV code.
+
+        - File: rename to ``<code>.<ext>``
+        - Folder containing exactly one video and no subfolders: flatten
+          (rename the inner video, move it to the outer folder, trash the
+          empty wrapper)
+        - Otherwise (mixed contents): rename the folder itself to ``<code>``
+
+        Yields NDJSON-shaped events: ``start`` / ``progress`` / ``done``.
+        When ``dry_run`` is true the function emits the same events but
+        performs no mutations on PikPak.
+        """
+        try:
+            children = await self.list_files(folder_id, size=500)
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": f"列出資料夾失敗: {exc}"}
+            return
+
+        taken: set[str] = {c.name for c in children}
+        summary = {
+            "total": len(children),
+            "renamed": 0,
+            "flattened": 0,
+            "skipped": 0,
+            "errors": 0,
+            "dry_run": dry_run,
+        }
+
+        yield {
+            "type": "start",
+            "total": len(children),
+            "dry_run": dry_run,
+            "folder_id": folder_id,
+        }
+
+        for idx, child in enumerate(children, start=1):
+            await asyncio.sleep(0.1)
+            kind = "folder" if child.kind == "drive#folder" else "file"
+            code = extract_jav_code(child.name)
+            base_event = {
+                "type": "progress",
+                "current": idx,
+                "kind": kind,
+                "source": child.name,
+            }
+
+            if not code:
+                summary["skipped"] += 1
+                yield {**base_event, "action": "skip", "target": None, "reason": "no_code"}
+                continue
+
+            try:
+                if kind == "file":
+                    target = f"{code}{ext_of(child.name)}"
+                    if target == child.name:
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": target, "reason": "already_clean"}
+                        continue
+                    if target in taken:
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
+                        continue
+                    if not dry_run:
+                        await self.rename_file(child.id, target)
+                    taken.discard(child.name)
+                    taken.add(target)
+                    summary["renamed"] += 1
+                    yield {**base_event, "action": "rename", "target": target, "reason": None}
+                    continue
+
+                # ---- folder ----
+                inner = await self.list_files(child.id, size=50)
+                videos = [
+                    i for i in inner
+                    if i.kind != "drive#folder" and is_video(i.name)
+                ]
+                subfolders = [i for i in inner if i.kind == "drive#folder"]
+
+                if len(videos) == 1 and not subfolders and len(inner) == 1:
+                    # Flatten: rename inner video, move to outer, trash wrapper.
+                    video = videos[0]
+                    target = f"{code}{ext_of(video.name)}"
+                    if target == child.name and target in taken:
+                        # Wrapper already named like target and target exists outside
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
+                        continue
+                    if target in taken and target != child.name:
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
+                        continue
+                    if not dry_run:
+                        if video.name != target:
+                            await self.rename_file(video.id, target)
+                        await self.move_files([video.id], folder_id)
+                        await self.trash_files([child.id])
+                    taken.discard(child.name)
+                    taken.add(target)
+                    summary["flattened"] += 1
+                    yield {**base_event, "action": "flatten", "target": target, "reason": None}
+                    continue
+
+                # Mixed contents: just rename the wrapper folder.
+                if child.name == code:
+                    summary["skipped"] += 1
+                    yield {**base_event, "action": "skip", "target": code, "reason": "already_clean"}
+                    continue
+                if code in taken:
+                    summary["skipped"] += 1
+                    yield {**base_event, "action": "skip", "target": code, "reason": "conflict"}
+                    continue
+                if not dry_run:
+                    await self.rename_file(child.id, code)
+                taken.discard(child.name)
+                taken.add(code)
+                summary["renamed"] += 1
+                yield {**base_event, "action": "rename", "target": code, "reason": None}
+
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"] += 1
+                logger.warning("cleanup failed for %s: %s", child.name, exc)
+                yield {**base_event, "action": "error", "target": None, "reason": str(exc)}
+
+        yield {"type": "done", "result": summary}
 
 
 pikpak_service = PikPakService()

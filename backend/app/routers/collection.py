@@ -1,13 +1,23 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_session
+from ..database import SessionLocal, get_session
 from ..models import CollectedMovie, OfflineTaskLog
-from ..schemas import CollectionIn, CollectionOut, HistoryItem, HistoryPage
-from ..scrapers.javbus import extract_btih
+from ..schemas import (
+    CollectionIn,
+    CollectionOut,
+    HistoryItem,
+    HistoryPage,
+    SendAllOptions,
+    SendAllResult,
+)
+from ..scrapers.javbus import JavbusBlocked, extract_btih
+from ..services import bulk
 
 router = APIRouter(prefix="/api/collection", tags=["collection"])
 
@@ -149,3 +159,51 @@ async def delete_history(item_id: int, session: AsyncSession = Depends(get_sessi
     await session.delete(row)
     await session.commit()
     return {"ok": True}
+
+
+async def _wishlist_codes(status: str = "wishlist") -> list[str]:
+    async with SessionLocal() as session:
+        stmt = select(CollectedMovie.code).where(CollectedMovie.status == status)
+        return (await session.execute(stmt)).scalars().all()
+
+
+async def _promote_to_downloading(code: str) -> None:
+    async with SessionLocal() as session:
+        row = await session.get(CollectedMovie, code)
+        if row and row.status == "wishlist":
+            row.status = "downloading"
+            row.updated_at = datetime.utcnow()
+            await session.commit()
+
+
+@router.post("/send-wishlist", response_model=SendAllResult)
+async def send_wishlist(options: SendAllOptions):
+    codes = await _wishlist_codes()
+    final = SendAllResult()
+    try:
+        async for event in bulk.send_codes_stream(
+            codes, options, on_sent=_promote_to_downloading
+        ):
+            if event["type"] == "done":
+                final = SendAllResult(**event["result"])
+    except JavbusBlocked as exc:
+        raise HTTPException(status_code=451, detail=str(exc)) from exc
+    return final
+
+
+@router.post("/send-wishlist/stream")
+async def send_wishlist_stream(options: SendAllOptions):
+    codes = await _wishlist_codes()
+
+    async def gen():
+        try:
+            async for event in bulk.send_codes_stream(
+                codes, options, on_sent=_promote_to_downloading
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except JavbusBlocked as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")

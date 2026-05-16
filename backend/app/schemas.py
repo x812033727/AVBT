@@ -35,6 +35,21 @@ class ActressRef(BaseModel):
     id: str = ""  # JavBus /star/{id} slug; empty if not linked
 
 
+class StarProfile(BaseModel):
+    id: str
+    name: str = ""
+    avatar: str = ""
+    birthday: str = ""
+    age: str = ""
+    height: str = ""
+    cup: str = ""
+    bust: str = ""
+    waist: str = ""
+    hip: str = ""
+    birthplace: str = ""
+    hobby: str = ""
+
+
 class GenreRef(BaseModel):
     name: str
     id: str = ""

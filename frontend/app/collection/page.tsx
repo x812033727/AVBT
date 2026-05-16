@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import BulkSendButton from "@/components/BulkSendButton";
 import { api, type CollectionItem } from "@/lib/api";
 
 const STATUS_TABS = [
@@ -42,22 +43,30 @@ export default function CollectionPage() {
     load(status);
   }
 
+  const wishlistCount = items.filter((i) => i.status === "wishlist").length;
+
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {STATUS_TABS.map((t) => (
           <button
             key={t.value}
             onClick={() => setStatus(t.value)}
-            className={
-              status === t.value
-                ? "btn-primary"
-                : "btn-ghost"
-            }
+            className={status === t.value ? "btn-primary" : "btn-ghost"}
           >
             {t.label}
           </button>
         ))}
+        <div className="ml-auto">
+          <BulkSendButton
+            streamPath="/api/collection/send-wishlist/stream"
+            title="送收藏裡所有待看的"
+            buttonLabel={`送全部待看的${
+              wishlistCount && status === "wishlist" ? ` (${wishlistCount})` : ""
+            }`}
+            showMaxPages={false}
+          />
+        </div>
       </div>
 
       {error && (

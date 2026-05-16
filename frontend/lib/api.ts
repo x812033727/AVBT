@@ -105,6 +105,21 @@ export type Magnet = {
 export type ActressRef = { name: string; id: string };
 export type GenreRef = { name: string; id: string };
 
+export type StarProfile = {
+  id: string;
+  name: string;
+  avatar: string;
+  birthday: string;
+  age: string;
+  height: string;
+  cup: string;
+  bust: string;
+  waist: string;
+  hip: string;
+  birthplace: string;
+  hobby: string;
+};
+
 export type MovieDetail = {
   code: string;
   title: string;

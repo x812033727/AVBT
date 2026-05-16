@@ -25,7 +25,15 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..config import settings
-from ..schemas import ActressRef, GenreRef, Magnet, MovieDetail, MovieListItem, SearchResult
+from ..schemas import (
+    ActressRef,
+    GenreRef,
+    Magnet,
+    MovieDetail,
+    MovieListItem,
+    SearchResult,
+    StarProfile,
+)
 
 
 def extract_btih(magnet: str) -> str:
@@ -238,6 +246,81 @@ async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> S
             return SearchResult(items=[], page=page, has_next=False)
 
     return _parse_listing(html, page)
+
+
+_PROFILE_KEYS = {
+    "生日": "birthday",
+    "年齡": "age",
+    "身高": "height",
+    "罩杯": "cup",
+    "胸圍": "bust",
+    "腰圍": "waist",
+    "臀圍": "hip",
+    "出生地": "birthplace",
+    "愛好": "hobby",
+    "Birthday": "birthday",
+    "Age": "age",
+    "Height": "height",
+    "Cup": "cup",
+    "Bust": "bust",
+    "Waist": "waist",
+    "Hip": "hip",
+}
+
+
+def _parse_star_profile(html: str, star_id: str) -> StarProfile | None:
+    """Parse the actress info box on /star/{id}.
+
+    JavBus markup shifts a bit between mirrors, so we look for the
+    avatar-box image (name + photo) and any <p> whose first inline
+    element matches one of the known headers."""
+    soup = BeautifulSoup(html, "lxml")
+    profile = StarProfile(id=star_id)
+
+    avatar = soup.select_one("div.avatar-box img") or soup.select_one("img.avatar")
+    if avatar:
+        profile.avatar = _abs(avatar.get("src", ""))
+        profile.name = avatar.get("title", "").strip() or profile.name
+
+    name_node = soup.select_one("div.avatar-box span") or soup.select_one(
+        "div.photo-info span"
+    )
+    if name_node and not profile.name:
+        profile.name = _text(name_node)
+
+    info_root = soup.select_one("div.avatar-box ~ div.star-info") or soup.select_one(
+        "div.star-info"
+    )
+    fields: dict[str, str] = {}
+    if info_root:
+        for p in info_root.select("p"):
+            raw = p.get_text(":", strip=True)
+            if not raw or ":" not in raw:
+                continue
+            head, _, value = raw.partition(":")
+            head = head.strip().rstrip(":").strip()
+            value = value.strip()
+            key = _PROFILE_KEYS.get(head)
+            if key:
+                fields[key] = value
+
+    for k, v in fields.items():
+        setattr(profile, k, v)
+
+    has_any = profile.avatar or profile.name or any(fields.values())
+    return profile if has_any else None
+
+
+async def fetch_star_profile(star_id: str, *, uncensored: bool = False) -> StarProfile | None:
+    star_id = star_id.strip()
+    base = settings.javbus_base_url.rstrip("/")
+    prefix = "/uncensored/star" if uncensored else "/star"
+    url = f"{base}{prefix}/{star_id}/1"
+    async with _client() as cli:
+        html = await _fetch(cli, url)
+        if not html:
+            return None
+    return _parse_star_profile(html, star_id)
 
 
 async def fetch_genre(genre_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:

@@ -57,7 +57,11 @@ export default function GenrePage({ params }: { params: { id: string } }) {
           無碼
         </label>
         <div className="ml-auto">
-          <BulkSendButton kind="genre" slug={id} uncensored={uncensored} />
+          <BulkSendButton
+            streamPath={`/api/javbus/genre/${encodeURIComponent(id)}/send-all/stream`}
+            title={`送類別「${id}」全部`}
+            defaultOptions={{ uncensored }}
+          />
         </div>
       </div>
 

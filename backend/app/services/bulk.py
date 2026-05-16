@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
 
 from sqlalchemy import insert, select
 
@@ -129,11 +129,14 @@ async def _process_code(
     }
 
 
-async def send_all_stream(
-    kind: str, slug: str, options: SendAllOptions
+async def send_codes_stream(
+    codes: list[str],
+    options: SendAllOptions,
+    *,
+    on_sent: Callable[[str], Awaitable[None]] | None = None,
 ) -> AsyncIterator[dict]:
-    """Yield progress events. Final event has type='done' with summary."""
-    codes = await _collect_codes(kind=kind, slug=slug, options=options)
+    """Process a precomputed list of codes. The on_sent hook fires after
+    each successful submission (e.g. to update CollectedMovie status)."""
     yield {
         "type": "start",
         "total": len(codes),
@@ -165,6 +168,11 @@ async def send_all_stream(
                     result.failed += 1
                     result.errors.append(f"{code}: {exc}")
                 event = {"status": "failed", "message": str(exc)}
+            if event.get("status") == "sent" and on_sent is not None:
+                try:
+                    await on_sent(code)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("on_sent hook failed for %s: %s", code, exc)
             await queue.put({"type": "progress", "current": idx + 1, "code": code, **event})
 
     tasks = [asyncio.create_task(worker(i, c)) for i, c in enumerate(codes)]
@@ -177,6 +185,15 @@ async def send_all_stream(
         raise
     await asyncio.gather(*tasks, return_exceptions=True)
     yield {"type": "done", "result": result.model_dump()}
+
+
+async def send_all_stream(
+    kind: str, slug: str, options: SendAllOptions
+) -> AsyncIterator[dict]:
+    """Walk JavBus listing pages first, then stream submissions."""
+    codes = await _collect_codes(kind=kind, slug=slug, options=options)
+    async for event in send_codes_stream(codes, options):
+        yield event
 
 
 async def send_all(kind: str, slug: str, options: SendAllOptions) -> SendAllResult:

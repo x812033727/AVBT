@@ -35,14 +35,26 @@ const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   failed: { text: "✗ 失敗", cls: "text-red-300" },
 };
 
+const DEFAULT_OPTIONS: Options = {
+  uncensored: false,
+  max_pages: 5,
+  hd_only: true,
+  subtitle_only: false,
+  skip_sent: true,
+};
+
 export default function BulkSendButton({
-  kind,
-  slug,
-  uncensored,
+  streamPath,
+  title,
+  buttonLabel = "送全部到 PikPak",
+  showMaxPages = true,
+  defaultOptions,
 }: {
-  kind: "star" | "genre";
-  slug: string;
-  uncensored: boolean;
+  streamPath: string;
+  title: string;
+  buttonLabel?: string;
+  showMaxPages?: boolean;
+  defaultOptions?: Partial<Options>;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -51,11 +63,8 @@ export default function BulkSendButton({
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opts, setOpts] = useState<Options>({
-    uncensored,
-    max_pages: 5,
-    hd_only: true,
-    subtitle_only: false,
-    skip_sent: true,
+    ...DEFAULT_OPTIONS,
+    ...defaultOptions,
   });
   const abortRef = useRef<AbortController | null>(null);
 
@@ -69,13 +78,13 @@ export default function BulkSendButton({
     abortRef.current = ctrl;
     try {
       await streamNdjson(
-        `/api/javbus/${kind}/${encodeURIComponent(slug)}/send-all/stream`,
-        { ...opts, uncensored },
+        streamPath,
+        { ...opts, ...defaultOptions },
         (event) => {
           if (event.type === "start") setTotal(event.total ?? 0);
-          else if (event.type === "progress") {
+          else if (event.type === "progress")
             setProgress((prev) => [...prev, event]);
-          } else if (event.type === "done") setResult(event.result);
+          else if (event.type === "done") setResult(event.result);
           else if (event.type === "error") setError(event.message);
         },
         ctrl.signal
@@ -108,7 +117,7 @@ export default function BulkSendButton({
   return (
     <>
       <button className="btn-primary" onClick={() => setOpen(true)}>
-        送全部到 PikPak
+        {buttonLabel}
       </button>
 
       {open && (
@@ -120,9 +129,7 @@ export default function BulkSendButton({
         >
           <div className="w-full max-w-lg space-y-4 rounded-xl border border-white/10 bg-panel p-5">
             <div className="flex items-center">
-              <h2 className="text-lg font-semibold">
-                送 {kind === "star" ? "女優" : "類別"}「{slug}」全部
-              </h2>
+              <h2 className="text-lg font-semibold">{title}</h2>
               <button
                 className="ml-auto text-white/40 hover:text-white"
                 onClick={close}
@@ -133,27 +140,31 @@ export default function BulkSendButton({
 
             {!busy && !done && (
               <div className="space-y-3 text-sm">
-                <label className="flex items-center justify-between">
-                  <span className="text-white/70">最多抓幾頁</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={opts.max_pages}
-                    onChange={(e) =>
-                      setOpts({
-                        ...opts,
-                        max_pages: parseInt(e.target.value || "1"),
-                      })
-                    }
-                    className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
-                  />
-                </label>
+                {showMaxPages && (
+                  <label className="flex items-center justify-between">
+                    <span className="text-white/70">最多抓幾頁</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={opts.max_pages}
+                      onChange={(e) =>
+                        setOpts({
+                          ...opts,
+                          max_pages: parseInt(e.target.value || "1"),
+                        })
+                      }
+                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                    />
+                  </label>
+                )}
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
                     checked={opts.hd_only}
-                    onChange={(e) => setOpts({ ...opts, hd_only: e.target.checked })}
+                    onChange={(e) =>
+                      setOpts({ ...opts, hd_only: e.target.checked })
+                    }
                   />
                   <span>優先高清</span>
                 </label>
@@ -220,9 +231,7 @@ export default function BulkSendButton({
                         key={p.current}
                         className="flex items-baseline gap-2 py-0.5"
                       >
-                        <span className="font-mono text-accent">
-                          {p.code}
-                        </span>
+                        <span className="font-mono text-accent">{p.code}</span>
                         <span className={label.cls}>{label.text}</span>
                         {p.magnet_name && (
                           <span className="truncate text-white/40">

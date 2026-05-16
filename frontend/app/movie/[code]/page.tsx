@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import MagnetTable from "@/components/MagnetTable";
 import { api, type MovieDetail } from "@/lib/api";
@@ -7,6 +8,7 @@ import { api, type MovieDetail } from "@/lib/api";
 export default function MoviePage({ params }: { params: { code: string } }) {
   const code = decodeURIComponent(params.code);
   const [data, setData] = useState<MovieDetail | null>(null);
+  const [sentHashes, setSentHashes] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [savingMsg, setSavingMsg] = useState<string | null>(null);
 
@@ -14,10 +16,14 @@ export default function MoviePage({ params }: { params: { code: string } }) {
     let alive = true;
     (async () => {
       try {
-        const res = await api.get<MovieDetail>(
-          `/api/javbus/movie/${encodeURIComponent(code)}`
-        );
-        if (alive) setData(res);
+        const [detail, hashes] = await Promise.all([
+          api.get<MovieDetail>(`/api/javbus/movie/${encodeURIComponent(code)}`),
+          api.get<string[]>("/api/collection/sent-hashes").catch(() => []),
+        ]);
+        if (alive) {
+          setData(detail);
+          setSentHashes(new Set(hashes));
+        }
       } catch (e: any) {
         if (alive) setError(e.message);
       }
@@ -37,8 +43,8 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         cover: data.cover,
         release_date: data.release_date,
         duration: data.duration,
-        actresses: data.actresses,
-        genres: data.genres,
+        actresses: data.actresses.map((a) => a.name),
+        genres: data.genres.map((g) => g.name),
         status,
       });
       setSavingMsg(status === "wishlist" ? "已加入待看清單" : "已標記為完成");
@@ -85,18 +91,28 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           </dl>
           {!!data.actresses.length && (
             <div className="flex flex-wrap gap-1">
-              {data.actresses.map((a) => (
-                <span key={a} className="tag">
-                  {a}
-                </span>
-              ))}
+              {data.actresses.map((a) =>
+                a.id ? (
+                  <Link
+                    key={a.name}
+                    href={`/star/${encodeURIComponent(a.id)}`}
+                    className="tag hover:bg-accent/30 hover:text-white"
+                  >
+                    {a.name}
+                  </Link>
+                ) : (
+                  <span key={a.name} className="tag">
+                    {a.name}
+                  </span>
+                )
+              )}
             </div>
           )}
           {!!data.genres.length && (
             <div className="flex flex-wrap gap-1">
               {data.genres.map((g) => (
-                <span key={g} className="tag">
-                  {g}
+                <span key={g.name} className="tag">
+                  {g.name}
                 </span>
               ))}
             </div>
@@ -117,7 +133,11 @@ export default function MoviePage({ params }: { params: { code: string } }) {
 
       <section>
         <h2 className="mb-2 text-lg font-semibold">磁力連結</h2>
-        <MagnetTable magnets={data.magnets} code={data.code} />
+        <MagnetTable
+          magnets={data.magnets}
+          code={data.code}
+          sentHashes={sentHashes}
+        />
       </section>
 
       {!!data.samples.length && (

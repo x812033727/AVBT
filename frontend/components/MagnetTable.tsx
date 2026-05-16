@@ -1,16 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { api, type Magnet } from "@/lib/api";
+import { api, btih, type Magnet } from "@/lib/api";
 
 type Status = { kind: "ok" | "err"; text: string } | null;
 
 export default function MagnetTable({
   magnets,
   code,
+  sentHashes,
 }: {
   magnets: Magnet[];
   code: string;
+  sentHashes?: Set<string>;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -136,8 +138,15 @@ export default function MagnetTable({
             </tr>
           </thead>
           <tbody>
-            {magnets.map((m) => (
-              <tr key={m.link} className="border-t border-white/5">
+            {magnets.map((m) => {
+              const sent = sentHashes?.has(btih(m.link)) ?? false;
+              return (
+              <tr
+                key={m.link}
+                className={
+                  "border-t border-white/5 " + (sent ? "bg-emerald-400/5" : "")
+                }
+              >
                 <td className="px-3 py-2">
                   <input
                     type="checkbox"
@@ -153,6 +162,11 @@ export default function MagnetTable({
                   <div className="mt-1 flex flex-wrap gap-1">
                     {m.is_hd && <span className="tag-hd">高清</span>}
                     {m.has_subtitle && <span className="tag-sub">字幕</span>}
+                    {sent && (
+                      <span className="rounded bg-emerald-400/20 px-2 py-0.5 text-xs text-emerald-200">
+                        已送過
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-3 py-2 text-white/70">{m.size}</td>
@@ -176,7 +190,8 @@ export default function MagnetTable({
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

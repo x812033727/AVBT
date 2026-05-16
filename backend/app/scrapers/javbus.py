@@ -25,7 +25,17 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..config import settings
-from ..schemas import Magnet, MovieDetail, MovieListItem, SearchResult
+from ..schemas import ActressRef, GenreRef, Magnet, MovieDetail, MovieListItem, SearchResult
+
+
+def extract_btih(magnet: str) -> str:
+    """Return the upper-case btih hash from a magnet URI (or empty)."""
+    m = re.search(r"xt=urn:btih:([A-Za-z0-9]+)", magnet)
+    return m.group(1).upper() if m else ""
+
+
+_STAR_PATH_RE = re.compile(r"/star/([^/?#]+)")
+_GENRE_PATH_RE = re.compile(r"/genre/([^/?#]+)")
 
 
 USER_AGENT = (
@@ -115,23 +125,7 @@ def _text(node) -> str:
     return node.get_text(strip=True) if node else ""
 
 
-async def search(keyword: str, page: int = 1, uncensored: bool = False) -> SearchResult:
-    """Search by code / keyword. Returns list of MovieListItem.
-
-    JavBus paths:
-        /search/{keyword}/{page}
-        /uncensored/search/{keyword}/{page}
-    """
-    keyword = keyword.strip()
-    base = settings.javbus_base_url.rstrip("/")
-    prefix = "/uncensored/search" if uncensored else "/search"
-    url = f"{base}{prefix}/{keyword}/{max(1, page)}"
-
-    async with _client() as cli:
-        html = await _fetch(cli, url)
-        if not html:
-            return SearchResult(items=[], page=page, has_next=False)
-
+def _parse_listing(html: str, page: int) -> SearchResult:
     soup = BeautifulSoup(html, "lxml")
     items: list[MovieListItem] = []
     for a in soup.select("a.movie-box"):
@@ -143,7 +137,6 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
         code = _text(dates[0]) if dates else ""
         date = _text(dates[1]) if len(dates) > 1 else ""
         if not code:
-            # fallback: try grabbing code from URL tail
             code = href.rsplit("/", 1)[-1]
         items.append(
             MovieListItem(code=code, title=title, cover=cover, detail_url=href, date=date)
@@ -154,17 +147,46 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
     total_pages: int | None = None
     if pagination:
         page_links = pagination.select("li a")
-        nums = []
-        for pl in page_links:
-            t = _text(pl)
-            if t.isdigit():
-                nums.append(int(t))
+        nums = [int(_text(pl)) for pl in page_links if _text(pl).isdigit()]
         if nums:
             total_pages = max(nums)
             has_next = page < total_pages
-        has_next = has_next or any(_text(pl).startswith("下一頁") for pl in page_links)
+        has_next = has_next or any(
+            "下一頁" in _text(pl) or _text(pl).lower().startswith("next")
+            for pl in page_links
+        )
 
     return SearchResult(items=items, page=page, has_next=has_next, total_pages=total_pages)
+
+
+async def search(keyword: str, page: int = 1, uncensored: bool = False) -> SearchResult:
+    """Search by code / keyword."""
+    keyword = keyword.strip()
+    base = settings.javbus_base_url.rstrip("/")
+    prefix = "/uncensored/search" if uncensored else "/search"
+    url = f"{base}{prefix}/{keyword}/{max(1, page)}"
+
+    async with _client() as cli:
+        html = await _fetch(cli, url)
+        if not html:
+            return SearchResult(items=[], page=page, has_next=False)
+
+    return _parse_listing(html, page)
+
+
+async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
+    """List every movie of a given JavBus actress slug."""
+    star_id = star_id.strip()
+    base = settings.javbus_base_url.rstrip("/")
+    prefix = "/uncensored/star" if uncensored else "/star"
+    url = f"{base}{prefix}/{star_id}/{max(1, page)}"
+
+    async with _client() as cli:
+        html = await _fetch(cli, url)
+        if not html:
+            return SearchResult(items=[], page=page, has_next=False)
+
+    return _parse_listing(html, page)
 
 
 async def fetch_detail(code: str) -> MovieDetail:
@@ -210,8 +232,8 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
 
     info_root = soup.select_one("div.info")
     release_date = duration = studio = label = director = series = ""
-    actresses: list[str] = []
-    genres: list[str] = []
+    actresses: list[ActressRef] = []
+    genres: list[GenreRef] = []
 
     if info_root:
         for p in info_root.select("p"):
@@ -235,16 +257,30 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
             elif "系列" in head or "Series" in head:
                 series = value
             elif "類別" in head or "Genre" in head:
-                genres = [
-                    _text(a) for a in p.select("a") if _text(a)
-                ]
+                for a in p.select("a"):
+                    name = _text(a)
+                    if not name:
+                        continue
+                    href = a.get("href", "")
+                    gm = _GENRE_PATH_RE.search(href)
+                    genres.append(GenreRef(name=name, id=gm.group(1) if gm else ""))
 
         # Actresses live in their own block below the genre paragraphs.
         star_block = info_root.find("p", class_="star-show")
         if star_block:
             sibling = star_block.find_next_sibling("p")
             if sibling:
-                actresses = [_text(a) for a in sibling.select("a") if _text(a)]
+                for a in sibling.select("a"):
+                    name = _text(a)
+                    if not name:
+                        # Some markup wraps the name in a <span> inside the <a>
+                        span = a.select_one("span")
+                        name = _text(span) if span else ""
+                    if not name:
+                        continue
+                    href = a.get("href", "")
+                    sm = _STAR_PATH_RE.search(href)
+                    actresses.append(ActressRef(name=name, id=sm.group(1) if sm else ""))
 
     samples = []
     for a in soup.select("a.sample-box"):

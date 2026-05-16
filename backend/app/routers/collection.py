@@ -5,8 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_session
-from ..models import CollectedMovie
+from ..models import CollectedMovie, OfflineTaskLog
 from ..schemas import CollectionIn, CollectionOut
+from ..scrapers.javbus import extract_btih
 
 router = APIRouter(prefix="/api/collection", tags=["collection"])
 
@@ -86,3 +87,15 @@ async def delete_item(code: str, session: AsyncSession = Depends(get_session)):
     await session.delete(row)
     await session.commit()
     return {"ok": True}
+
+
+@router.get("/sent-hashes", response_model=list[str])
+async def sent_hashes(session: AsyncSession = Depends(get_session)):
+    """btih hashes of every magnet we've previously submitted to PikPak."""
+    rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
+    seen: set[str] = set()
+    for magnet in rows:
+        h = extract_btih(magnet or "")
+        if h:
+            seen.add(h)
+    return sorted(seen)

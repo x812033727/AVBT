@@ -32,3 +32,17 @@ async def movie_detail(code: str):
     if not detail.title:
         raise HTTPException(status_code=404, detail=f"找不到番號 {code}")
     return detail
+
+
+@router.get("/star/{star_id}", response_model=SearchResult)
+async def actress_movies(
+    star_id: str,
+    page: int = Query(1, ge=1),
+    uncensored: bool = Query(False),
+):
+    try:
+        return await scraper.fetch_star(star_id, page=page, uncensored=uncensored)
+    except JavbusBlocked as exc:
+        raise HTTPException(status_code=451, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"JavBus 女優頁失敗: {exc}") from exc

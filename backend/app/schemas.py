@@ -30,6 +30,16 @@ class Magnet(BaseModel):
     has_subtitle: bool = False
 
 
+class ActressRef(BaseModel):
+    name: str
+    id: str = ""  # JavBus /star/{id} slug; empty if not linked
+
+
+class GenreRef(BaseModel):
+    name: str
+    id: str = ""
+
+
 class MovieDetail(BaseModel):
     code: str
     title: str
@@ -40,8 +50,8 @@ class MovieDetail(BaseModel):
     label: str = ""
     director: str = ""
     series: str = ""
-    actresses: list[str] = Field(default_factory=list)
-    genres: list[str] = Field(default_factory=list)
+    actresses: list[ActressRef] = Field(default_factory=list)
+    genres: list[GenreRef] = Field(default_factory=list)
     samples: list[str] = Field(default_factory=list)
     magnets: list[Magnet] = Field(default_factory=list)
 

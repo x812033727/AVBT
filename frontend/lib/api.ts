@@ -58,6 +58,9 @@ export type Magnet = {
   has_subtitle: boolean;
 };
 
+export type ActressRef = { name: string; id: string };
+export type GenreRef = { name: string; id: string };
+
 export type MovieDetail = {
   code: string;
   title: string;
@@ -68,11 +71,16 @@ export type MovieDetail = {
   label: string;
   director: string;
   series: string;
-  actresses: string[];
-  genres: string[];
+  actresses: ActressRef[];
+  genres: GenreRef[];
   samples: string[];
   magnets: Magnet[];
 };
+
+export function btih(magnet: string): string {
+  const m = magnet.match(/xt=urn:btih:([A-Za-z0-9]+)/);
+  return m ? m[1].toUpperCase() : "";
+}
 
 export type CollectionItem = {
   code: string;

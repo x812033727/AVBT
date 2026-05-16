@@ -445,11 +445,11 @@ class PikPakService:
                 ]
                 subfolders = [i for i in inner if i.kind == "drive#folder"]
 
-                # BT releases often bundle tiny ad mp4s (e.g. 1.9 MB
-                # "18+游戏大全...mp4"). Treat sub-50MB videos as junk so
-                # the real episode is still recognisable as "the one video".
-                # None size → assume legit (don't filter).
-                JUNK_BYTES = 50 * 1024 * 1024
+                # Real JAV episodes are ≥500MB. BT releases bundle tiny
+                # ad mp4s alongside the real video. Anything well under
+                # 500MB is junk; 300MB threshold gives a 200MB buffer
+                # for unusual encodes. None size → assume legit.
+                JUNK_BYTES = 300 * 1024 * 1024
                 main_videos = [
                     v for v in videos
                     if v.size is None or v.size >= JUNK_BYTES

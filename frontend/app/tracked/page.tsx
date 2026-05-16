@@ -32,12 +32,26 @@ const KIND_COLORS: Record<TrackedKind, string> = {
   director: "bg-amber-500/20 text-amber-300",
 };
 
+const ADD_KINDS: { value: TrackedKind; label: string }[] = [
+  { value: "star", label: "女優" },
+  { value: "studio", label: "製作商" },
+  { value: "label", label: "發行商" },
+  { value: "series", label: "系列" },
+  { value: "director", label: "導演" },
+];
+
 export default function TrackedPage() {
   const [items, setItems] = useState<TrackedListing[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
   const [lastCheck, setLastCheck] = useState<CheckListingResult | null>(null);
   const [filter, setFilter] = useState<TrackedKind | "">("");
+
+  // Manual-add form state
+  const [addKind, setAddKind] = useState<TrackedKind>("studio");
+  const [addSlug, setAddSlug] = useState("");
+  const [addAuto, setAddAuto] = useState(false);
+  const [addBusy, setAddBusy] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -98,6 +112,32 @@ export default function TrackedPage() {
     }
   }
 
+  async function manualAdd(e: React.FormEvent) {
+    e.preventDefault();
+    const slug = addSlug.trim();
+    if (!slug) return;
+    setAddBusy(true);
+    setError(null);
+    try {
+      // name="" → backend tries to fetch the listing's real title.
+      await api.post<TrackedListing>("/api/tracked", {
+        kind: addKind,
+        id: slug,
+        name: "",
+        avatar: "",
+        uncensored: false,
+        auto_send: addAuto,
+      });
+      setAddSlug("");
+      setAddAuto(false);
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
   const filtered = filter ? items.filter((i) => i.kind === filter) : items;
 
   return (
@@ -138,6 +178,45 @@ export default function TrackedPage() {
         </div>
       )}
 
+      <form
+        onSubmit={manualAdd}
+        className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-panel/50 px-3 py-2 text-sm"
+      >
+        <span className="text-xs text-white/60">手動新增</span>
+        <select
+          value={addKind}
+          onChange={(e) => setAddKind(e.target.value as TrackedKind)}
+          className="rounded-md border border-white/10 bg-ink px-2 py-1 text-xs"
+        >
+          {ADD_KINDS.map((k) => (
+            <option key={k.value} value={k.value}>
+              {k.label}
+            </option>
+          ))}
+        </select>
+        <input
+          value={addSlug}
+          onChange={(e) => setAddSlug(e.target.value)}
+          placeholder="JavBus slug, 例如 studio/ca 的 ca"
+          className="flex-1 min-w-[180px] rounded-md border border-white/10 bg-ink px-2 py-1 text-xs font-mono outline-none focus:border-accent"
+        />
+        <label className="flex items-center gap-1 text-xs text-white/60">
+          <input
+            type="checkbox"
+            checked={addAuto}
+            onChange={(e) => setAddAuto(e.target.checked)}
+          />
+          自動送 PikPak
+        </label>
+        <button
+          type="submit"
+          className="btn-primary disabled:opacity-50"
+          disabled={addBusy || !addSlug.trim()}
+        >
+          {addBusy ? "新增中…" : "+ 追蹤"}
+        </button>
+      </form>
+
       {lastCheck && (
         <div
           className={
@@ -159,9 +238,20 @@ export default function TrackedPage() {
 
       {!filtered.length && (
         <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
-          {filter
-            ? `沒有追蹤任何${TRACKED_LABELS[filter as TrackedKind]}`
-            : "還沒追蹤任何東西。到女優 / 製作商 / 系列頁面點「追蹤」加入。"}
+          {filter ? (
+            `沒有追蹤任何${TRACKED_LABELS[filter as TrackedKind]}`
+          ) : (
+            <>
+              還沒追蹤任何東西。可在上方手動新增，或到對應頁面點「★ 追蹤」：
+              <div className="mt-2 flex flex-wrap justify-center gap-2 text-xs">
+                <code className="rounded bg-white/10 px-2 py-0.5">/star/{"{slug}"}</code>
+                <code className="rounded bg-white/10 px-2 py-0.5">/studio/{"{slug}"}</code>
+                <code className="rounded bg-white/10 px-2 py-0.5">/series/{"{slug}"}</code>
+                <code className="rounded bg-white/10 px-2 py-0.5">/label/{"{slug}"}</code>
+                <code className="rounded bg-white/10 px-2 py-0.5">/director/{"{slug}"}</code>
+              </div>
+            </>
+          )}
         </div>
       )}
 

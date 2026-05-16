@@ -33,20 +33,25 @@ export default function SettingsPage() {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
+  const [storedToken, setStoredToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<
     { kind: "ok" | "err"; text: string } | null
   >(null);
 
   const loadAll = useCallback(async () => {
-    const [p, a, t] = await Promise.all([
+    const [p, a, t, tk] = await Promise.all([
       api.get<PikPakStatus>("/api/pikpak/status").catch(() => null),
       api.get<ArchiverStatus>("/api/pikpak/archiver").catch(() => null),
       api.get<TrackerStatus>("/api/tracked/status").catch(() => null),
+      api.get<{ token: string }>("/api/pikpak/token").catch(() => null),
     ]);
     setPikpak(p);
     setArchiver(a);
     setTracker(t);
+    setStoredToken(tk?.token || "");
   }, []);
 
   useEffect(() => {
@@ -81,6 +86,38 @@ export default function SettingsPage() {
       await loadAll();
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loginWithToken() {
+    if (!tokenInput.trim()) {
+      setMsg({ kind: "err", text: "請貼上 Token" });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.post("/api/pikpak/login", {
+        encoded_token: tokenInput.trim(),
+        remember: true,
+      });
+      setTokenInput("");
+      setMsg({ kind: "ok", text: "Token 已驗證並儲存" });
+      await loadAll();
+    } catch (e: any) {
+      setMsg({ kind: "err", text: `Token 登入失敗：${e.message}` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyToken() {
+    if (!storedToken) return;
+    try {
+      await navigator.clipboard.writeText(storedToken);
+      setMsg({ kind: "ok", text: "Token 已複製到剪貼簿" });
+    } catch {
+      setMsg({ kind: "err", text: "複製失敗（瀏覽器可能擋下了）" });
     }
   }
 
@@ -207,6 +244,53 @@ export default function SettingsPage() {
           帳密只用來換取 token，token 存在 <span className="font-mono">data/pikpak_token.txt</span>
           ，重啟後自動載入。
         </p>
+
+        <div className="border-t border-white/10 pt-3">
+          <h3 className="text-sm font-semibold text-white/80">
+            或直接貼 Token 登入
+          </h3>
+          <p className="text-xs text-white/40">
+            如果你從其他 PikPak 工具取得 encoded_token，可以直接貼進來免再次輸入帳密。
+          </p>
+          <textarea
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            placeholder="貼上 encoded_token …"
+            rows={3}
+            className="mt-2 w-full rounded-md border border-white/10 bg-ink px-3 py-2 text-xs font-mono outline-none focus:border-accent"
+          />
+          <div className="mt-2 flex gap-2">
+            <button
+              className="btn-primary disabled:opacity-50"
+              onClick={loginWithToken}
+              disabled={busy || !tokenInput.trim()}
+            >
+              使用此 Token
+            </button>
+            {storedToken && (
+              <>
+                <button
+                  className="btn-ghost"
+                  onClick={() => setShowToken((s) => !s)}
+                >
+                  {showToken ? "隱藏目前 Token" : "顯示目前 Token"}
+                </button>
+                <button className="btn-ghost" onClick={copyToken}>
+                  複製目前 Token
+                </button>
+              </>
+            )}
+          </div>
+          {showToken && storedToken && (
+            <textarea
+              readOnly
+              value={storedToken}
+              rows={3}
+              className="mt-2 w-full rounded-md border border-white/10 bg-ink/50 px-3 py-2 text-xs font-mono text-white/60 outline-none"
+              onFocus={(e) => e.target.select()}
+            />
+          )}
+        </div>
       </section>
 
       <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">

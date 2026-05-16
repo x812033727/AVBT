@@ -149,6 +149,41 @@ class PikPakService:
             "user_id": getattr(client, "user_id", None),
         }
 
+    async def login_with_token(self, encoded_token: str) -> dict:
+        """Skip username/password — build a client straight from the
+        encoded token. Verifies it works by hitting get_user_info()."""
+        token = (encoded_token or "").strip()
+        if not token:
+            raise PikPakError("Token 不可空白")
+
+        async with self._lock:
+            client = PikPakApi(**self._build_kwargs(encoded_token=token))
+            try:
+                info = await client.get_user_info()
+            except Exception as exc:  # noqa: BLE001
+                raise PikPakError(f"Token 無效或已過期: {exc}") from exc
+            self._client = client
+            self._username = (
+                getattr(client, "username", "")
+                or (info.get("name") if isinstance(info, dict) else "")
+                or ""
+            )
+            self._folder_cache.clear()
+            # Prefer the library's freshly-re-encoded token (it may have
+            # refreshed access). Fall back to whatever the user pasted.
+            self._maybe_encode_token(client)
+            if not TOKEN_FILE.exists() or not self._load_token():
+                self._save_token(token)
+
+        return {
+            "username": self._username,
+            "user_id": getattr(client, "user_id", None),
+        }
+
+    def export_token(self) -> str:
+        """Return the currently stored token (for backup/copy)."""
+        return self._load_token() or ""
+
     async def quota(self) -> PikPakQuota:
         client = await self._ensure()
         data = await client.get_quota_info()

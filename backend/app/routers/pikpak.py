@@ -43,9 +43,17 @@ def _wrap(exc: Exception) -> HTTPException:
 @router.post("/login")
 async def login(payload: PikPakLogin):
     try:
+        if payload.encoded_token:
+            return await pikpak_service.login_with_token(payload.encoded_token)
         return await pikpak_service.login(payload.username, payload.password)
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.get("/token")
+async def get_token():
+    """Expose the currently stored token so the user can copy / back it up."""
+    return {"token": pikpak_service.export_token()}
 
 
 @router.get("/status")

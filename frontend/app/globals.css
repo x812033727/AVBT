@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background: #0f1115;
+  color: #e6e8ec;
+}
+
+a {
+  color: inherit;
+}
+
+.btn {
+  @apply inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium transition;
+}
+.btn-primary {
+  @apply btn bg-accent text-black hover:bg-orange-400;
+}
+.btn-ghost {
+  @apply btn border border-white/10 text-white/80 hover:bg-white/5;
+}
+.tag {
+  @apply rounded bg-white/5 px-2 py-0.5 text-xs text-white/70;
+}
+.tag-hd {
+  @apply rounded bg-blue-500/20 px-2 py-0.5 text-xs text-blue-300;
+}
+.tag-sub {
+  @apply rounded bg-red-500/20 px-2 py-0.5 text-xs text-red-300;
+}

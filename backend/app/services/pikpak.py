@@ -445,28 +445,38 @@ class PikPakService:
                 ]
                 subfolders = [i for i in inner if i.kind == "drive#folder"]
 
-                if len(videos) == 1 and not subfolders and len(inner) == 1:
-                    # Flatten: rename inner video, move to outer, trash wrapper.
-                    video = videos[0]
+                # Real JAV episodes are ≥500MB. BT releases bundle tiny
+                # ad mp4s alongside the real video. Anything well under
+                # 500MB is junk; 300MB threshold gives a 200MB buffer
+                # for unusual encodes. None size → assume legit.
+                JUNK_BYTES = 300 * 1024 * 1024
+                main_videos = [
+                    v for v in videos
+                    if v.size is None or v.size >= JUNK_BYTES
+                ]
+
+                if len(main_videos) == 1 and not subfolders:
+                    # Flatten: rename inner video → move to outer → trash
+                    # any leftover junk → trash empty wrapper.
+                    video = main_videos[0]
                     target = f"{code}{ext_of(video.name)}"
-                    if target == child.name and target in taken:
-                        # Wrapper already named like target and target exists outside
-                        summary["skipped"] += 1
-                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
-                        continue
                     if target in taken and target != child.name:
                         summary["skipped"] += 1
                         yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
                         continue
+                    leftover_ids = [i.id for i in inner if i.id != video.id]
                     if not dry_run:
                         if video.name != target:
                             await self.rename_file(video.id, target)
                         await self.move_files([video.id], folder_id)
+                        if leftover_ids:
+                            await self.trash_files(leftover_ids)
                         await self.trash_files([child.id])
                     taken.discard(child.name)
                     taken.add(target)
                     summary["flattened"] += 1
-                    yield {**base_event, "action": "flatten", "target": target, "reason": None}
+                    reason = f"順手清掉 {len(leftover_ids)} 個垃圾檔" if leftover_ids else None
+                    yield {**base_event, "action": "flatten", "target": target, "reason": reason}
                     continue
 
                 # Mixed contents: just rename the wrapper folder.

@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     pikpak_password: str = ""
     pikpak_download_folder: str = "AVBT"
 
+    # Auto-archiver: every N seconds, scan PikPak completed offline tasks
+    # and move their files to <archive_folder>/<code>/.
+    archive_enabled: bool = True
+    pikpak_archive_folder: str = "AVBT/已完成"
+    archive_interval_seconds: int = 60
+
     http_proxy: str = ""
 
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"

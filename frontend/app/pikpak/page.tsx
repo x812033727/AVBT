@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
+  type ArchiverStatus,
   type PikPakFile,
   type PikPakQuota,
   type PikPakTask,
@@ -38,20 +39,46 @@ export default function PikpakPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
+  const [archiver, setArchiver] = useState<ArchiverStatus | null>(null);
 
   const loadTasks = useCallback(async () => {
     setError(null);
     try {
-      const [q, t] = await Promise.all([
+      const [q, t, a] = await Promise.all([
         api.get<PikPakQuota>("/api/pikpak/quota").catch(() => null),
         api.get<PikPakTask[]>("/api/pikpak/tasks"),
+        api.get<ArchiverStatus>("/api/pikpak/archiver").catch(() => null),
       ]);
       setQuota(q);
       setTasks(t);
+      setArchiver(a);
     } catch (e: any) {
       setError(e.message);
     }
   }, []);
+
+  async function toggleArchiver(enabled: boolean) {
+    try {
+      const a = await api.post<ArchiverStatus>("/api/pikpak/archiver/toggle", {
+        enabled,
+      });
+      setArchiver(a);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function runArchiverNow() {
+    try {
+      const a = await api.post<ArchiverStatus & { moved: number }>(
+        "/api/pikpak/archiver/run"
+      );
+      setArchiver(a);
+      if (a.moved) loadTasks();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
 
   const currentParent = parents[parents.length - 1].id;
 
@@ -212,6 +239,34 @@ export default function PikpakPage() {
       {error && (
         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
+        </div>
+      )}
+
+      {tab === "tasks" && archiver && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={archiver.enabled}
+              onChange={(e) => toggleArchiver(e.target.checked)}
+            />
+            自動歸檔到 <span className="font-mono">{archiver.archive_folder}/&lt;番號&gt;</span>
+          </label>
+          <span className="text-white/40">|</span>
+          <span>累計 {archiver.archived_total} 個</span>
+          {archiver.last_run && (
+            <span className="text-white/40">
+              最後 {new Date(archiver.last_run + "Z").toLocaleTimeString()}
+            </span>
+          )}
+          <button className="ml-auto text-blue-300 hover:underline" onClick={runArchiverNow}>
+            立即執行
+          </button>
+          {archiver.last_error && (
+            <span className="basis-full text-amber-300/80">
+              {archiver.last_error}
+            </span>
+          )}
         </div>
       )}
 

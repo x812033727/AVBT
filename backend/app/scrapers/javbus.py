@@ -189,6 +189,21 @@ async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> S
     return _parse_listing(html, page)
 
 
+async def fetch_genre(genre_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
+    """List every movie of a JavBus genre slug."""
+    genre_id = genre_id.strip()
+    base = settings.javbus_base_url.rstrip("/")
+    prefix = "/uncensored/genre" if uncensored else "/genre"
+    url = f"{base}{prefix}/{genre_id}/{max(1, page)}"
+
+    async with _client() as cli:
+        html = await _fetch(cli, url)
+        if not html:
+            return SearchResult(items=[], page=page, has_next=False)
+
+    return _parse_listing(html, page)
+
+
 async def fetch_detail(code: str) -> MovieDetail:
     code = code.strip().upper()
     base = settings.javbus_base_url.rstrip("/")

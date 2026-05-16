@@ -110,11 +110,21 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           )}
           {!!data.genres.length && (
             <div className="flex flex-wrap gap-1">
-              {data.genres.map((g) => (
-                <span key={g.name} className="tag">
-                  {g.name}
-                </span>
-              ))}
+              {data.genres.map((g) =>
+                g.id ? (
+                  <Link
+                    key={g.name}
+                    href={`/genre/${encodeURIComponent(g.id)}`}
+                    className="tag hover:bg-accent/30 hover:text-white"
+                  >
+                    {g.name}
+                  </Link>
+                ) : (
+                  <span key={g.name} className="tag">
+                    {g.name}
+                  </span>
+                )
+              )}
             </div>
           )}
           <div className="flex gap-2 pt-1">

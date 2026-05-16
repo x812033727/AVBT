@@ -8,4 +8,4 @@ aiosqlite==0.20.0
 pydantic==2.10.2
 pydantic-settings==2.6.1
 python-dotenv==1.0.1
-PikPakAPI==0.2.4
+PikPakAPI>=0.1.11,<0.2

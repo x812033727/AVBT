@@ -29,6 +29,16 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight migration: add columns introduced after the table was
+        # first created. SQLite raises on duplicate column → swallow.
+        for ddl in (
+            "ALTER TABLE offline_task_log ADD COLUMN archived BOOLEAN DEFAULT 0",
+            "ALTER TABLE offline_task_log ADD COLUMN archived_at DATETIME",
+        ):
+            try:
+                await conn.exec_driver_sql(ddl)
+            except Exception:
+                pass
 
 
 async def get_session() -> AsyncSession:

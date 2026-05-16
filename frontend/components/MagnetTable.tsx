@@ -4,6 +4,22 @@ import { useMemo, useState } from "react";
 import { api, btih, type Magnet } from "@/lib/api";
 
 type Status = { kind: "ok" | "err"; text: string } | null;
+type SortMode = "recommended" | "date" | "raw";
+
+function sizeBytes(s: string): number {
+  const m = s.match(/^([\d.]+)\s*([KMGT]?i?B)/i);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toUpperCase().replace("I", "");
+  const mult: Record<string, number> = {
+    B: 1,
+    KB: 1024,
+    MB: 1024 ** 2,
+    GB: 1024 ** 3,
+    TB: 1024 ** 4,
+  };
+  return n * (mult[unit] ?? 1);
+}
 
 export default function MagnetTable({
   magnets,
@@ -17,10 +33,29 @@ export default function MagnetTable({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [sort, setSort] = useState<SortMode>("recommended");
+
+  const sorted = useMemo(() => {
+    if (sort === "raw") return magnets;
+    const arr = [...magnets];
+    if (sort === "date") {
+      arr.sort((a, b) => b.date.localeCompare(a.date));
+      return arr;
+    }
+    // recommended: HD > 字幕 > size desc > date desc
+    arr.sort((a, b) => {
+      if (a.is_hd !== b.is_hd) return a.is_hd ? -1 : 1;
+      if (a.has_subtitle !== b.has_subtitle) return a.has_subtitle ? -1 : 1;
+      const sb = sizeBytes(b.size) - sizeBytes(a.size);
+      if (sb !== 0) return sb;
+      return b.date.localeCompare(a.date);
+    });
+    return arr;
+  }, [magnets, sort]);
 
   const hdLinks = useMemo(
-    () => magnets.filter((m) => m.is_hd).map((m) => m.link),
-    [magnets]
+    () => sorted.filter((m) => m.is_hd).map((m) => m.link),
+    [sorted]
   );
 
   function toggle(link: string) {
@@ -31,8 +66,8 @@ export default function MagnetTable({
   }
 
   function selectAll() {
-    if (selected.size === magnets.length) setSelected(new Set());
-    else setSelected(new Set(magnets.map((m) => m.link)));
+    if (selected.size === sorted.length) setSelected(new Set());
+    else setSelected(new Set(sorted.map((m) => m.link)));
   }
 
   function selectHD() {
@@ -63,7 +98,7 @@ export default function MagnetTable({
     setBusy(true);
     setStatus(null);
     try {
-      const items = magnets
+      const items = sorted
         .filter((m) => selected.has(m.link))
         .map((m) => ({ magnet: m.link, code }));
       const tasks = await api.post<
@@ -91,7 +126,7 @@ export default function MagnetTable({
     );
   }
 
-  const allSelected = selected.size === magnets.length;
+  const allSelected = selected.size === sorted.length;
 
   return (
     <div className="space-y-2">
@@ -111,6 +146,16 @@ export default function MagnetTable({
         >
           送 PikPak ({selected.size})
         </button>
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortMode)}
+          className="ml-auto rounded-md border border-white/10 bg-panel px-2 py-1 text-sm text-white/80"
+          title="排序"
+        >
+          <option value="recommended">推薦排序</option>
+          <option value="date">依日期</option>
+          <option value="raw">原始順序</option>
+        </select>
       </div>
 
       {status && (
@@ -138,7 +183,7 @@ export default function MagnetTable({
             </tr>
           </thead>
           <tbody>
-            {magnets.map((m) => {
+            {sorted.map((m) => {
               const sent = sentHashes?.has(btih(m.link)) ?? false;
               return (
               <tr

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from PikPakAPI import PikPakApi
+from pikpakapi import PikPakApi
 
 from ..config import settings
 from ..schemas import OfflineSubmit, PikPakFile, PikPakQuota, PikPakTask
@@ -36,14 +36,8 @@ class PikPakService:
             if self._client is None or getattr(self._client, "username", None) != user:
                 kwargs: dict[str, Any] = {"username": user, "password": pwd}
                 if settings.http_proxy:
-                    # PikPakAPI accepts an optional ``proxy`` kw – swallow
-                    # TypeError if the installed version doesn't.
-                    try:
-                        self._client = PikPakApi(proxy=settings.http_proxy, **kwargs)
-                    except TypeError:
-                        self._client = PikPakApi(**kwargs)
-                else:
-                    self._client = PikPakApi(**kwargs)
+                    kwargs["httpx_client_args"] = {"proxy": settings.http_proxy}
+                self._client = PikPakApi(**kwargs)
                 await self._client.login()
                 self._folder_cache.clear()
             return self._client
@@ -145,6 +139,10 @@ class PikPakService:
         client = await self._ensure()
         return await client.delete_to_trash(ids)
 
+    async def move_files(self, ids: list[str], to_parent_id: str) -> dict:
+        client = await self._ensure()
+        return await client.file_batch_move(ids, to_parent_id)
+
     async def download_url(self, file_id: str) -> str:
         client = await self._ensure()
         resp = await client.get_download_url(file_id)
@@ -182,12 +180,21 @@ class PikPakService:
             for f in files_raw
         ]
 
-    async def create_share(self, file_ids: list[str], pass_code_option: str = "NOT_REQUIRED") -> dict:
-        """Create a share link. Returns {url, pass_code}."""
+    async def create_share(
+        self,
+        file_ids: list[str],
+        need_password: bool = False,
+        expiration_days: int = -1,
+    ) -> dict:
+        """Create a share link. Returns {url, pass_code, share_id}."""
         client = await self._ensure()
         if not hasattr(client, "file_batch_share"):
             raise PikPakError("此版本 PikPakAPI 不支援建立分享連結")
-        resp = await client.file_batch_share(file_ids, pass_code_option=pass_code_option)
+        resp = await client.file_batch_share(
+            file_ids,
+            need_password=need_password,
+            expiration_days=expiration_days,
+        )
         if not isinstance(resp, dict):
             resp = {"raw": resp}
         return {

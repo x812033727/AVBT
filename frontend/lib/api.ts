@@ -122,3 +122,12 @@ export type PikPakQuota = {
   limit: number;
   expire: string | null;
 };
+
+export type ArchiverStatus = {
+  enabled: boolean;
+  interval_seconds: number;
+  archive_folder: string;
+  last_run: string | null;
+  archived_total: number;
+  last_error: string;
+};

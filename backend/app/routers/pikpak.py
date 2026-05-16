@@ -10,6 +10,7 @@ from ..schemas import (
     PikPakQuota,
     PikPakTask,
 )
+from ..services import archiver
 from ..services.pikpak import PikPakError, pikpak_service
 
 router = APIRouter(prefix="/api/pikpak", tags=["pikpak"])
@@ -123,12 +124,34 @@ async def search_files(q: str = Query(..., min_length=1), parent_id: str = ""):
 @router.post("/share")
 async def share_files(
     file_ids: list[str] = Body(..., embed=True),
-    pass_code_option: str = Body("NOT_REQUIRED", embed=True),
+    need_password: bool = Body(False, embed=True),
+    expiration_days: int = Body(-1, embed=True),
 ):
     try:
-        return await pikpak_service.create_share(file_ids, pass_code_option=pass_code_option)
+        return await pikpak_service.create_share(
+            file_ids,
+            need_password=need_password,
+            expiration_days=expiration_days,
+        )
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.get("/archiver")
+async def archiver_status():
+    return archiver.state.to_dict()
+
+
+@router.post("/archiver/run")
+async def archiver_run_now():
+    moved = await archiver.archive_once()
+    return {"moved": moved, **archiver.state.to_dict()}
+
+
+@router.post("/archiver/toggle")
+async def archiver_toggle(enabled: bool = Body(..., embed=True)):
+    archiver.state.enabled = enabled
+    return archiver.state.to_dict()
 
 
 @router.post("/offline/bulk", response_model=list[PikPakTask])

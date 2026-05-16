@@ -53,12 +53,20 @@ export default function BulkSendButton({
   buttonLabel = "送全部到 PikPak",
   showMaxPages = true,
   defaultOptions,
+  extraBody,
+  onDone,
+  disabled,
 }: {
   streamPath: string;
   title: string;
   buttonLabel?: string;
   showMaxPages?: boolean;
   defaultOptions?: Partial<Options>;
+  /** Extra fields merged into the POST body (e.g. {codes: [...]}). */
+  extraBody?: Record<string, any>;
+  /** Called after the stream finishes (success or cancel). */
+  onDone?: (result: Result | null) => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -80,16 +88,19 @@ export default function BulkSendButton({
     setTotal(0);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    let finalResult: Result | null = null;
     try {
       await streamNdjson(
         streamPath,
-        { ...opts, ...defaultOptions },
+        { ...opts, ...defaultOptions, ...extraBody },
         (event) => {
           if (event.type === "start") setTotal(event.total ?? 0);
           else if (event.type === "progress")
             setProgress((prev) => [...prev, event]);
-          else if (event.type === "done") setResult(event.result);
-          else if (event.type === "error") setError(event.message);
+          else if (event.type === "done") {
+            setResult(event.result);
+            finalResult = event.result;
+          } else if (event.type === "error") setError(event.message);
         },
         ctrl.signal
       );
@@ -98,6 +109,7 @@ export default function BulkSendButton({
     } finally {
       setBusy(false);
       abortRef.current = null;
+      onDone?.(finalResult);
     }
   }
 
@@ -120,7 +132,11 @@ export default function BulkSendButton({
 
   return (
     <>
-      <button className="btn-primary" onClick={() => setOpen(true)}>
+      <button
+        className="btn-primary disabled:opacity-50"
+        onClick={() => setOpen(true)}
+        disabled={disabled}
+      >
         {buttonLabel}
       </button>
 

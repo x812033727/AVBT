@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -194,6 +194,81 @@ async def send_wishlist(options: SendAllOptions):
 @router.post("/send-wishlist/stream")
 async def send_wishlist_stream(options: SendAllOptions):
     codes = await _wishlist_codes()
+
+    async def gen():
+        try:
+            async for event in bulk.send_codes_stream(
+                codes, options, on_sent=_promote_to_downloading
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except JavbusBlocked as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+# ---------- batch operations on the collection ----------
+
+
+@router.post("/batch/status")
+async def batch_status(
+    codes: list[str] = Body(..., embed=True),
+    status: str = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    if status not in {"wishlist", "downloading", "done"}:
+        raise HTTPException(status_code=400, detail=f"不支援的 status: {status}")
+    codes = [c.strip().upper() for c in codes if c.strip()]
+    if not codes:
+        return {"updated": 0}
+    now = datetime.utcnow()
+    rows = (
+        await session.execute(
+            select(CollectedMovie).where(CollectedMovie.code.in_(codes))
+        )
+    ).scalars().all()
+    for r in rows:
+        r.status = status
+        r.updated_at = now
+    await session.commit()
+    return {"updated": len(rows)}
+
+
+@router.post("/batch/delete")
+async def batch_delete(
+    codes: list[str] = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    codes = [c.strip().upper() for c in codes if c.strip()]
+    if not codes:
+        return {"deleted": 0}
+    rows = (
+        await session.execute(
+            select(CollectedMovie).where(CollectedMovie.code.in_(codes))
+        )
+    ).scalars().all()
+    for r in rows:
+        await session.delete(r)
+    await session.commit()
+    return {"deleted": len(rows)}
+
+
+@router.post("/send-by-codes/stream")
+async def send_by_codes_stream(payload: dict = Body(...)):
+    """Stream-submit an arbitrary list of codes to PikPak using the same
+    pipeline as send-wishlist. Body shape:
+        {codes: ["ABC-001", ...], ...SendAllOptions fields}
+    """
+    codes = payload.get("codes") or []
+    if not isinstance(codes, list):
+        codes = []
+    options_data = {k: v for k, v in payload.items() if k != "codes"}
+    try:
+        options = SendAllOptions(**options_data)
+    except Exception:
+        options = SendAllOptions()
 
     async def gen():
         try:

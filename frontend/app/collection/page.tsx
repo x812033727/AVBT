@@ -12,10 +12,17 @@ const STATUS_TABS = [
   { value: "done", label: "完成" },
 ];
 
+const STATUS_LABELS: Record<string, string> = {
+  wishlist: "待看",
+  downloading: "下載中",
+  done: "完成",
+};
+
 export default function CollectionPage() {
   const [status, setStatus] = useState("");
   const [items, setItems] = useState<CollectionItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load(s: string) {
     setError(null);
@@ -30,6 +37,7 @@ export default function CollectionPage() {
 
   useEffect(() => {
     load(status);
+    setSelected(new Set());
   }, [status]);
 
   async function remove(code: string) {
@@ -43,7 +51,44 @@ export default function CollectionPage() {
     load(status);
   }
 
+  function toggle(code: string) {
+    const next = new Set(selected);
+    if (next.has(code)) next.delete(code);
+    else next.add(code);
+    setSelected(next);
+  }
+
+  function selectAll() {
+    if (selected.size === items.length) setSelected(new Set());
+    else setSelected(new Set(items.map((i) => i.code)));
+  }
+
+  async function batchStatus(s: string) {
+    if (!selected.size) return;
+    if (!confirm(`把 ${selected.size} 個項目改為「${STATUS_LABELS[s]}」？`)) return;
+    const res = await api.post<{ updated: number }>(
+      "/api/collection/batch/status",
+      { codes: Array.from(selected), status: s }
+    );
+    setSelected(new Set());
+    load(status);
+    alert(`已更新 ${res.updated} 個`);
+  }
+
+  async function batchDelete() {
+    if (!selected.size) return;
+    if (!confirm(`從收藏刪除 ${selected.size} 個項目？（不會動到 PikPak）`)) return;
+    const res = await api.post<{ deleted: number }>(
+      "/api/collection/batch/delete",
+      { codes: Array.from(selected) }
+    );
+    setSelected(new Set());
+    load(status);
+    alert(`已刪除 ${res.deleted} 個`);
+  }
+
   const wishlistCount = items.filter((i) => i.status === "wishlist").length;
+  const allSelected = selected.size > 0 && selected.size === items.length;
 
   return (
     <div className="space-y-4">
@@ -75,6 +120,65 @@ export default function CollectionPage() {
         </div>
       )}
 
+      {items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+          <label className="flex items-center gap-1 text-white/70">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={selectAll}
+              className="h-4 w-4 accent-accent"
+            />
+            {allSelected ? "全部取消" : `全選 (${items.length})`}
+          </label>
+          {selected.size > 0 && (
+            <>
+              <span className="text-white/40">|</span>
+              <span className="text-white/60">已選 {selected.size}</span>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => batchStatus("wishlist")}
+                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
+                >
+                  改待看
+                </button>
+                <button
+                  onClick={() => batchStatus("downloading")}
+                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
+                >
+                  改下載中
+                </button>
+                <button
+                  onClick={() => batchStatus("done")}
+                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
+                >
+                  改完成
+                </button>
+                <button
+                  onClick={batchDelete}
+                  className="rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                >
+                  刪除
+                </button>
+              </div>
+              <div className="ml-auto">
+                <BulkSendButton
+                  streamPath="/api/collection/send-by-codes/stream"
+                  title={`送已選 ${selected.size} 個到 PikPak`}
+                  buttonLabel={`送已選 ${selected.size} 個`}
+                  showMaxPages={false}
+                  extraBody={{ codes: Array.from(selected) }}
+                  onDone={() => {
+                    setSelected(new Set());
+                    load(status);
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {!items.length && (
         <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
           目前沒有收藏項目
@@ -85,8 +189,19 @@ export default function CollectionPage() {
         {items.map((it) => (
           <div
             key={it.code}
-            className="flex gap-3 rounded-lg border border-white/10 bg-panel p-3"
+            className={
+              "flex gap-3 rounded-lg border bg-panel p-3 transition " +
+              (selected.has(it.code)
+                ? "border-accent/60"
+                : "border-white/10")
+            }
           >
+            <input
+              type="checkbox"
+              checked={selected.has(it.code)}
+              onChange={() => toggle(it.code)}
+              className="h-4 w-4 flex-none accent-accent self-start mt-1"
+            />
             {it.cover && (
               // eslint-disable-next-line @next/next/no-img-element
               <img

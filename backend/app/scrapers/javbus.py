@@ -302,6 +302,44 @@ async def fetch_listing(
     return _parse_listing(html, page)
 
 
+def _parse_listing_title(html: str) -> str:
+    """Best-effort: pull the human-readable title from a listing page.
+
+    JavBus puts the actress / studio / series name in the breadcrumb
+    h3 inside ``div.container``. Fall back to <title>.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    h3 = soup.select_one("div.container h3")
+    text = _text(h3)
+    if not text:
+        title = soup.select_one("title")
+        text = _text(title)
+        # Strip the trailing " - JavBus" / " | JavBus" common suffix.
+        for sep in (" - JavBus", " | JavBus", " – JavBus"):
+            if sep in text:
+                text = text.split(sep)[0]
+                break
+    return text.strip()
+
+
+async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) -> str:
+    """Return the page title (e.g. 'SODクリエイト') for /{kind}/{slug}."""
+    if kind not in LISTING_KINDS:
+        return ""
+    slug = slug.strip()
+    base = settings.javbus_base_url.rstrip("/")
+    prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
+    url = f"{base}{prefix}/{slug}/1"
+    try:
+        async with _client() as cli:
+            html = await _fetch(cli, url)
+            if not html:
+                return ""
+        return _parse_listing_title(html)
+    except Exception:
+        return ""
+
+
 async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
     return await fetch_listing("star", star_id, page=page, uncensored=uncensored)
 

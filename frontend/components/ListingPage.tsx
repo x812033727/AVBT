@@ -75,10 +75,12 @@ export default function ListingPage({
       await api.del(`/api/tracked/${kind}/${encodeURIComponent(id)}`);
       setTracked(null);
     } else {
+      // Send name="" so the backend pulls the real display name from the
+      // listing page header (e.g. "SODクリエイト" instead of slug "ca").
       const t = await api.post<TrackedListing>("/api/tracked", {
         kind: kind as TrackedKind,
         id,
-        name: id,  // 列表頁不抓 profile，先用 slug，使用者可在 /tracked 頁編輯
+        name: "",
         avatar: "",
         uncensored,
         auto_send: false,

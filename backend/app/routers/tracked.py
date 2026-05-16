@@ -12,6 +12,7 @@ from ..schemas import (
     TrackedListingOut,
 )
 from ..services import tracker
+from ..scrapers import javbus as scraper
 from ..scrapers.javbus import LISTING_KINDS
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
@@ -95,10 +96,22 @@ async def upsert_tracked(
         row.uncensored = payload.uncensored
         row.auto_send = payload.auto_send
     else:
+        # When the caller didn't supply a display name, try to extract
+        # one from the listing's page header. Falls back to the slug.
+        resolved_name = payload.name.strip()
+        if not resolved_name:
+            try:
+                resolved_name = await scraper.fetch_listing_title(
+                    kind, slug, uncensored=payload.uncensored
+                )
+            except Exception:
+                resolved_name = ""
+            if not resolved_name:
+                resolved_name = slug
         row = TrackedListing(
             kind=kind,
             id=slug,
-            name=payload.name,
+            name=resolved_name,
             avatar=payload.avatar,
             uncensored=payload.uncensored,
             auto_send=payload.auto_send,

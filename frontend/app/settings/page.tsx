@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  API_BASE,
   api,
   type ArchiverStatus,
   type PikPakStatus,
@@ -270,6 +271,8 @@ export default function SettingsPage() {
         )}
       </section>
 
+      <BackupSection setMsg={setMsg} />
+
       <section className="space-y-1 rounded-lg border border-white/10 bg-panel p-4 text-xs text-white/60">
         <h2 className="text-sm font-semibold text-white/80">其他設定（環境變數）</h2>
         <p>
@@ -283,5 +286,87 @@ export default function SettingsPage() {
         </ul>
       </section>
     </div>
+  );
+}
+
+function BackupSection({
+  setMsg,
+}: {
+  setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [overwrite, setOverwrite] = useState(false);
+
+  function download() {
+    const url = `${API_BASE}/api/backup`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.click();
+  }
+
+  async function upload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const res = await api.post<{ stats: any }>(
+        `/api/backup/restore?overwrite=${overwrite}`,
+        payload
+      );
+      const s = res.stats;
+      setMsg({
+        kind: "ok",
+        text:
+          `匯入完成 — ` +
+          `收藏 ${s.collection.added}新 / ${s.collection.updated}改 / ${s.collection.skipped}略, ` +
+          `追蹤 ${s.tracked.added}新 / ${s.tracked.updated}改 / ${s.tracked.skipped}略, ` +
+          `紀錄 ${s.history.added}新 / ${s.history.skipped}略`,
+      });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: `匯入失敗：${e.message}` });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  return (
+    <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+      <h2 className="text-lg font-semibold">備份 / 還原</h2>
+      <p className="text-xs text-white/50">
+        匯出包含：收藏清單、追蹤的女優、所有送出紀錄。不含 PikPak token 與設定。
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="btn-ghost" onClick={download} disabled={busy}>
+          下載備份 (JSON)
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+        >
+          選擇備份檔還原…
+        </button>
+        <label className="flex items-center gap-1 text-xs text-white/60">
+          <input
+            type="checkbox"
+            checked={overwrite}
+            onChange={(e) => setOverwrite(e.target.checked)}
+          />
+          覆蓋現有
+        </label>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={upload}
+        />
+      </div>
+    </section>
   );
 }

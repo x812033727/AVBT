@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import collection, javbus, pikpak, tracked
+from .routers import backup, collection, javbus, pikpak, tracked
 from .services import archiver, tracker
 
 
@@ -42,6 +42,7 @@ app.include_router(javbus.router)
 app.include_router(pikpak.router)
 app.include_router(collection.router)
 app.include_router(tracked.router)
+app.include_router(backup.router)
 
 
 @app.get("/api/health")

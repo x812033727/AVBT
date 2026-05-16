@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { confirmDialog, toast } from "@/components/Toast";
 import {
   TRACKED_LABELS,
   api,
@@ -73,9 +74,17 @@ export default function TrackedPage() {
   }
 
   async function remove(it: TrackedListing) {
-    if (!confirm(`不再追蹤 ${TRACKED_LABELS[it.kind]} ${it.name || it.id}？`)) return;
-    await api.del(`/api/tracked/${it.kind}/${encodeURIComponent(it.id)}`);
-    load();
+    const ok = await confirmDialog(
+      `不再追蹤 ${TRACKED_LABELS[it.kind]} ${it.name || it.id}？`
+    );
+    if (!ok) return;
+    try {
+      await api.del(`/api/tracked/${it.kind}/${encodeURIComponent(it.id)}`);
+      toast.success("已取消追蹤");
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function toggleAuto(it: TrackedListing) {

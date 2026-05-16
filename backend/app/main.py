@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
 from .routers import backup, collection, img, javbus, pikpak, tracked
-from .services import archiver, tracker
+from .services import archiver, notify, tracker
 
 
 @asynccontextmanager
@@ -26,6 +26,8 @@ async def lifespan(app: FastAPI):
                 await t
             except asyncio.CancelledError:
                 pass
+        await img.aclose_client()
+        await notify.aclose_client()
 
 
 app = FastAPI(title="AVBT", version="0.1.0", lifespan=lifespan)

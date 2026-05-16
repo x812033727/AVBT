@@ -43,8 +43,12 @@ async def _collect_codes(*, kind: str, slug: str, options: SendAllOptions) -> li
 
 async def _load_sent_hashes() -> set[str]:
     async with SessionLocal() as session:
-        rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
-    return {h for m in rows if (h := extract_btih(m or ""))}
+        rows = (
+            await session.execute(
+                select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
+            )
+        ).scalars().all()
+    return set(rows)
 
 
 async def _process_code(
@@ -104,6 +108,7 @@ async def _process_code(
             insert(OfflineTaskLog).values(
                 code=code,
                 magnet=best.link,
+                btih=extract_btih(best.link),
                 task_id=task.id,
                 file_id=task.file_id or "",
                 name=task.name,

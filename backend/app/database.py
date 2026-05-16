@@ -34,6 +34,8 @@ async def init_db() -> None:
         for ddl in (
             "ALTER TABLE offline_task_log ADD COLUMN archived BOOLEAN DEFAULT 0",
             "ALTER TABLE offline_task_log ADD COLUMN archived_at DATETIME",
+            "ALTER TABLE offline_task_log ADD COLUMN btih VARCHAR(64) DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS ix_offline_task_log_btih ON offline_task_log(btih)",
         ):
             try:
                 await conn.exec_driver_sql(ddl)
@@ -57,6 +59,30 @@ async def init_db() -> None:
             )
         except Exception:
             pass
+
+    # Backfill btih on existing rows in batches so a huge history table
+    # doesn't blow up memory.
+    try:
+        from .scrapers.javbus import extract_btih  # local import: avoid cycles
+
+        async with engine.begin() as conn:
+            while True:
+                rows = (
+                    await conn.exec_driver_sql(
+                        "SELECT id, magnet FROM offline_task_log "
+                        "WHERE btih IS NULL OR btih = '' LIMIT 500"
+                    )
+                ).all()
+                if not rows:
+                    break
+                for row_id, magnet in rows:
+                    h = extract_btih(magnet or "")
+                    await conn.exec_driver_sql(
+                        "UPDATE offline_task_log SET btih = ? WHERE id = ?",
+                        (h, row_id),
+                    )
+    except Exception:
+        pass
 
 
 async def get_session() -> AsyncSession:

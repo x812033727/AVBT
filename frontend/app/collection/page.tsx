@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
+import { RowSkeleton } from "@/components/Skeleton";
+import { confirmDialog, toast } from "@/components/Toast";
 import { api, imgProxy, type CollectionItem } from "@/lib/api";
 
 const STATUS_TABS = [
@@ -22,16 +24,21 @@ export default function CollectionPage() {
   const [status, setStatus] = useState("");
   const [items, setItems] = useState<CollectionItem[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load(s: string) {
     setError(null);
+    setLoading(true);
     try {
       const q = s ? `?status=${s}` : "";
       const res = await api.get<CollectionItem[]>(`/api/collection${q}`);
       setItems(res);
     } catch (e: any) {
       setError(e.message);
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -41,14 +48,24 @@ export default function CollectionPage() {
   }, [status]);
 
   async function remove(code: string) {
-    if (!confirm(`從收藏移除 ${code}？`)) return;
-    await api.del(`/api/collection/${encodeURIComponent(code)}`);
-    load(status);
+    const ok = await confirmDialog(`從收藏移除 ${code}？`);
+    if (!ok) return;
+    try {
+      await api.del(`/api/collection/${encodeURIComponent(code)}`);
+      toast.success(`已移除 ${code}`);
+      load(status);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function setItemStatus(it: CollectionItem, s: string) {
-    await api.post("/api/collection", { ...it, status: s });
-    load(status);
+    try {
+      await api.post("/api/collection", { ...it, status: s });
+      load(status);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   function toggle(code: string) {
@@ -65,26 +82,41 @@ export default function CollectionPage() {
 
   async function batchStatus(s: string) {
     if (!selected.size) return;
-    if (!confirm(`把 ${selected.size} 個項目改為「${STATUS_LABELS[s]}」？`)) return;
-    const res = await api.post<{ updated: number }>(
-      "/api/collection/batch/status",
-      { codes: Array.from(selected), status: s }
+    const ok = await confirmDialog(
+      `把 ${selected.size} 個項目改為「${STATUS_LABELS[s]}」？`
     );
-    setSelected(new Set());
-    load(status);
-    alert(`已更新 ${res.updated} 個`);
+    if (!ok) return;
+    try {
+      const res = await api.post<{ updated: number }>(
+        "/api/collection/batch/status",
+        { codes: Array.from(selected), status: s }
+      );
+      setSelected(new Set());
+      load(status);
+      toast.success(`已更新 ${res.updated} 個`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function batchDelete() {
     if (!selected.size) return;
-    if (!confirm(`從收藏刪除 ${selected.size} 個項目？（不會動到 PikPak）`)) return;
-    const res = await api.post<{ deleted: number }>(
-      "/api/collection/batch/delete",
-      { codes: Array.from(selected) }
+    const ok = await confirmDialog(
+      `從收藏刪除 ${selected.size} 個項目？`,
+      "不會動到 PikPak 上的檔案"
     );
-    setSelected(new Set());
-    load(status);
-    alert(`已刪除 ${res.deleted} 個`);
+    if (!ok) return;
+    try {
+      const res = await api.post<{ deleted: number }>(
+        "/api/collection/batch/delete",
+        { codes: Array.from(selected) }
+      );
+      setSelected(new Set());
+      load(status);
+      toast.success(`已刪除 ${res.deleted} 個`);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   const wishlistCount = items.filter((i) => i.status === "wishlist").length;
@@ -179,7 +211,9 @@ export default function CollectionPage() {
         </div>
       )}
 
-      {!items.length && (
+      {loading && !items.length && <RowSkeleton count={5} />}
+
+      {!loading && !items.length && (
         <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
           目前沒有收藏項目
         </div>

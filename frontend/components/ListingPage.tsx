@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
+import { MovieGridSkeleton } from "@/components/Skeleton";
 import {
   api,
   type SearchResult,
@@ -154,7 +155,7 @@ export default function ListingPage({
         </div>
       )}
 
-      {loading && <div className="text-sm text-white/50">載入中…</div>}
+      {loading && !data && <MovieGridSkeleton count={10} />}
 
       {data && (
         <>

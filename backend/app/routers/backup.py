@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_session
 from ..models import CollectedMovie, OfflineTaskLog, TrackedListing
+from ..scrapers.javbus import extract_btih
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
 
@@ -184,6 +185,7 @@ async def import_backup(
         row = OfflineTaskLog(
             code=item.get("code") or "",
             magnet=magnet,
+            btih=extract_btih(magnet),
             task_id=task_id,
             file_id=item.get("file_id") or "",
             name=item.get("name") or "",

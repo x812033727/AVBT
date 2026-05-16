@@ -66,6 +66,7 @@ class OfflineTaskLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(64), index=True, default="")
     magnet: Mapped[str] = mapped_column(Text)
+    btih: Mapped[str] = mapped_column(String(64), index=True, default="")
     task_id: Mapped[str] = mapped_column(String(128), default="")
     file_id: Mapped[str] = mapped_column(String(128), default="")
     name: Mapped[str] = mapped_column(String(512), default="")

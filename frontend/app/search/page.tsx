@@ -1,22 +1,40 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import MovieCard from "@/components/MovieCard";
+import { MovieGridSkeleton } from "@/components/Skeleton";
 import { api, type SearchResult } from "@/lib/api";
 
 export default function SearchPage() {
+  return (
+    <Suspense fallback={<MovieGridSkeleton count={10} />}>
+      <SearchPageInner />
+    </Suspense>
+  );
+}
+
+function SearchPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialQ = searchParams.get("q") || "";
   const initialUncensored = searchParams.get("uncensored") === "true";
+  const focusOnMount = searchParams.get("focus") === "1";
 
+  const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState(initialQ);
   const [uncensored, setUncensored] = useState(initialUncensored);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (focusOnMount) inputRef.current?.focus();
+    const handler = () => inputRef.current?.focus();
+    window.addEventListener("avbt:focus-search", handler);
+    return () => window.removeEventListener("avbt:focus-search", handler);
+  }, [focusOnMount]);
 
   const run = useCallback(
     async (p: number, term: string, uc: boolean) => {
@@ -66,6 +84,8 @@ export default function SearchPage() {
     <div className="space-y-6">
       <form onSubmit={onSubmit} className="flex flex-wrap items-center gap-2">
         <input
+          ref={inputRef}
+          id="search-input"
           autoFocus
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -90,6 +110,8 @@ export default function SearchPage() {
           {error}
         </div>
       )}
+
+      {loading && !data && <MovieGridSkeleton count={10} />}
 
       {data && (
         <>

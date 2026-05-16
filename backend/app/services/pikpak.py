@@ -275,20 +275,60 @@ class PikPakService:
         client = await self._ensure()
         resp = await client.file_list(parent_id=parent_id, size=size)
         files_raw = resp.get("files", []) if isinstance(resp, dict) else []
+        return [self._file_from_raw(f) for f in files_raw]
+
+    @staticmethod
+    def _file_from_raw(f: dict) -> PikPakFile:
+        return PikPakFile(
+            id=f.get("id", ""),
+            name=f.get("name", ""),
+            kind=f.get("kind", ""),
+            size=int(f.get("size")) if f.get("size") else None,
+            parent_id=f.get("parent_id"),
+            created_time=f.get("created_time"),
+            thumbnail_link=f.get("thumbnail_link"),
+        )
+
+    async def list_all_files(
+        self, parent_id: str = "", *, cap: int = 5000
+    ) -> tuple[list[PikPakFile], bool]:
+        """Page through every child of ``parent_id`` up to ``cap`` items.
+
+        Returns ``(files, partial)``. ``partial`` is True when:
+        - we hit the cap, or
+        - the installed pikpakapi doesn't expose ``next_page_token`` so we
+          fell back to a single page.
+        """
+        client = await self._ensure()
         files: list[PikPakFile] = []
-        for f in files_raw:
-            files.append(
-                PikPakFile(
-                    id=f.get("id", ""),
-                    name=f.get("name", ""),
-                    kind=f.get("kind", ""),
-                    size=int(f.get("size")) if f.get("size") else None,
-                    parent_id=f.get("parent_id"),
-                    created_time=f.get("created_time"),
-                    thumbnail_link=f.get("thumbnail_link"),
+        token = ""
+        size = 500
+
+        try:
+            while True:
+                resp = await client.file_list(
+                    parent_id=parent_id, size=size, next_page_token=token
                 )
-            )
-        return files
+                if not isinstance(resp, dict):
+                    break
+                batch = resp.get("files", []) or []
+                for f in batch:
+                    files.append(self._file_from_raw(f))
+                    if len(files) >= cap:
+                        return files, True
+                token = resp.get("next_page_token") or ""
+                if not token or not batch:
+                    break
+        except TypeError:
+            # Older pikpakapi: file_list doesn't accept next_page_token.
+            resp = await client.file_list(parent_id=parent_id, size=size)
+            if isinstance(resp, dict):
+                for f in resp.get("files", []) or []:
+                    files.append(self._file_from_raw(f))
+            partial = bool(resp.get("next_page_token")) if isinstance(resp, dict) else False
+            return files, partial
+
+        return files, False
 
     async def trash_files(self, ids: list[str]) -> dict:
         client = await self._ensure()
@@ -380,7 +420,7 @@ class PikPakService:
         performs no mutations on PikPak.
         """
         try:
-            children = await self.list_files(folder_id, size=500)
+            children, partial = await self.list_all_files(folder_id)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "error", "message": f"列出資料夾失敗: {exc}"}
             return
@@ -393,6 +433,7 @@ class PikPakService:
             "skipped": 0,
             "errors": 0,
             "dry_run": dry_run,
+            "partial": partial,
         }
 
         yield {
@@ -400,7 +441,13 @@ class PikPakService:
             "total": len(children),
             "dry_run": dry_run,
             "folder_id": folder_id,
+            "partial": partial,
         }
+        if partial:
+            yield {
+                "type": "warn",
+                "message": "此資料夾項目過多,可能僅處理部分子項",
+            }
 
         for idx, child in enumerate(children, start=1):
             await asyncio.sleep(0.1)

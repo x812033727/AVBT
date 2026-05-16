@@ -19,6 +19,10 @@ class Settings(BaseSettings):
 
     http_proxy: str = ""
 
+    # Optional webhook fired after each successful auto-archive. Body is
+    # `{"content": "..."}` which is compatible with Discord webhooks.
+    webhook_url: str = ""
+
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 
 

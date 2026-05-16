@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    container_name: avbt-backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////app/data/avbt.db
+    volumes:
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser hits the host's mapped port, not the container. Override
+        # via env when proxying through nginx etc.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+    container_name: avbt-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped

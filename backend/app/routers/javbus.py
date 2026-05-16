@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import JavbusBlocked
-from ..schemas import MovieDetail, SearchResult
+from ..schemas import MovieDetail, SearchResult, SendAllOptions, SendAllResult
+from ..services import bulk
 
 router = APIRouter(prefix="/api/javbus", tags=["javbus"])
 
@@ -60,3 +61,19 @@ async def genre_movies(
         raise HTTPException(status_code=451, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"JavBus 類別頁失敗: {exc}") from exc
+
+
+@router.post("/star/{star_id}/send-all", response_model=SendAllResult)
+async def star_send_all(star_id: str, options: SendAllOptions):
+    try:
+        return await bulk.send_all("star", star_id, options)
+    except JavbusBlocked as exc:
+        raise HTTPException(status_code=451, detail=str(exc)) from exc
+
+
+@router.post("/genre/{genre_id}/send-all", response_model=SendAllResult)
+async def genre_send_all(genre_id: str, options: SendAllOptions):
+    try:
+        return await bulk.send_all("genre", genre_id, options)
+    except JavbusBlocked as exc:
+        raise HTTPException(status_code=451, detail=str(exc)) from exc

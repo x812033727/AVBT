@@ -13,27 +13,39 @@ JavBus 磁力擷取 + PikPak 離線下載管理站。
 - **女優頁** `/star/{id}` 與 **類別頁** `/genre/{id}` 列出所有作品
 - 磁力**推薦排序**（高清 > 字幕 > 大小 > 日期）+ 批次勾選送 PikPak
 - **磁力去重**：之前送過 PikPak 的磁力會標記「已送過」
+- **「送這位女優全部」** / **「送這個類別全部」**：自動翻頁、挑最佳磁力、跳過已送過
 - 本地收藏（待看 / 下載中 / 完成 狀態切換）
 - PikPak 離線任務管理：自動刷新進度、重試失敗、刪除
 - **自動歸檔**：完成的離線檔案會自動搬到 `<archive_folder>/<番號>/`
+- **歸檔通知**：可選 webhook（Discord 相容）通知歸檔事件
 - PikPak 雲端檔案：資料夾瀏覽、檔案搜尋、批次建立分享連結、移至垃圾桶
 
 ## 快速啟動
 
-### 1. 後端
+### Docker（一鍵）
+
+```bash
+cp backend/.env.example backend/.env   # 填 PikPak 帳密
+docker compose up -d --build
+```
+
+- 前端 <http://localhost:3000>
+- 後端 <http://localhost:8000>
+- 資料持久化在 `backend/data/`
+
+### 本機開發
+
+後端：
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env                # 填入 PikPak 帳密
+cp .env.example .env                # 填 PikPak 帳密
 uvicorn app.main:app --reload --port 8000
 ```
 
-後端跑在 <http://localhost:8000>，OpenAPI 文件在 `/docs`。
-
-### 2. 前端
+前端：
 
 ```bash
 cd frontend
@@ -41,8 +53,6 @@ npm install
 cp .env.local.example .env.local
 npm run dev
 ```
-
-前端跑在 <http://localhost:3000>。
 
 ## 設定
 

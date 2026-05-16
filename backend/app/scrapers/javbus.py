@@ -34,6 +34,57 @@ def extract_btih(magnet: str) -> str:
     return m.group(1).upper() if m else ""
 
 
+_SIZE_RE = re.compile(r"([\d.]+)\s*([KMGT]?i?B)", re.I)
+
+
+def parse_size(s: str) -> float:
+    """Parse '2.34GB' → bytes. Returns 0 on parse failure."""
+    m = _SIZE_RE.search(s or "")
+    if not m:
+        return 0.0
+    n = float(m.group(1))
+    unit = m.group(2).upper().replace("I", "")
+    mult = {"B": 1.0, "KB": 1024.0, "MB": 1024.0 ** 2,
+            "GB": 1024.0 ** 3, "TB": 1024.0 ** 4}
+    return n * mult.get(unit, 1.0)
+
+
+def pick_best_magnet(
+    magnets,
+    *,
+    hd_only: bool = True,
+    subtitle_only: bool = False,
+    skip_hashes: set[str] | None = None,
+):
+    """Return the highest-quality magnet that hasn't been sent before.
+
+    Preference: subtitle > HD > size > date. Filters: hd_only/subtitle_only.
+    """
+    skip_hashes = skip_hashes or set()
+    candidates = list(magnets)
+    if hd_only:
+        hd = [m for m in candidates if m.is_hd]
+        if hd:
+            candidates = hd
+    if subtitle_only:
+        sub = [m for m in candidates if m.has_subtitle]
+        if sub:
+            candidates = sub
+    candidates = [m for m in candidates if extract_btih(m.link) not in skip_hashes]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda m: (
+            0 if m.has_subtitle else 1,
+            0 if m.is_hd else 1,
+            -parse_size(m.size),
+            -1 * len(m.date),
+            m.date,
+        )
+    )
+    return candidates[0]
+
+
 _STAR_PATH_RE = re.compile(r"/star/([^/?#]+)")
 _GENRE_PATH_RE = re.compile(r"/genre/([^/?#]+)")
 

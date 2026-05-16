@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
 import { api, type SearchResult } from "@/lib/api";
 
@@ -42,12 +43,12 @@ export default function GenrePage({ params }: { params: { id: string } }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-3">
         <div>
           <div className="text-xs text-white/40">類別</div>
           <h1 className="font-mono text-lg text-accent">{id}</h1>
         </div>
-        <label className="ml-auto flex items-center gap-2 text-sm text-white/70">
+        <label className="flex items-center gap-2 text-sm text-white/70">
           <input
             type="checkbox"
             checked={uncensored}
@@ -55,6 +56,9 @@ export default function GenrePage({ params }: { params: { id: string } }) {
           />
           無碼
         </label>
+        <div className="ml-auto">
+          <BulkSendButton kind="genre" slug={id} uncensored={uncensored} />
+        </div>
       </div>
 
       {error && (

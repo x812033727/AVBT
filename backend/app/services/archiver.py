@@ -20,6 +20,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 
 from ..config import settings
@@ -28,6 +29,16 @@ from ..models import OfflineTaskLog
 from .pikpak import PikPakError, pikpak_service
 
 logger = logging.getLogger(__name__)
+
+
+async def _notify(message: str) -> None:
+    if not settings.webhook_url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as cli:
+            await cli.post(settings.webhook_url, json={"content": message})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("webhook failed: %s", exc)
 
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_\-]+")
 
@@ -93,6 +104,7 @@ async def archive_once() -> int:
             )
         ).scalars().all()
 
+        notifications: list[str] = []
         for row in rows:
             code = _safe_code(row.code)
             if not code:
@@ -106,6 +118,9 @@ async def archive_once() -> int:
                 row.archived = True
                 row.archived_at = datetime.utcnow()
                 moved += 1
+                notifications.append(
+                    f"📦 已歸檔 `{row.code}` ({row.name or row.file_id}) → `{target_path}`"
+                )
                 logger.info("archived %s -> %s", row.file_id, target_path)
             except Exception as exc:  # noqa: BLE001
                 state.last_error = f"move {row.file_id} failed: {exc}"
@@ -113,6 +128,8 @@ async def archive_once() -> int:
 
         if moved:
             await session.commit()
+            for msg in notifications:
+                asyncio.create_task(_notify(msg))
 
     state.archived_total += moved
     return moved

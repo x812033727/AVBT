@@ -88,6 +88,24 @@ class OfflineSubmit(BaseModel):
     folder: Optional[str] = None
 
 
+class SendAllOptions(BaseModel):
+    uncensored: bool = False
+    max_pages: int = 5
+    hd_only: bool = True
+    subtitle_only: bool = False
+    skip_sent: bool = True
+    folder: Optional[str] = None
+
+
+class SendAllResult(BaseModel):
+    total_movies: int = 0
+    sent: int = 0
+    skipped_no_magnet: int = 0
+    skipped_already_sent: int = 0
+    failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class PikPakFile(BaseModel):
     id: str
     name: str

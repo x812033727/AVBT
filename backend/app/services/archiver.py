@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 from datetime import datetime
 from typing import Any
@@ -127,14 +128,20 @@ async def archive_once() -> int:
 
 async def run_loop() -> None:
     """Background loop. Sleeps between iterations; survives errors."""
+    consecutive_errors = 0
     while True:
         try:
             await archive_once()
+            consecutive_errors = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            consecutive_errors += 1
             state.last_error = str(exc)
             logger.exception("archiver loop iteration failed")
         finally:
             state.last_run = datetime.utcnow()
-        await asyncio.sleep(max(15, settings.archive_interval_seconds))
+        base = max(15, settings.archive_interval_seconds)
+        backoff = min(4, 2 ** consecutive_errors) if consecutive_errors else 1
+        jitter = random.uniform(0, min(10, base / 10))
+        await asyncio.sleep(base * backoff + jitter)

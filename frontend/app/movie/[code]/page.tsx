@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import MagnetTable from "@/components/MagnetTable";
+import { Skeleton } from "@/components/Skeleton";
+import { toast } from "@/components/Toast";
 import { api, imgProxy, type MovieDetail } from "@/lib/api";
 
 export default function MoviePage({ params }: { params: { code: string } }) {
@@ -47,9 +49,12 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         genres: data.genres.map((g) => g.name),
         status,
       });
-      setSavingMsg(status === "wishlist" ? "已加入待看清單" : "已標記為完成");
+      const msg = status === "wishlist" ? "已加入待看清單" : "已標記為完成";
+      setSavingMsg(msg);
+      toast.success(msg);
     } catch (e: any) {
       setSavingMsg(`儲存失敗：${e.message}`);
+      toast.error(e.message);
     }
   }
 
@@ -60,7 +65,20 @@ export default function MoviePage({ params }: { params: { code: string } }) {
       </div>
     );
   }
-  if (!data) return <div className="text-white/50">載入中…</div>;
+  if (!data) {
+    return (
+      <div className="grid gap-6 md:grid-cols-[260px_1fr]">
+        <Skeleton className="aspect-[3/4] w-full" />
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-6 w-3/4" />
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 
 from ..database import SessionLocal
 from ..models import OfflineTaskLog
@@ -13,12 +13,9 @@ from ..schemas import (
     PikPakQuota,
     PikPakTask,
 )
-from sqlalchemy import select
-
-from ..database import SessionLocal
-from ..models import OfflineTaskLog
 from ..scrapers.javbus import extract_btih
 from ..services import archiver
+from ..services.jav_code import extract_jav_code, is_video
 from ..services.pikpak import PikPakError, pikpak_service
 
 
@@ -32,8 +29,12 @@ async def _is_duplicate(magnet: str) -> bool:
     if not h:
         return False
     async with SessionLocal() as session:
-        rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
-    return any(extract_btih(m or "") == h for m in rows)
+        row = (
+            await session.execute(
+                select(OfflineTaskLog.id).where(OfflineTaskLog.btih == h).limit(1)
+            )
+        ).first()
+    return row is not None
 
 router = APIRouter(prefix="/api/pikpak", tags=["pikpak"])
 
@@ -102,6 +103,7 @@ async def offline_download(payload: OfflineSubmit):
             insert(OfflineTaskLog).values(
                 code=payload.code,
                 magnet=payload.magnet,
+                btih=extract_btih(payload.magnet),
                 task_id=task.id,
                 file_id=task.file_id or "",
                 name=task.name,
@@ -141,6 +143,26 @@ async def delete_tasks(
         raise _wrap(exc) from exc
 
 
+_DEFAULT_FAILED_PHASES = ("PHASE_TYPE_ERROR", "ERROR")
+
+
+@router.post("/tasks/cleanup-failed")
+async def cleanup_failed_tasks(
+    include_phases: list[str] | None = Body(None, embed=True),
+):
+    """Bulk-delete every PikPak offline task whose phase indicates failure.
+    Does not delete the underlying files (delete_files=False)."""
+    phases = tuple(include_phases) if include_phases else _DEFAULT_FAILED_PHASES
+    try:
+        tasks = await pikpak_service.list_tasks(size=500)
+        failed_ids = [t.id for t in tasks if t.id and t.phase in phases]
+        if failed_ids:
+            await pikpak_service.delete_tasks(failed_ids, delete_files=False)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+    return {"deleted": len(failed_ids), "phases": list(phases)}
+
+
 @router.get("/files", response_model=list[PikPakFile])
 async def list_files(parent_id: str = "", size: int = Query(100, ge=1, le=500)):
     try:
@@ -155,6 +177,80 @@ async def trash_files(ids: list[str] = Body(..., embed=True)):
         return await pikpak_service.trash_files(ids)
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.post("/files/move")
+async def move_files(
+    file_ids: list[str] = Body(..., embed=True),
+    target_folder_id: str = Body("", embed=True),
+):
+    """Move one or more files/folders to a target folder. ``target_folder_id``
+    may be empty to mean the drive root."""
+    if not file_ids:
+        raise HTTPException(status_code=400, detail="未指定要移動的檔案")
+    try:
+        return await pikpak_service.move_files(file_ids, target_folder_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+
+@router.get("/files/stats")
+async def folder_stats(parent_id: str = ""):
+    """Aggregate stats for the direct children of ``parent_id``.
+
+    Crosses children's file_ids against ``offline_task_log`` so we can show
+    how many of the videos in this folder have been archived already.
+    """
+    try:
+        children, partial = await pikpak_service.list_all_files(parent_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+    total_files = 0
+    total_folders = 0
+    total_size = 0
+    video_count = 0
+    video_size = 0
+    coded_count = 0
+    file_ids: list[str] = []
+    for c in children:
+        if c.kind == "drive#folder":
+            total_folders += 1
+        else:
+            total_files += 1
+            total_size += int(c.size or 0)
+            if is_video(c.name):
+                video_count += 1
+                video_size += int(c.size or 0)
+            if c.id:
+                file_ids.append(c.id)
+            if extract_jav_code(c.name):
+                coded_count += 1
+
+    archived_count = 0
+    if file_ids:
+        async with SessionLocal() as session:
+            archived_count = len(
+                (
+                    await session.execute(
+                        select(OfflineTaskLog.file_id).where(
+                            OfflineTaskLog.file_id.in_(file_ids),
+                            OfflineTaskLog.archived.is_(True),
+                        )
+                    )
+                ).scalars().all()
+            )
+
+    return {
+        "total_files": total_files,
+        "total_folders": total_folders,
+        "total_size": total_size,
+        "video_count": video_count,
+        "video_size": video_size,
+        "coded_count": coded_count,
+        "archived_count": archived_count,
+        "partial": partial,
+    }
 
 
 @router.get("/files/{file_id}/url")
@@ -232,10 +328,15 @@ async def archiver_toggle(enabled: bool = Body(..., embed=True)):
 @router.post("/offline/bulk", response_model=list[PikPakTask])
 async def offline_download_bulk(items: list[OfflineSubmit]):
     # Pre-load every previously-submitted hash once so we can dedup the
-    # batch without N round-trips.
+    # batch without N round-trips. Reads only the indexed btih column.
     async with SessionLocal() as session:
-        sent_rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
-    sent_hashes = {h for m in sent_rows if (h := extract_btih(m or ""))}
+        sent_hashes = set(
+            (
+                await session.execute(
+                    select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
+                )
+            ).scalars().all()
+        )
 
     tasks: list[PikPakTask] = []
     for it in items:

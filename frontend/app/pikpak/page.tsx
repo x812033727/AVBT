@@ -1,7 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CleanupButton from "@/components/CleanupButton";
+import FolderStatsBar from "@/components/FolderStatsBar";
+import MoveModal from "@/components/MoveModal";
+import { confirmDialog, toast } from "@/components/Toast";
 import {
   api,
   type ArchiverStatus,
@@ -55,6 +58,7 @@ export default function PikpakPage() {
       setArchiver(a);
     } catch (e: any) {
       setError(e.message);
+      toast.error(e.message);
     }
   }, []);
 
@@ -64,8 +68,9 @@ export default function PikpakPage() {
         enabled,
       });
       setArchiver(a);
+      toast.success(enabled ? "已開啟自動歸檔" : "已關閉自動歸檔");
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
@@ -75,9 +80,37 @@ export default function PikpakPage() {
         "/api/pikpak/archiver/run"
       );
       setArchiver(a);
-      if (a.moved) loadTasks();
+      if (a.moved) {
+        toast.success(`已歸檔 ${a.moved} 個檔案`);
+        loadTasks();
+      } else {
+        toast.info("沒有可歸檔的檔案");
+      }
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
+    }
+  }
+
+  const failedCount = useMemo(
+    () =>
+      tasks.filter(
+        (t) => t.phase === "PHASE_TYPE_ERROR" || t.phase === "ERROR"
+      ).length,
+    [tasks]
+  );
+
+  async function cleanupFailed() {
+    if (!failedCount) return;
+    const ok = await confirmDialog(`清理 ${failedCount} 個失敗任務？`, "不會刪除已下載的檔案");
+    if (!ok) return;
+    try {
+      const res = await api.post<{ deleted: number }>(
+        "/api/pikpak/tasks/cleanup-failed"
+      );
+      toast.success(`已清理 ${res.deleted} 個失敗任務`);
+      loadTasks();
+    } catch (e: any) {
+      toast.error(e.message);
     }
   }
 
@@ -94,6 +127,7 @@ export default function PikpakPage() {
         setFiles(res);
       } catch (e: any) {
         setError(e.message);
+        toast.error(e.message);
       } finally {
         setLoading(false);
       }
@@ -137,28 +171,41 @@ export default function PikpakPage() {
 
   async function deleteTasks(ids: string[]) {
     if (!ids.length) return;
-    if (!confirm(`刪除 ${ids.length} 個任務？`)) return;
-    await api.post("/api/pikpak/tasks/delete", {
-      task_ids: ids,
-      delete_files: false,
-    });
-    loadTasks();
+    const ok = await confirmDialog(`刪除 ${ids.length} 個任務？`);
+    if (!ok) return;
+    try {
+      await api.post("/api/pikpak/tasks/delete", {
+        task_ids: ids,
+        delete_files: false,
+      });
+      toast.success(`已刪除 ${ids.length} 個任務`);
+      loadTasks();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function retryTask(id: string) {
     try {
       await api.post(`/api/pikpak/tasks/${id}/retry`);
+      toast.success("已重試任務");
       loadTasks();
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
   async function trashFiles(ids: string[]) {
     if (!ids.length) return;
-    if (!confirm(`移到垃圾桶 ${ids.length} 個檔案？`)) return;
-    await api.post("/api/pikpak/files/trash", { ids });
-    loadFiles(currentParent);
+    const ok = await confirmDialog(`移到垃圾桶 ${ids.length} 個檔案？`);
+    if (!ok) return;
+    try {
+      await api.post("/api/pikpak/files/trash", { ids });
+      toast.success(`已將 ${ids.length} 個檔案移到垃圾桶`);
+      loadFiles(currentParent);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function shareFiles(ids: string[]) {
@@ -168,13 +215,16 @@ export default function PikpakPage() {
         { file_ids: ids }
       );
       if (res.url) {
-        await navigator.clipboard.writeText(
-          res.url + (res.pass_code ? ` (碼: ${res.pass_code})` : "")
-        );
-        alert(`分享連結已複製到剪貼簿：\n${res.url}`);
+        const text = res.url + (res.pass_code ? ` (碼: ${res.pass_code})` : "");
+        try {
+          await navigator.clipboard.writeText(text);
+          toast.success("分享連結已複製到剪貼簿");
+        } catch {
+          toast.info(`分享連結：${res.url}`);
+        }
       }
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
@@ -191,7 +241,7 @@ export default function PikpakPage() {
       );
       setFiles(res);
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     } finally {
       setLoading(false);
     }
@@ -221,14 +271,25 @@ export default function PikpakPage() {
           {loading ? "更新中…" : "重新整理"}
         </button>
         {tab === "tasks" && (
-          <label className="flex items-center gap-1 text-xs text-white/60">
-            <input
-              type="checkbox"
-              checked={auto}
-              onChange={(e) => setAuto(e.target.checked)}
-            />
-            自動更新 (8s)
-          </label>
+          <>
+            <label className="flex items-center gap-1 text-xs text-white/60">
+              <input
+                type="checkbox"
+                checked={auto}
+                onChange={(e) => setAuto(e.target.checked)}
+              />
+              自動更新 (8s)
+            </label>
+            {failedCount > 0 && (
+              <button
+                onClick={cleanupFailed}
+                className="btn-ghost text-red-300 hover:bg-red-500/10"
+                title="刪除所有失敗的任務（不會刪除已下載的檔案）"
+              >
+                清理失敗 ({failedCount})
+              </button>
+            )}
+          </>
         )}
         {quota && (
           <div className="ml-auto text-xs text-white/50">
@@ -279,6 +340,7 @@ export default function PikpakPage() {
         <FilesPanel
           files={files}
           parents={parents}
+          currentParent={currentParent}
           search={search}
           onSearch={setSearch}
           onSubmitSearch={runSearch}
@@ -385,6 +447,7 @@ function TasksTable({
 function FilesPanel({
   files,
   parents,
+  currentParent,
   search,
   onSearch,
   onSubmitSearch,
@@ -396,6 +459,7 @@ function FilesPanel({
 }: {
   files: PikPakFile[];
   parents: { id: string; name: string }[];
+  currentParent: string;
   search: string;
   onSearch: (s: string) => void;
   onSubmitSearch: () => void;
@@ -406,6 +470,7 @@ function FilesPanel({
   onRefresh: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [moveOpen, setMoveOpen] = useState(false);
 
   function toggle(id: string) {
     const next = new Set(selected);
@@ -456,11 +521,19 @@ function FilesPanel({
         </form>
       </div>
 
+      <FolderStatsBar parentId={currentParent} />
+
       {selectedIds.length > 0 && (
         <div className="flex gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
           <span className="text-white/60">已選 {selectedIds.length} 個</span>
           <button
-            className="ml-auto text-blue-300 hover:underline"
+            className="ml-auto text-amber-300 hover:underline"
+            onClick={() => setMoveOpen(true)}
+          >
+            移動到…
+          </button>
+          <button
+            className="text-blue-300 hover:underline"
             onClick={() => onShare(selectedIds)}
           >
             建立分享
@@ -473,6 +546,16 @@ function FilesPanel({
           </button>
         </div>
       )}
+
+      <MoveModal
+        open={moveOpen}
+        fileIds={selectedIds}
+        onClose={() => setMoveOpen(false)}
+        onDone={() => {
+          setSelected(new Set());
+          onRefresh();
+        }}
+      />
 
       {!files.length ? (
         <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">

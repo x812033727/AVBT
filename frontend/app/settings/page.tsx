@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { confirmDialog } from "@/components/Toast";
 import {
   API_BASE,
   api,
@@ -78,7 +79,8 @@ export default function SettingsPage() {
   }
 
   async function logout() {
-    if (!confirm("登出並清除 token？")) return;
+    const ok = await confirmDialog("登出並清除 token？");
+    if (!ok) return;
     setBusy(true);
     try {
       await api.post("/api/pikpak/logout");

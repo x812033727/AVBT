@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 from typing import Any
 
@@ -164,17 +165,23 @@ check_actress = check_listing
 
 
 async def run_loop() -> None:
+    consecutive_errors = 0
     while True:
         try:
             if state.enabled:
                 results = await check_all()
                 state.last_new_total = sum(len(r.get("new_codes") or []) for r in results)
                 state.last_error = ""
+            consecutive_errors = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            consecutive_errors += 1
             state.last_error = str(exc)
             logger.exception("tracker loop iteration failed")
         finally:
             state.last_run = datetime.utcnow()
-        await asyncio.sleep(max(60, settings.tracker_interval_seconds))
+        base = max(60, settings.tracker_interval_seconds)
+        backoff = min(4, 2 ** consecutive_errors) if consecutive_errors else 1
+        jitter = random.uniform(0, min(60, base / 10))
+        await asyncio.sleep(base * backoff + jitter)

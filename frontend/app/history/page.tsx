@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, btih, type HistoryPage } from "@/lib/api";
+import { confirmDialog, toast } from "@/components/Toast";
 
 const PAGE_SIZE = 50;
 
@@ -20,11 +21,20 @@ function fmt(d: string | null): string {
 
 export default function HistoryListPage() {
   const [code, setCode] = useState("");
+  const [debouncedCode, setDebouncedCode] = useState("");
   const [archived, setArchived] = useState("");
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<HistoryPage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedCode(code.trim());
+      setOffset(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [code]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -34,7 +44,7 @@ export default function HistoryListPage() {
         limit: String(PAGE_SIZE),
         offset: String(offset),
       });
-      if (code.trim()) params.set("code", code.trim());
+      if (debouncedCode) params.set("code", debouncedCode);
       if (archived) params.set("archived", archived);
       const res = await api.get<HistoryPage>(
         `/api/collection/history?${params.toString()}`
@@ -45,16 +55,22 @@ export default function HistoryListPage() {
     } finally {
       setLoading(false);
     }
-  }, [code, archived, offset]);
+  }, [debouncedCode, archived, offset]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   async function remove(id: number) {
-    if (!confirm("刪除此筆紀錄？（不會刪 PikPak 上的檔案）")) return;
-    await api.del(`/api/collection/history/${id}`);
-    load();
+    const ok = await confirmDialog("刪除此筆紀錄？", "不會刪 PikPak 上的檔案");
+    if (!ok) return;
+    try {
+      await api.del(`/api/collection/history/${id}`);
+      toast.success("已刪除紀錄");
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   const page = Math.floor(offset / PAGE_SIZE) + 1;

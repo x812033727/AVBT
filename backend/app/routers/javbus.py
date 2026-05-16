@@ -119,3 +119,56 @@ async def genre_send_all(genre_id: str, options: SendAllOptions):
 @router.post("/genre/{genre_id}/send-all/stream")
 async def genre_send_all_stream(genre_id: str, options: SendAllOptions):
     return _stream_response("genre", genre_id, options)
+
+
+# ---------- studio / label / series / director ----------
+#
+# JavBus exposes /studio/{slug}, /label/{slug}, /series/{slug},
+# /director/{slug}. Each behaves identically to /genre at the HTML
+# level, so we register the same three endpoints (list, send-all,
+# send-all-stream) per kind via a small factory.
+
+_EXTRA_KINDS = {
+    "studio": "製作商",
+    "label": "發行商",
+    "series": "系列",
+    "director": "導演",
+}
+
+
+def _register_extra_kind(kind: str, label: str) -> None:
+    list_path = f"/{kind}/{{slug}}"
+    send_path = f"/{kind}/{{slug}}/send-all"
+    stream_path = f"/{kind}/{{slug}}/send-all/stream"
+
+    @router.get(list_path, response_model=SearchResult, name=f"list_{kind}")
+    async def listing(
+        slug: str,
+        page: int = Query(1, ge=1),
+        uncensored: bool = Query(False),
+    ):
+        try:
+            return await scraper.fetch_listing(
+                kind, slug, page=page, uncensored=uncensored
+            )
+        except JavbusBlocked as exc:
+            raise HTTPException(status_code=451, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502, detail=f"JavBus {label}頁失敗: {exc}"
+            ) from exc
+
+    @router.post(send_path, response_model=SendAllResult, name=f"send_all_{kind}")
+    async def send_all(slug: str, options: SendAllOptions):
+        try:
+            return await bulk.send_all(kind, slug, options)
+        except JavbusBlocked as exc:
+            raise HTTPException(status_code=451, detail=str(exc)) from exc
+
+    @router.post(stream_path, name=f"send_all_stream_{kind}")
+    async def send_all_stream(slug: str, options: SendAllOptions):
+        return _stream_response(kind, slug, options)
+
+
+for _kind, _label in _EXTRA_KINDS.items():
+    _register_extra_kind(_kind, _label)

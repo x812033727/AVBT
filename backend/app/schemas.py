@@ -55,16 +55,22 @@ class GenreRef(BaseModel):
     id: str = ""
 
 
+class LinkRef(BaseModel):
+    """Generic {name, id} pair used for studio / label / series / director."""
+    name: str
+    id: str = ""
+
+
 class MovieDetail(BaseModel):
     code: str
     title: str
     cover: str = ""
     release_date: str = ""
     duration: str = ""
-    studio: str = ""
-    label: str = ""
-    director: str = ""
-    series: str = ""
+    studio: Optional[LinkRef] = None
+    label: Optional[LinkRef] = None
+    director: Optional[LinkRef] = None
+    series: Optional[LinkRef] = None
     actresses: list[ActressRef] = Field(default_factory=list)
     genres: list[GenreRef] = Field(default_factory=list)
     samples: list[str] = Field(default_factory=list)

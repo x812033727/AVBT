@@ -104,6 +104,7 @@ export type Magnet = {
 
 export type ActressRef = { name: string; id: string };
 export type GenreRef = { name: string; id: string };
+export type LinkRef = { name: string; id: string };
 
 export type StarProfile = {
   id: string;
@@ -126,10 +127,10 @@ export type MovieDetail = {
   cover: string;
   release_date: string;
   duration: string;
-  studio: string;
-  label: string;
-  director: string;
-  series: string;
+  studio: LinkRef | null;
+  label: LinkRef | null;
+  director: LinkRef | null;
+  series: LinkRef | null;
   actresses: ActressRef[];
   genres: GenreRef[];
   samples: string[];

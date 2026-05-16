@@ -28,12 +28,16 @@ from ..config import settings
 from ..schemas import (
     ActressRef,
     GenreRef,
+    LinkRef,
     Magnet,
     MovieDetail,
     MovieListItem,
     SearchResult,
     StarProfile,
 )
+
+# JavBus listing pages all use the same /<kind>/<slug>[/<page>] layout.
+LISTING_KINDS = {"star", "genre", "studio", "label", "series", "director"}
 
 
 def extract_btih(magnet: str) -> str:
@@ -118,6 +122,25 @@ def pick_best_magnet(
 
 _STAR_PATH_RE = re.compile(r"/star/([^/?#]+)")
 _GENRE_PATH_RE = re.compile(r"/genre/([^/?#]+)")
+
+
+def _link_ref_from_p(p, kind: str) -> LinkRef | None:
+    """Pull a {name, id} ref from the <a href='/{kind}/...'> inside <p>.
+
+    Falls back to the <p>'s plain text (after stripping the header) when
+    JavBus renders the value without a link."""
+    a = p.select_one(f"a[href*='/{kind}/']")
+    if a:
+        href = a.get("href", "") or ""
+        m = re.search(rf"/{kind}/([^/?#]+)", href)
+        name = _text(a)
+        if name:
+            return LinkRef(name=name, id=m.group(1) if m else "")
+    text = p.get_text(" ", strip=True)
+    head = _text(p.select_one("span.header"))
+    if head:
+        text = text.replace(head, "", 1).strip()
+    return LinkRef(name=text, id="") if text else None
 
 
 USER_AGENT = (
@@ -256,12 +279,20 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
     return _parse_listing(html, page)
 
 
-async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
-    """List every movie of a given JavBus actress slug."""
-    star_id = star_id.strip()
+async def fetch_listing(
+    kind: str, slug: str, page: int = 1, uncensored: bool = False
+) -> SearchResult:
+    """Generic /{kind}/{slug}[/{page}] listing fetcher.
+
+    Works for star / genre / studio / label / series / director — every
+    JavBus listing page uses the same ``a.movie-box`` grid markup.
+    """
+    if kind not in LISTING_KINDS:
+        raise ValueError(f"unknown listing kind: {kind}")
+    slug = slug.strip()
     base = settings.javbus_base_url.rstrip("/")
-    prefix = "/uncensored/star" if uncensored else "/star"
-    url = f"{base}{prefix}/{star_id}/{max(1, page)}"
+    prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
+    url = f"{base}{prefix}/{slug}/{max(1, page)}"
 
     async with _client() as cli:
         html = await _fetch(cli, url)
@@ -269,6 +300,10 @@ async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> S
             return SearchResult(items=[], page=page, has_next=False)
 
     return _parse_listing(html, page)
+
+
+async def fetch_star(star_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
+    return await fetch_listing("star", star_id, page=page, uncensored=uncensored)
 
 
 _PROFILE_KEYS = {
@@ -347,18 +382,7 @@ async def fetch_star_profile(star_id: str, *, uncensored: bool = False) -> StarP
 
 
 async def fetch_genre(genre_id: str, page: int = 1, uncensored: bool = False) -> SearchResult:
-    """List every movie of a JavBus genre slug."""
-    genre_id = genre_id.strip()
-    base = settings.javbus_base_url.rstrip("/")
-    prefix = "/uncensored/genre" if uncensored else "/genre"
-    url = f"{base}{prefix}/{genre_id}/{max(1, page)}"
-
-    async with _client() as cli:
-        html = await _fetch(cli, url)
-        if not html:
-            return SearchResult(items=[], page=page, has_next=False)
-
-    return _parse_listing(html, page)
+    return await fetch_listing("genre", genre_id, page=page, uncensored=uncensored)
 
 
 async def fetch_detail(code: str) -> MovieDetail:
@@ -403,7 +427,11 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
         cover = _abs(big.get("src") or big.get("href") or "")
 
     info_root = soup.select_one("div.info")
-    release_date = duration = studio = label = director = series = ""
+    release_date = duration = ""
+    studio: LinkRef | None = None
+    label: LinkRef | None = None
+    director: LinkRef | None = None
+    series: LinkRef | None = None
     actresses: list[ActressRef] = []
     genres: list[GenreRef] = []
 
@@ -421,13 +449,13 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
             elif "長度" in head or "Length" in head:
                 duration = value
             elif "導演" in head or "Director" in head:
-                director = value
+                director = _link_ref_from_p(p, "director")
             elif "製作商" in head or "Studio" in head:
-                studio = value
+                studio = _link_ref_from_p(p, "studio")
             elif "發行商" in head or "Label" in head:
-                label = value
+                label = _link_ref_from_p(p, "label")
             elif "系列" in head or "Series" in head:
-                series = value
+                series = _link_ref_from_p(p, "series")
             elif "類別" in head or "Genre" in head:
                 for a in p.select("a"):
                     name = _text(a)

@@ -25,17 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 async def _collect_codes(*, kind: str, slug: str, options: SendAllOptions) -> list[str]:
-    if kind == "star":
-        fetch = scraper.fetch_star
-    elif kind == "genre":
-        fetch = scraper.fetch_genre
-    else:
-        raise ValueError(f"unknown listing kind: {kind}")
-
+    """Walk all pages of /{kind}/{slug} and return deduped codes."""
     codes: list[str] = []
     seen: set[str] = set()
     for page in range(1, max(1, options.max_pages) + 1):
-        result = await fetch(slug, page=page, uncensored=options.uncensored)
+        result = await scraper.fetch_listing(
+            kind, slug, page=page, uncensored=options.uncensored
+        )
         for item in result.items:
             if item.code and item.code not in seen:
                 seen.add(item.code)

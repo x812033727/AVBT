@@ -84,10 +84,10 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           <dl className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 text-sm">
             <Info k="發行日期" v={data.release_date} />
             <Info k="長度" v={data.duration} />
-            <Info k="導演" v={data.director} />
-            <Info k="製作商" v={data.studio} />
-            <Info k="發行商" v={data.label} />
-            <Info k="系列" v={data.series} />
+            <RefInfo k="導演" kind="director" ref={data.director} />
+            <RefInfo k="製作商" kind="studio" ref={data.studio} />
+            <RefInfo k="發行商" kind="label" ref={data.label} />
+            <RefInfo k="系列" kind="series" ref={data.series} />
           </dl>
           {!!data.actresses.length && (
             <div className="flex flex-wrap gap-1">
@@ -177,6 +177,35 @@ function Info({ k, v }: { k: string; v: string }) {
     <>
       <dt className="text-white/40">{k}</dt>
       <dd className="text-white/80">{v}</dd>
+    </>
+  );
+}
+
+function RefInfo({
+  k,
+  kind,
+  ref,
+}: {
+  k: string;
+  kind: "studio" | "label" | "series" | "director";
+  ref: { name: string; id: string } | null;
+}) {
+  if (!ref || !ref.name) return null;
+  return (
+    <>
+      <dt className="text-white/40">{k}</dt>
+      <dd className="text-white/80">
+        {ref.id ? (
+          <Link
+            href={`/${kind}/${encodeURIComponent(ref.id)}`}
+            className="hover:text-accent hover:underline"
+          >
+            {ref.name}
+          </Link>
+        ) : (
+          ref.name
+        )}
+      </dd>
     </>
   );
 }

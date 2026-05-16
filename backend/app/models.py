@@ -22,10 +22,33 @@ class CollectedMovie(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TrackedListing(Base):
+    """One JavBus listing axis we want to watch for new works.
+
+    kind ∈ {star, studio, label, series, director}. Composite primary key
+    (kind, id) so the same slug can exist under multiple axes.
+    """
+    __tablename__ = "tracked_listing"
+
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(1024), default="")
+    uncensored: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_send: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_seen_code: Mapped[str] = mapped_column(String(64), default="")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    new_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# Legacy table kept so an existing DB still loads cleanly; new code uses
+# TrackedListing and we copy rows over in init_db().
 class TrackedActress(Base):
     __tablename__ = "tracked_actresses"
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # JavBus slug
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128), default="")
     avatar: Mapped[str] = mapped_column(String(1024), default="")
     uncensored: Mapped[bool] = mapped_column(Boolean, default=False)

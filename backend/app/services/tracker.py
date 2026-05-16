@@ -1,26 +1,34 @@
-"""Background tracker: periodically scans every TrackedActress for new
-JavBus works, fires a webhook on detection, and optionally auto-submits
-them to PikPak."""
+"""Background tracker: periodically scans every TrackedListing for new
+JavBus works (across stars, studios, labels, series, directors), fires
+a webhook on detection, and optionally auto-submits them to PikPak."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
-
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import TrackedActress
+from ..models import TrackedListing
 from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
 from .bulk import send_codes_stream
 from .notify import send_webhook
 
 logger = logging.getLogger(__name__)
+
+
+_KIND_LABELS = {
+    "star": "女優",
+    "studio": "製作商",
+    "label": "發行商",
+    "series": "系列",
+    "director": "導演",
+}
 
 
 class TrackerState:
@@ -44,7 +52,6 @@ state = TrackerState()
 
 
 async def _auto_send(codes: list[str]) -> None:
-    """Submit codes to PikPak via the standard bulk pipeline."""
     if not codes:
         return
     options = SendAllOptions(
@@ -58,9 +65,11 @@ async def _auto_send(codes: list[str]) -> None:
         logger.warning("tracker auto-send failed: %s", exc)
 
 
-async def _detect_new(slug: str, uncensored: bool, last_seen: str) -> tuple[list[str], str]:
+async def _detect_new(
+    kind: str, slug: str, uncensored: bool, last_seen: str
+) -> tuple[list[str], str]:
     """Fetch page 1 and return (new_codes_in_order, new_last_seen)."""
-    listing = await scraper.fetch_star(slug, page=1, uncensored=uncensored)
+    listing = await scraper.fetch_listing(kind, slug, page=1, uncensored=uncensored)
     top = [it.code for it in listing.items if it.code]
     if not top:
         return [], last_seen
@@ -71,19 +80,18 @@ async def _detect_new(slug: str, uncensored: bool, last_seen: str) -> tuple[list
             if code == last_seen:
                 break
             new_codes.append(code)
-    # else: first run, treat current top as baseline (no notifications)
     return new_codes, top[0]
 
 
-async def check_actress(actress_id: str) -> dict:
-    """Check one actress, update DB, notify and (optionally) auto-send.
-    Returns a small result dict (id, name, new_codes, error)."""
+async def check_listing(kind: str, listing_id: str) -> dict:
+    """Check one tracked listing, update DB, notify and (optionally) auto-send."""
     async with SessionLocal() as session:
-        row: TrackedActress | None = await session.get(TrackedActress, actress_id)
+        row: TrackedListing | None = await session.get(TrackedListing, (kind, listing_id))
         if not row:
-            return {"id": actress_id, "error": "not found", "new_codes": []}
+            return {"kind": kind, "id": listing_id, "error": "not found", "new_codes": []}
 
         slug = row.id
+        actual_kind = row.kind
         uncensored = bool(row.uncensored)
         last_seen = row.last_seen_code
         name = row.name or slug
@@ -91,13 +99,21 @@ async def check_actress(actress_id: str) -> dict:
         had_baseline = bool(last_seen)
 
         try:
-            new_codes, new_last_seen = await _detect_new(slug, uncensored, last_seen)
+            new_codes, new_last_seen = await _detect_new(
+                actual_kind, slug, uncensored, last_seen
+            )
             row.last_error = ""
         except Exception as exc:  # noqa: BLE001
             row.last_error = str(exc)[:500]
             row.last_checked_at = datetime.utcnow()
             await session.commit()
-            return {"id": actress_id, "name": name, "error": row.last_error, "new_codes": []}
+            return {
+                "kind": actual_kind,
+                "id": listing_id,
+                "name": name,
+                "error": row.last_error,
+                "new_codes": [],
+            }
 
         row.last_seen_code = new_last_seen
         row.last_checked_at = datetime.utcnow()
@@ -105,30 +121,46 @@ async def check_actress(actress_id: str) -> dict:
             row.new_count = (row.new_count or 0) + len(new_codes)
         await session.commit()
 
-    # Outside DB session: side-effects
     if had_baseline and new_codes:
-        msg = f"🆕 {name} 有 {len(new_codes)} 部新作品: {', '.join(new_codes)}"
+        label = _KIND_LABELS.get(kind, kind)
+        msg = (
+            f"🆕 {label} {name} 有 {len(new_codes)} 部新作品: "
+            f"{', '.join(new_codes)}"
+        )
         asyncio.create_task(send_webhook(msg))
         if auto_send:
             asyncio.create_task(_auto_send(new_codes))
 
-    return {"id": actress_id, "name": name, "new_codes": new_codes if had_baseline else []}
+    return {
+        "kind": kind,
+        "id": listing_id,
+        "name": name,
+        "new_codes": new_codes if had_baseline else [],
+    }
 
 
 async def check_all() -> list[dict]:
     async with SessionLocal() as session:
-        ids = (await session.execute(select(TrackedActress.id))).scalars().all()
+        pairs = (
+            await session.execute(select(TrackedListing.kind, TrackedListing.id))
+        ).all()
 
     results: list[dict] = []
-    for actress_id in ids:
+    for kind, listing_id in pairs:
         try:
-            results.append(await check_actress(actress_id))
+            results.append(await check_listing(kind, listing_id))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("check_actress %s crashed: %s", actress_id, exc)
-            results.append({"id": actress_id, "error": str(exc), "new_codes": []})
-        # tiny gap between actresses to avoid hammering the site
+            logger.warning("check_listing %s/%s crashed: %s", kind, listing_id, exc)
+            results.append(
+                {"kind": kind, "id": listing_id, "error": str(exc), "new_codes": []}
+            )
         await asyncio.sleep(1.0)
     return results
+
+
+# Backwards-compat alias (services/archiver imports check_actress nowhere,
+# but keep the symbol for anything that referenced it).
+check_actress = check_listing
 
 
 async def run_loop() -> None:

@@ -112,7 +112,9 @@ class HistoryPage(BaseModel):
     limit: int
 
 
-class TrackedActressIn(BaseModel):
+class TrackedListingIn(BaseModel):
+    """kind ∈ {star, studio, label, series, director}."""
+    kind: str
     id: str
     name: str = ""
     avatar: str = ""
@@ -120,7 +122,7 @@ class TrackedActressIn(BaseModel):
     auto_send: bool = False
 
 
-class TrackedActressOut(TrackedActressIn):
+class TrackedListingOut(TrackedListingIn):
     last_seen_code: str = ""
     last_checked_at: Optional[datetime] = None
     last_error: str = ""
@@ -128,11 +130,18 @@ class TrackedActressOut(TrackedActressIn):
     created_at: datetime
 
 
-class CheckActressResult(BaseModel):
+class CheckListingResult(BaseModel):
+    kind: str
     id: str
     name: str = ""
     new_codes: list[str] = Field(default_factory=list)
     error: str = ""
+
+
+# Kept for backwards compat with old backup files.
+TrackedActressIn = TrackedListingIn
+TrackedActressOut = TrackedListingOut
+CheckActressResult = CheckListingResult
 
 
 class CollectionOut(CollectionIn):

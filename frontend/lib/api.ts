@@ -213,7 +213,10 @@ export type HistoryPage = {
   limit: number;
 };
 
-export type TrackedActress = {
+export type TrackedKind = "star" | "studio" | "label" | "series" | "director";
+
+export type TrackedListing = {
+  kind: TrackedKind;
   id: string;
   name: string;
   avatar: string;
@@ -226,11 +229,24 @@ export type TrackedActress = {
   created_at: string;
 };
 
-export type CheckActressResult = {
+export type CheckListingResult = {
+  kind: TrackedKind;
   id: string;
   name: string;
   new_codes: string[];
   error: string;
+};
+
+// Legacy aliases.
+export type TrackedActress = TrackedListing;
+export type CheckActressResult = CheckListingResult;
+
+export const TRACKED_LABELS: Record<TrackedKind, string> = {
+  star: "女優",
+  studio: "製作商",
+  label: "發行商",
+  series: "系列",
+  director: "導演",
 };
 
 export type PikPakStatus = {

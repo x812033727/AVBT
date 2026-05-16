@@ -29,7 +29,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
       .then((p) => alive && setProfile(p))
       .catch(() => alive && setProfile(null));
     api
-      .get<TrackedActress>(`/api/tracked/${encodeURIComponent(id)}`)
+      .get<TrackedActress>(`/api/tracked/star/${encodeURIComponent(id)}`)
       .then((t) => alive && setTracked(t))
       .catch(() => alive && setTracked(null));
     return () => {
@@ -39,10 +39,11 @@ export default function StarPage({ params }: { params: { id: string } }) {
 
   async function toggleTrack() {
     if (tracked) {
-      await api.del(`/api/tracked/${encodeURIComponent(id)}`);
+      await api.del(`/api/tracked/star/${encodeURIComponent(id)}`);
       setTracked(null);
     } else {
       const t = await api.post<TrackedActress>("/api/tracked", {
+        kind: "star",
         id,
         name: profile?.name || id,
         avatar: profile?.avatar || "",

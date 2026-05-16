@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_session
-from ..models import CollectedMovie, OfflineTaskLog, TrackedActress
+from ..models import CollectedMovie, OfflineTaskLog, TrackedListing
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
 
@@ -32,7 +32,7 @@ COLLECTION_KEYS = [
     "actresses", "genres", "note", "status", "created_at", "updated_at",
 ]
 TRACKED_KEYS = [
-    "id", "name", "avatar", "uncensored", "auto_send",
+    "kind", "id", "name", "avatar", "uncensored", "auto_send",
     "last_seen_code", "last_checked_at", "last_error",
     "new_count", "created_at",
 ]
@@ -45,7 +45,7 @@ HISTORY_KEYS = [
 @router.get("")
 async def export_backup(session: AsyncSession = Depends(get_session)):
     collection = (await session.execute(select(CollectedMovie))).scalars().all()
-    tracked = (await session.execute(select(TrackedActress))).scalars().all()
+    tracked = (await session.execute(select(TrackedListing))).scalars().all()
     history = (await session.execute(select(OfflineTaskLog))).scalars().all()
 
     payload = {
@@ -134,10 +134,11 @@ async def import_backup(
 
     for item in payload.get("tracked", []) or []:
         slug = (item.get("id") or "").strip()
+        kind = (item.get("kind") or "star").strip()  # old backups had no kind
         if not slug:
             stats["tracked"]["skipped"] += 1
             continue
-        existing = await session.get(TrackedActress, slug)
+        existing = await session.get(TrackedListing, (kind, slug))
         if existing:
             if not overwrite:
                 stats["tracked"]["skipped"] += 1
@@ -148,7 +149,8 @@ async def import_backup(
             existing.auto_send = bool(item.get("auto_send"))
             stats["tracked"]["updated"] += 1
         else:
-            row = TrackedActress(
+            row = TrackedListing(
+                kind=kind,
                 id=slug,
                 name=item.get("name") or "",
                 avatar=item.get("avatar") or "",

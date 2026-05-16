@@ -39,6 +39,24 @@ async def init_db() -> None:
                 await conn.exec_driver_sql(ddl)
             except Exception:
                 pass
+        # Backfill tracked_listing from the old tracked_actresses table.
+        try:
+            await conn.exec_driver_sql(
+                """
+                INSERT INTO tracked_listing
+                  (kind, id, name, avatar, uncensored, auto_send,
+                   last_seen_code, last_checked_at, last_error, new_count, created_at)
+                SELECT 'star', id, name, avatar, uncensored, auto_send,
+                       last_seen_code, last_checked_at, last_error, new_count, created_at
+                FROM tracked_actresses
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM tracked_listing
+                    WHERE kind = 'star' AND id = tracked_actresses.id
+                )
+                """
+            )
+        except Exception:
+            pass
 
 
 async def get_session() -> AsyncSession:

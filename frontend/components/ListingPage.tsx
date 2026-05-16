@@ -3,14 +3,19 @@
 import { useCallback, useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
-import { api, type SearchResult } from "@/lib/api";
+import {
+  api,
+  type SearchResult,
+  type TrackedKind,
+  type TrackedListing,
+} from "@/lib/api";
 
 export default function ListingPage({
   kind,
   id,
   label,
 }: {
-  /** JavBus URL kind: "studio" | "label" | "series" | "director" | "genre" */
+  /** JavBus URL kind */
   kind: "studio" | "label" | "series" | "director" | "genre";
   /** JavBus slug (the bit after /{kind}/) */
   id: string;
@@ -20,8 +25,10 @@ export default function ListingPage({
   const [uncensored, setUncensored] = useState(false);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
+  const [tracked, setTracked] = useState<TrackedListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const trackable = kind !== "genre";  // 類別變動太頻繁，不適合做追蹤
 
   const run = useCallback(
     async (p: number) => {
@@ -51,6 +58,44 @@ export default function ListingPage({
     run(1);
   }, [run]);
 
+  useEffect(() => {
+    if (!trackable) return;
+    let alive = true;
+    api
+      .get<TrackedListing>(`/api/tracked/${kind}/${encodeURIComponent(id)}`)
+      .then((t) => alive && setTracked(t))
+      .catch(() => alive && setTracked(null));
+    return () => {
+      alive = false;
+    };
+  }, [kind, id, trackable]);
+
+  async function toggleTrack() {
+    if (tracked) {
+      await api.del(`/api/tracked/${kind}/${encodeURIComponent(id)}`);
+      setTracked(null);
+    } else {
+      const t = await api.post<TrackedListing>("/api/tracked", {
+        kind: kind as TrackedKind,
+        id,
+        name: id,  // 列表頁不抓 profile，先用 slug，使用者可在 /tracked 頁編輯
+        avatar: "",
+        uncensored,
+        auto_send: false,
+      });
+      setTracked(t);
+    }
+  }
+
+  async function toggleAutoSend() {
+    if (!tracked) return;
+    const t = await api.post<TrackedListing>("/api/tracked", {
+      ...tracked,
+      auto_send: !tracked.auto_send,
+    });
+    setTracked(t);
+  }
+
   const firstTitle = data?.items?.[0]?.title || "";
 
   return (
@@ -68,12 +113,32 @@ export default function ListingPage({
           />
           無碼
         </label>
-        <div className="ml-auto">
-          <BulkSendButton
-            streamPath={`/api/javbus/${kind}/${encodeURIComponent(id)}/send-all/stream`}
-            title={`送${label}「${id}」全部`}
-            defaultOptions={{ uncensored }}
-          />
+        <div className="ml-auto flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            {trackable && (
+              <button
+                onClick={toggleTrack}
+                className={tracked ? "btn-ghost" : "btn-primary"}
+              >
+                {tracked ? "✓ 已追蹤" : "★ 追蹤"}
+              </button>
+            )}
+            <BulkSendButton
+              streamPath={`/api/javbus/${kind}/${encodeURIComponent(id)}/send-all/stream`}
+              title={`送${label}「${id}」全部`}
+              defaultOptions={{ uncensored }}
+            />
+          </div>
+          {tracked && (
+            <label className="flex items-center gap-1 text-xs text-white/60">
+              <input
+                type="checkbox"
+                checked={tracked.auto_send}
+                onChange={toggleAutoSend}
+              />
+              新作品自動送 PikPak
+            </label>
+          )}
         </div>
       </div>
 

@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator, Optional
 
 from pikpakapi import PikPakApi
 
-from ..config import settings
+from ..config import settings, task_folder_path
 from ..schemas import OfflineSubmit, PikPakFile, PikPakQuota, PikPakTask
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
 
@@ -410,7 +410,9 @@ class PikPakService:
 
     async def offline_download(self, payload: OfflineSubmit) -> PikPakTask:
         client = await self._ensure()
-        folder = payload.folder or settings.pikpak_download_folder
+        # Default to the dedicated task folder (AVBT/TASK) instead of the
+        # download root — keeps BT-noise wrappers from polluting AVBT/.
+        folder = payload.folder or task_folder_path()
         parent_id = await self.folder_id(folder)
         resp = await client.offline_download(payload.magnet, parent_id=parent_id or None)
         task = resp.get("task") if isinstance(resp, dict) else None

@@ -351,11 +351,18 @@ export default function SettingsPage() {
 
             <div className="mt-3 border-t border-white/10 pt-3 space-y-1">
               <div className="text-sm font-medium text-white/80">
-                根目錄自動整理
+                自動整理新下載
               </div>
               <div className="text-xs text-white/60">
-                順便把不是從本站送出、直接掉在 AVBT 根目錄的檔案搬到{" "}
+                掃描來源：<span className="font-mono">{archiver.task_folder}/</span>
+                {archiver.sweep_fallback_root && (
+                  <> + <span className="font-mono">AVBT/</span> 根（撈 App 直送）</>
+                )}
+              </div>
+              <div className="text-xs text-white/60">
+                完成後搬到{" "}
                 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;/</span>
+                ,wrapper 自動扁平、廣告進 PikPak 垃圾桶
                 （每 {archiver.sweep_interval_seconds} 秒一次）
               </div>
               <div className="text-xs text-white/60">
@@ -425,7 +432,15 @@ export default function SettingsPage() {
           <li>JAVBUS_BASE_URL：JavBus 站台網址（被擋時可換鏡像）</li>
           <li>HTTP_PROXY：HTTP/SOCKS 代理</li>
           <li>WEBHOOK_URL：歸檔 / 新作品事件的 webhook</li>
-          <li>PIKPAK_DOWNLOAD_FOLDER：離線下載預設資料夾</li>
+          <li>PIKPAK_DOWNLOAD_FOLDER：歸檔 root（預設 <span className="font-mono">AVBT</span>，影響 <span className="font-mono">AVBT/系列</span>、<span className="font-mono">AVBT/已完成</span> 等路徑）</li>
+          <li>
+            PIKPAK_TASK_FOLDER：本站送的離線任務 parent
+            （預設 <span className="font-mono">AVBT/TASK</span>，把 BT 雜訊隔離在一個資料夾、根目錄整齊；留空可回退到舊行為直接下到 AVBT 根）
+          </li>
+          <li>
+            PIKPAK_SWEEP_FALLBACK_ROOT：sweep 是否也掃 AVBT 根
+            （預設 <span className="font-mono">False</span>。如果你會從 PikPak App / 網頁直接送 magnet 繞過本站,打開可以撈那些落在根目錄的下載；否則沒必要）
+          </li>
         </ul>
       </section>
     </div>

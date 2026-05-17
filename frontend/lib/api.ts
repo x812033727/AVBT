@@ -212,6 +212,8 @@ export type ArchiverStatus = {
   last_sweep_moved: number;
   last_sweep_error: string;
   sweep_swept_total: number;
+  task_folder: string;
+  sweep_fallback_root: boolean;
 };
 
 export type HistoryItem = {

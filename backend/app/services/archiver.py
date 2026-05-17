@@ -23,7 +23,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ..config import kind_base_path, settings
+from ..config import kind_base_path, settings, task_folder_path
 from ..database import SessionLocal
 from ..models import OfflineTaskLog, TrackedListing
 from ..scrapers import javbus as scraper
@@ -130,6 +130,8 @@ class ArchiverState:
             "last_sweep_moved": _last_sweep_moved,
             "last_sweep_error": _last_sweep_error,
             "sweep_swept_total": _swept_total,
+            "task_folder": task_folder_path(),
+            "sweep_fallback_root": settings.pikpak_sweep_fallback_root,
         }
 
 
@@ -186,8 +188,11 @@ async def _sweep_root_once() -> int:
     # flatten each just-moved wrapper at its new location.
     moved_wrappers: list[tuple[str, str, str, str]] = []
 
-    try:
-        async for ev in _phase1_migrate_root(dry_run=False, idx_start=0):
+    async def _consume(source_path: str | None) -> None:
+        nonlocal moved, sweep_error
+        async for ev in _phase1_migrate_root(
+            dry_run=False, idx_start=0, source_path=source_path
+        ):
             ev_type = ev.get("type")
             if ev_type == "_phase1_error":
                 # First _phase1_error wins so the UI sees the original
@@ -209,6 +214,21 @@ async def _sweep_root_once() -> int:
                 leaf = ev.get("leaf")
                 if pid and code and leaf:
                     moved_wrappers.append((sid, pid, code, leaf))
+
+    try:
+        # Primary: dedicated task folder (where new offline tasks land).
+        await _consume(None)
+        # Fallback: AVBT root, for magnets the user submitted via the
+        # PikPak App/web (which bypass the backend and ignore the task
+        # folder setting). Off by default so legacy installs don't get
+        # noisy double-scans.
+        if settings.pikpak_sweep_fallback_root:
+            task_path = task_folder_path()
+            root_path = (
+                settings.pikpak_download_folder or "AVBT"
+            ).strip().strip("/")
+            if root_path and root_path != task_path:
+                await _consume(root_path)
     except Exception as exc:  # noqa: BLE001
         sweep_error = str(exc)
         logger.warning("root sweep failed: %s", exc)

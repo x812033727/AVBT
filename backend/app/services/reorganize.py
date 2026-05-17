@@ -34,7 +34,12 @@ from typing import AsyncIterator
 
 from sqlalchemy import select
 
-from ..config import all_kind_paths, kind_base_path, settings
+from ..config import (
+    all_kind_paths,
+    kind_base_path,
+    settings,
+    task_folder_path,
+)
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
@@ -295,7 +300,9 @@ async def _phase1_migrate(
 def _avbt_root_skip_names() -> frozenset[str]:
     """Names we leave alone when sweeping the AVBT root: every kind dir
     that the archiver owns (per the live config, plus the English-name
-    fallbacks for legacy installs) and the ``已完成`` archive dir."""
+    fallbacks for legacy installs), the ``已完成`` archive dir, and the
+    dedicated task folder (so a root scan doesn't try to migrate the
+    TASK folder itself)."""
     skip: set[str] = set(KIND_LABELS_CH.keys())  # legacy English names
     root_clean = (settings.pikpak_download_folder or "AVBT").strip().strip("/")
     for _kind, path in all_kind_paths():
@@ -311,21 +318,45 @@ def _avbt_root_skip_names() -> frozenset[str]:
         "/", 1
     )[-1]
     skip.add(legacy_name)
+    # If TASK is a direct child of the download root (the default
+    # AVBT/TASK case), skip it during root scans so we don't move TASK
+    # itself somewhere. The TASK folder is migrated by its own pass.
+    task_clean = task_folder_path()
+    if task_clean.startswith(root_clean + "/"):
+        task_leaf = task_clean[len(root_clean) + 1:]
+        if task_leaf and "/" not in task_leaf:
+            skip.add(task_leaf)
     return frozenset(skip)
 
 
 async def _phase1_migrate_root(
-    *, dry_run: bool, idx_start: int
+    *,
+    dry_run: bool,
+    idx_start: int,
+    source_path: str | None = None,
 ) -> AsyncIterator[dict]:
-    """Pick up files/folders that landed at the AVBT root (manual
-    uploads, magnet drops outside the app, leftovers from past tools)
-    and route them into the kind/name hierarchy too."""
-    root = settings.pikpak_download_folder or "AVBT"
+    """Walk a source folder (default: the dedicated task folder where
+    new offline downloads land) and migrate code-bearing children into
+    ``AVBT/<kind>/<name>/<code>``.
+
+    Pass ``source_path`` to override — used by the legacy AVBT-root
+    fallback scan (PikPak App / web magnets that bypass the backend)
+    and by reorganize's full sweep. When scanning a dedicated task
+    folder no skip list is needed (no kind dirs live there); when
+    scanning the download root we still skip kind dirs + 已完成 + TASK
+    to avoid migrating them onto themselves."""
+    src = source_path or task_folder_path()
+    download_root = (
+        settings.pikpak_download_folder or "AVBT"
+    ).strip().strip("/")
+    skip = (
+        _avbt_root_skip_names() if src == download_root else frozenset()
+    )
     async for ev in _phase1_migrate_from(
-        root,
+        src,
         dry_run=dry_run,
         idx_start=idx_start,
-        skip_names=_avbt_root_skip_names(),
+        skip_names=skip,
     ):
         yield ev
 
@@ -609,18 +640,28 @@ async def _phase2_cleanup_target(
 async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
     root_path = settings.pikpak_download_folder or "AVBT"
+    task_path = task_folder_path()
+    # Skip the duplicate scan when TASK isn't separate from the root
+    # (legacy install with PIKPAK_TASK_FOLDER blank → both resolve to
+    # AVBT/, so we'd otherwise process every root child twice).
+    task_separate = task_path != root_path
 
     # ---- Pre-flight: resolve totals so the progress bar has a real
     # denominator. Also lets us short-circuit if PikPak isn't reachable.
     try:
         root_id = await pikpak_service.folder_id(root_path)
         legacy_id = await pikpak_service.folder_id(legacy_path)
+        task_id = (
+            await pikpak_service.folder_id(task_path) if task_separate else root_id
+        )
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "message": f"無法解析來源資料夾: {exc}"}
         return
 
     # Sources for migration:
-    #  - AVBT root direct children (skipping the kind dirs and legacy)
+    #  - TASK folder (where new offline downloads land, primary)
+    #  - AVBT root direct children (PikPak App / web magnets that bypass
+    #    the backend, plus legacy installs without a dedicated TASK)
     #  - the legacy 已完成 dir
     try:
         root_children_all = (
@@ -631,6 +672,17 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         return
     skip_names = _avbt_root_skip_names()
     root_children = [c for c in root_children_all if c.name not in skip_names]
+
+    task_children: list = []
+    if task_separate:
+        try:
+            task_children = (
+                await pikpak_service.list_files(task_id, size=500)
+                if task_id else []
+            )
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": f"列出 {task_path} 失敗: {exc}"}
+            return
 
     try:
         legacy_children = (
@@ -707,7 +759,8 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
                 seen_target_paths.add(target_path)
 
     total = (
-        len(root_children)
+        len(task_children)
+        + len(root_children)
         + len(legacy_children)
         + sum(len(c) for _, _, c in cleanup_targets)
     )
@@ -733,8 +786,32 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
 
     idx = 0
 
-    # ---- Phase 1a: migrate AVBT root ----
-    async for ev in _phase1_migrate_root(dry_run=dry_run, idx_start=idx):
+    # ---- Phase 1.task: migrate TASK folder (where new downloads land) ----
+    if task_separate:
+        async for ev in _phase1_migrate_root(
+            dry_run=dry_run, idx_start=idx, source_path=task_path
+        ):
+            if ev.get("type") == "_phase1_error":
+                yield {"type": "error", "message": ev.get("message", "")}
+                continue
+            if ev.get("type") == "_phase1_total":
+                continue
+            action = ev.get("action")
+            if action == "move":
+                summary["moved"] += 1
+            elif action == "rename":
+                summary["renamed"] += 1
+            elif action == "skip":
+                summary["skipped"] += 1
+            elif action == "error":
+                summary["errors"] += 1
+            idx = ev.get("current", idx)
+            yield ev
+
+    # ---- Phase 1a: migrate AVBT root (catches App-side magnets) ----
+    async for ev in _phase1_migrate_root(
+        dry_run=dry_run, idx_start=idx, source_path=root_path
+    ):
         if ev.get("type") == "_phase1_error":
             yield {"type": "error", "message": ev.get("message", "")}
             continue

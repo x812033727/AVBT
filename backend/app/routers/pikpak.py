@@ -256,10 +256,11 @@ async def folder_stats(parent_id: str = ""):
 @router.get("/files/{file_id}/url")
 async def file_url(file_id: str):
     try:
-        url = await pikpak_service.download_url(file_id)
+        links = await pikpak_service.file_links(file_id)
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
-    return {"url": url}
+    # Keep `url` for backward compat — it has always meant the download link.
+    return {"url": links["download_url"], **links}
 
 
 @router.get("/files/search", response_model=list[PikPakFile])

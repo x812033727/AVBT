@@ -5,6 +5,7 @@ import CleanupButton from "@/components/CleanupButton";
 import FolderStatsBar from "@/components/FolderStatsBar";
 import MoveModal from "@/components/MoveModal";
 import { confirmDialog, toast } from "@/components/Toast";
+import VideoPlayerModal from "@/components/VideoPlayerModal";
 import {
   api,
   type ArchiverStatus,
@@ -12,6 +13,7 @@ import {
   type PikPakQuota,
   type PikPakTask,
 } from "@/lib/api";
+import { isVideo } from "@/lib/video";
 
 function fmtBytes(n?: number | null) {
   if (!n) return "-";
@@ -43,6 +45,7 @@ export default function PikpakPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
+  const [playing, setPlaying] = useState<PikPakFile | null>(null);
   const [archiver, setArchiver] = useState<ArchiverStatus | null>(null);
 
   const loadTasks = useCallback(async () => {
@@ -154,10 +157,18 @@ export default function PikpakPage() {
 
   async function openFolder(f: PikPakFile) {
     if (f.kind !== "drive#folder") {
-      const { url } = await api.get<{ url: string }>(
-        `/api/pikpak/files/${f.id}/url`
-      );
-      if (url) window.open(url, "_blank");
+      if (isVideo(f.name)) {
+        setPlaying(f);
+        return;
+      }
+      try {
+        const { url } = await api.get<{ url: string }>(
+          `/api/pikpak/files/${f.id}/url`
+        );
+        if (url) window.open(url, "_blank");
+      } catch (e: any) {
+        toast.error(e.message || "讀取連結失敗");
+      }
       return;
     }
     setSearch("");
@@ -351,6 +362,12 @@ export default function PikpakPage() {
           onRefresh={() => loadFiles(currentParent)}
         />
       )}
+
+      <VideoPlayerModal
+        open={!!playing}
+        file={playing ? { id: playing.id, name: playing.name } : null}
+        onClose={() => setPlaying(null)}
+      />
     </div>
   );
 }
@@ -589,7 +606,11 @@ function FilesPanel({
                       className="text-left text-white/90 hover:text-accent"
                       onClick={() => onOpen(f)}
                     >
-                      {f.kind === "drive#folder" ? "📁 " : "📄 "}
+                      {f.kind === "drive#folder"
+                        ? "📁 "
+                        : isVideo(f.name)
+                        ? "▶ "
+                        : "📄 "}
                       {f.name}
                     </button>
                   </td>

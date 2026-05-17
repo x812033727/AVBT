@@ -1,9 +1,13 @@
-"""Bulk-submit every movie of a JavBus actress / genre to PikPak.
+"""Bulk-submit every movie of a JavBus listing to PikPak.
 
-Provides an async-generator API (``send_all_stream``) so the HTTP layer
-can stream progress events to the browser as NDJSON, plus a convenience
-wrapper (``send_all``) that drains the generator and returns the final
-summary for non-streaming callers.
+This module used to own its own per-stream worker pool. It now just
+walks the JavBus listing pages to collect codes and pushes them into the
+global ``download_queue``. Streaming callers (the ``send-all/stream``
+NDJSON endpoints) ``asyncio.as_completed`` over the per-job futures so
+the browser still sees per-code progress in real time.
+
+Cancellation via the HTTP request's abort signal removes the
+still-pending jobs from the queue (in-flight ones run to completion).
 """
 
 from __future__ import annotations
@@ -12,14 +16,9 @@ import asyncio
 import logging
 from typing import AsyncIterator, Awaitable, Callable
 
-from sqlalchemy import insert, select
-
-from ..database import SessionLocal
-from ..models import OfflineTaskLog
-from ..schemas import OfflineSubmit, SendAllOptions, SendAllResult
+from ..schemas import SendAllOptions, SendAllResult
 from ..scrapers import javbus as scraper
-from ..scrapers.javbus import extract_btih, pick_best_magnet
-from .pikpak import pikpak_service
+from .download_queue import Job, JobResult, download_queue, new_batch_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,96 +40,19 @@ async def _collect_codes(*, kind: str, slug: str, options: SendAllOptions) -> li
     return codes
 
 
-async def _load_sent_hashes() -> set[str]:
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
-            )
-        ).scalars().all()
-    return set(rows)
-
-
-async def _process_code(
-    code: str,
-    *,
-    options: SendAllOptions,
-    sent_hashes: set[str],
-    result: SendAllResult,
-    lock: asyncio.Lock,
-) -> dict:
-    """Process one movie. Returns a dict describing what happened."""
-    try:
-        detail = await scraper.fetch_detail(code)
-    except Exception as exc:  # noqa: BLE001
-        async with lock:
-            result.failed += 1
-            result.errors.append(f"{code}: 抓取詳細頁失敗 ({exc})")
-        return {"status": "failed", "message": str(exc)}
-
-    if not detail.magnets:
-        async with lock:
-            result.skipped_no_magnet += 1
-        return {"status": "skipped_no_magnet"}
-
-    async with lock:
-        best = pick_best_magnet(
-            detail.magnets,
-            hd_only=options.hd_only,
-            subtitle_only=options.subtitle_only,
-            skip_hashes=sent_hashes if options.skip_sent else set(),
-            min_size_mb=options.min_size_mb,
-            max_size_mb=options.max_size_mb,
-            prefer_max_size_mb=options.prefer_max_size_mb,
-        )
-    if best is None:
-        any_already = any(
-            extract_btih(m.link) in sent_hashes for m in detail.magnets
-        )
-        async with lock:
-            if options.skip_sent and any_already:
-                result.skipped_already_sent += 1
-                return {"status": "skipped_already_sent"}
-            result.skipped_no_magnet += 1
-            return {"status": "skipped_no_magnet"}
-
-    try:
-        task = await pikpak_service.offline_download(
-            OfflineSubmit(magnet=best.link, code=code, folder=options.folder)
-        )
-    except Exception as exc:  # noqa: BLE001
-        async with lock:
-            result.failed += 1
-            result.errors.append(f"{code}: 送 PikPak 失敗 ({exc})")
-        return {"status": "failed", "message": str(exc)}
-
-    async with SessionLocal() as session:
-        await session.execute(
-            insert(OfflineTaskLog).values(
-                code=code,
-                magnet=best.link,
-                btih=extract_btih(best.link),
-                task_id=task.id,
-                file_id=task.file_id or "",
-                name=task.name,
-                phase=task.phase,
-                message=task.message or "",
-            )
-        )
-        await session.commit()
-
-    h = extract_btih(best.link)
-    async with lock:
-        if h:
-            sent_hashes.add(h)
-        result.sent += 1
-    return {
-        "status": "sent",
-        "magnet_name": best.name,
-        "size": best.size,
-        "is_hd": best.is_hd,
-        "has_subtitle": best.has_subtitle,
-    }
+def _apply_result(summary: SendAllResult, result: JobResult) -> None:
+    if result.status == "sent":
+        summary.sent += 1
+    elif result.status == "skipped_no_magnet":
+        summary.skipped_no_magnet += 1
+    elif result.status == "skipped_already_sent":
+        summary.skipped_already_sent += 1
+    elif result.status == "failed":
+        summary.failed += 1
+        if result.message:
+            summary.errors.append(f"{result.code}: {result.message}")
+    # "cancelled" → don't count (caller cancelled, surface only as the
+    # missing delta in the total)
 
 
 async def send_codes_stream(
@@ -138,9 +60,11 @@ async def send_codes_stream(
     options: SendAllOptions,
     *,
     on_sent: Callable[[str], Awaitable[None]] | None = None,
+    source: str = "bulk",
 ) -> AsyncIterator[dict]:
-    """Process a precomputed list of codes. The on_sent hook fires after
-    each successful submission (e.g. to update CollectedMovie status)."""
+    """Push ``codes`` into the global download queue and stream per-code
+    results as they complete. The ``on_sent`` hook fires after each
+    successful submission (e.g. to update CollectedMovie status)."""
     yield {
         "type": "start",
         "total": len(codes),
@@ -151,57 +75,55 @@ async def send_codes_stream(
         yield {"type": "done", "result": SendAllResult().model_dump()}
         return
 
-    sent_hashes = await _load_sent_hashes() if options.skip_sent else set()
-    result = SendAllResult(total_movies=len(codes))
-    queue: asyncio.Queue = asyncio.Queue()
-    lock = asyncio.Lock()
-    sem = asyncio.Semaphore(3)
+    batch_id = new_batch_id()
+    futures: list[asyncio.Future] = []
+    for code in codes:
+        job = Job(
+            code=code,
+            options=options,
+            source=source,
+            batch_id=batch_id,
+            on_sent=on_sent,
+        )
+        futures.append(await download_queue.enqueue(job))
 
-    async def worker(idx: int, code: str) -> None:
-        async with sem:
-            try:
-                event = await _process_code(
-                    code,
-                    options=options,
-                    sent_hashes=sent_hashes,
-                    result=result,
-                    lock=lock,
-                )
-            except Exception as exc:  # noqa: BLE001
-                async with lock:
-                    result.failed += 1
-                    result.errors.append(f"{code}: {exc}")
-                event = {"status": "failed", "message": str(exc)}
-            if event.get("status") == "sent" and on_sent is not None:
-                try:
-                    await on_sent(code)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("on_sent hook failed for %s: %s", code, exc)
-            await queue.put({"type": "progress", "current": idx + 1, "code": code, **event})
-
-    tasks = [asyncio.create_task(worker(i, c)) for i, c in enumerate(codes)]
+    summary = SendAllResult(total_movies=len(codes))
+    done = 0
     try:
-        for _ in range(len(codes)):
-            yield await queue.get()
+        for coro in asyncio.as_completed(futures):
+            result: JobResult = await coro
+            done += 1
+            _apply_result(summary, result)
+            yield {
+                "type": "progress",
+                "current": done,
+                **result.to_event(),
+            }
     except asyncio.CancelledError:
-        for t in tasks:
-            t.cancel()
+        # Caller (browser) went away — drop the rest of the batch.
+        try:
+            await download_queue.cancel_batch(batch_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cancel_batch %s failed: %s", batch_id, exc)
         raise
-    await asyncio.gather(*tasks, return_exceptions=True)
-    yield {"type": "done", "result": result.model_dump()}
+
+    yield {"type": "done", "result": summary.model_dump()}
 
 
 async def send_all_stream(
     kind: str, slug: str, options: SendAllOptions
 ) -> AsyncIterator[dict]:
-    """Walk JavBus listing pages first, then stream submissions."""
+    """Walk JavBus listing pages first, then stream queue progress."""
     codes = await _collect_codes(kind=kind, slug=slug, options=options)
-    async for event in send_codes_stream(codes, options):
+    async for event in send_codes_stream(
+        codes, options, source=f"bulk:{kind}:{slug}"
+    ):
         yield event
 
 
 async def send_all(kind: str, slug: str, options: SendAllOptions) -> SendAllResult:
-    """Drain the stream and return the final summary."""
+    """Drain the stream and return the final summary (non-streaming
+    callers)."""
     final = SendAllResult()
     async for event in send_all_stream(kind, slug, options):
         if event["type"] == "done":

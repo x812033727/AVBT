@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import insert, select
+from sqlalchemy import select
 
 from ..database import SessionLocal
 from ..models import OfflineTaskLog
@@ -16,31 +16,14 @@ from ..schemas import (
     PresenceDetail,
     PresenceStatus,
     ReorganizeOptions,
+    SendAllOptions,
 )
-from ..scrapers.javbus import extract_btih
 from ..services import archiver
+from ..services.download_queue import Job, download_queue
 from ..services.jav_code import extract_jav_code, is_video
 from ..services.pikpak import PikPakError, pikpak_service
 from ..services.pikpak_presence import presence_index
 from ..services.reorganize import reorganize_stream
-
-
-class DuplicateMagnetError(PikPakError):
-    """Raised when a magnet hash is already in offline_task_log and the
-    caller did not opt in via ``force=true``."""
-
-
-async def _is_duplicate(magnet: str) -> bool:
-    h = extract_btih(magnet)
-    if not h:
-        return False
-    async with SessionLocal() as session:
-        row = (
-            await session.execute(
-                select(OfflineTaskLog.id).where(OfflineTaskLog.btih == h).limit(1)
-            )
-        ).first()
-    return row is not None
 
 router = APIRouter(prefix="/api/pikpak", tags=["pikpak"])
 
@@ -94,32 +77,35 @@ async def quota():
 
 @router.post("/offline", response_model=PikPakTask)
 async def offline_download(payload: OfflineSubmit):
-    if not payload.force and await _is_duplicate(payload.magnet):
+    """Single-magnet submit. Routes through the global download queue so
+    it serialises against tracker auto-sends and bulk send-alls instead
+    of competing with them."""
+    job = Job(
+        code=payload.code,
+        options=SendAllOptions(folder=payload.folder),
+        source="manual",
+        direct_magnet=payload.magnet,
+        folder=payload.folder,
+        force=payload.force,
+    )
+    fut = await download_queue.enqueue(job)
+    result = await fut
+    if result.status == "skipped_already_sent":
         raise HTTPException(
             status_code=409,
-            detail="此磁力已經送過 PikPak。若要再送一次，請帶 force=true。",
+            detail=result.message
+            or "此磁力已經送過 PikPak。若要再送一次，請帶 force=true。",
         )
-    try:
-        task = await pikpak_service.offline_download(payload)
-    except Exception as exc:  # noqa: BLE001
-        raise _wrap(exc) from exc
-
-    async with SessionLocal() as session:
-        await session.execute(
-            insert(OfflineTaskLog).values(
-                code=payload.code,
-                magnet=payload.magnet,
-                btih=extract_btih(payload.magnet),
-                task_id=task.id,
-                file_id=task.file_id or "",
-                name=task.name,
-                phase=task.phase,
-                message=task.message or "",
-            )
+    if result.status == "failed":
+        raise HTTPException(
+            status_code=502, detail=f"PikPak 錯誤: {result.message}"
         )
-        await session.commit()
-
-    return task
+    return PikPakTask(
+        id=result.task_id,
+        name=result.magnet_name or payload.code or payload.magnet[:40],
+        phase="PHASE_TYPE_PENDING",
+        progress=0,
+    )
 
 
 @router.get("/tasks", response_model=list[PikPakTask])
@@ -391,39 +377,28 @@ async def archiver_toggle(enabled: bool = Body(..., embed=True)):
 
 @router.post("/offline/bulk", response_model=list[PikPakTask])
 async def offline_download_bulk(items: list[OfflineSubmit]):
-    # Pre-load every previously-submitted hash once so we can dedup the
-    # batch without N round-trips. Reads only the indexed btih column.
-    async with SessionLocal() as session:
-        sent_hashes = set(
-            (
-                await session.execute(
-                    select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
-                )
-            ).scalars().all()
+    """Submit a list of magnets. Each item rides the global download
+    queue, which dedupes against the OfflineTaskLog hash set and against
+    other in-flight jobs. Returns one ``PikPakTask`` per input item,
+    using ``phase`` to surface the queue outcome (PENDING / DUPLICATE /
+    ERROR)."""
+    jobs: list[tuple[OfflineSubmit, "asyncio.Future"]] = []
+    for it in items:
+        job = Job(
+            code=it.code,
+            options=SendAllOptions(folder=it.folder),
+            source="manual:bulk",
+            direct_magnet=it.magnet,
+            folder=it.folder,
+            force=it.force,
         )
+        fut = await download_queue.enqueue(job)
+        jobs.append((it, fut))
 
     tasks: list[PikPakTask] = []
-    for it in items:
-        h = extract_btih(it.magnet)
-        if not it.force and h and h in sent_hashes:
-            tasks.append(
-                PikPakTask(
-                    id="",
-                    name=it.code or it.magnet[:40],
-                    phase="DUPLICATE",
-                    progress=0,
-                    file_id=None,
-                    file_size=None,
-                    message="已送過，跳過（force=true 可強制送）",
-                    created_time=None,
-                )
-            )
-            continue
+    for it, fut in jobs:
         try:
-            task = await pikpak_service.offline_download(it)
-            tasks.append(task)
-            if h:
-                sent_hashes.add(h)
+            result = await fut
         except Exception as exc:  # noqa: BLE001
             tasks.append(
                 PikPakTask(
@@ -431,10 +406,45 @@ async def offline_download_bulk(items: list[OfflineSubmit]):
                     name=it.code or it.magnet[:40],
                     phase="ERROR",
                     progress=0,
-                    file_id=None,
-                    file_size=None,
                     message=str(exc),
-                    created_time=None,
+                )
+            )
+            continue
+
+        if result.status == "sent":
+            tasks.append(
+                PikPakTask(
+                    id=result.task_id,
+                    name=result.magnet_name or it.code or it.magnet[:40],
+                    phase="PHASE_TYPE_PENDING",
+                    progress=0,
+                )
+            )
+        elif result.status == "skipped_already_sent":
+            tasks.append(
+                PikPakTask(
+                    id="",
+                    name=it.code or it.magnet[:40],
+                    phase="DUPLICATE",
+                    progress=0,
+                    message="已送過，跳過（force=true 可強制送）",
+                )
+            )
+        else:  # failed / skipped_no_magnet / cancelled
+            tasks.append(
+                PikPakTask(
+                    id="",
+                    name=it.code or it.magnet[:40],
+                    phase="ERROR",
+                    progress=0,
+                    message=result.message or result.status,
                 )
             )
     return tasks
+
+
+@router.get("/queue")
+async def queue_status():
+    """Snapshot of the global download queue: pending count, currently-
+    processing codes, lifetime totals, recent N jobs."""
+    return download_queue.status()

@@ -165,11 +165,13 @@ async def upsert_tracked(
 
     # When the user newly turns auto_send ON, kick off a missing-codes
     # backfill right away instead of making them wait for the next
-    # hourly tracker cycle.
+    # hourly tracker cycle. The enqueue helper combines fresh codes (we
+    # pass [] here — nothing new since baseline) with the catalog's
+    # missing-from-PikPak set, and pushes both into the global queue.
     if auto_send_just_enabled:
-        from ..services.tracker import _auto_send_missing  # local: avoid cycles
+        from ..services.tracker import _enqueue_auto_send  # local: avoid cycles
         import asyncio
-        asyncio.create_task(_auto_send_missing(kind, slug))
+        asyncio.create_task(_enqueue_auto_send(kind, slug, []))
 
     return _to_out(row)
 

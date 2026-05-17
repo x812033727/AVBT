@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CleanupButton from "@/components/CleanupButton";
+import DownloadQueuePanel from "@/components/DownloadQueuePanel";
 import FolderStatsBar from "@/components/FolderStatsBar";
 import MoveModal from "@/components/MoveModal";
 import { confirmDialog, toast } from "@/components/Toast";
@@ -366,6 +367,8 @@ export default function PikpakPage() {
           )}
         </div>
       )}
+
+      {tab === "tasks" && <DownloadQueuePanel />}
 
       {tab === "tasks" && (
         <TasksTable tasks={tasks} onDelete={deleteTasks} onRetry={retryTask} />

@@ -371,11 +371,15 @@ async def archiver_run_now():
 
 
 @router.post("/archiver/sweep")
-async def archiver_sweep_now():
-    """Force an AVBT-root sweep regardless of the cooldown — picks up
-    files that were dropped into the root outside the OfflineTaskLog
-    flow (PikPak App / web manual adds) and routes them to kind/name."""
-    moved = await archiver._sweep_root_once()
+async def archiver_sweep_now(cleanup_all: bool = True):
+    """Force a TASK-folder sweep regardless of the cooldown.
+
+    ``cleanup_all=True`` (the default for the button-triggered call)
+    also runs phase-2 cleanup on every tracked series folder, so a
+    single click normalises stale BT-prefix names / CD<n> markers /
+    half-flattened wrappers across the whole library. Pass
+    ``cleanup_all=false`` to do just the move pass."""
+    moved = await archiver._sweep_root_once(cleanup_all_targets=cleanup_all)
     return {"moved": moved, **archiver.state.to_dict()}
 
 

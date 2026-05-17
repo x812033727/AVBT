@@ -167,7 +167,7 @@ def _sweep_due() -> bool:
     return (datetime.utcnow() - _last_sweep_at).total_seconds() >= interval
 
 
-async def _sweep_root_once() -> int:
+async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
     """Reuse the reorganize phase-1 logic to tidy orphans that landed
     in the AVBT root outside the OfflineTaskLog flow (PikPak App / web
     manual adds, magnets dropped straight into PikPak). Then, for each
@@ -182,7 +182,13 @@ async def _sweep_root_once() -> int:
     — this is a background tidy, not a UI flow — but ``_phase1_error``
     events are surfaced into ``_last_sweep_error`` so settings/UI can
     show what went wrong (the migrate generator signals init failures
-    via that event type instead of raising)."""
+    via that event type instead of raising).
+
+    ``cleanup_all_targets``: when True, also run phase-2 cleanup on
+    every tracked series folder (not just the ones this sweep moved
+    items into). Used by the user-triggered "掃描 TASK 並搬移" button
+    so one click normalises everything; background loop leaves it False
+    to keep per-cycle cost low."""
     global _last_sweep_at, _last_sweep_moved, _last_sweep_error, _swept_total
 
     # Local import: reorganize already imports archiver at module load,
@@ -268,6 +274,17 @@ async def _sweep_root_once() -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("flatten swept wrappers failed: %s", exc)
 
+    # When the user explicitly triggered the sweep, also pull in every
+    # tracked series target folder so messy leftovers from previous
+    # sweeps (BT-prefixed names, CD<n>/-<n> markers that pre-date the
+    # canonical fix, wrappers that finished downloading after their
+    # original flatten attempt failed) all get normalised in one click.
+    if cleanup_all_targets:
+        try:
+            target_parent_ids |= await _all_tracked_target_parent_ids()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("collect tracked targets failed: %s", exc)
+
     # Rerun phase-2 cleanup on every target folder that received items.
     # Catches:
     #   - Wrappers whose main video finished downloading after the
@@ -342,6 +359,36 @@ async def _flatten_swept_wrappers(
                 folder_id, code, exc,
             )
     return flattened
+
+
+async def _all_tracked_target_parent_ids() -> set[str]:
+    """Resolve every tracked listing's series-name folder id (``AVBT/
+    <kind>/<row.name>/``). Folders that don't exist yet are skipped
+    (lookup-only, no auto-create) so we don't pollute PikPak with
+    empty placeholders for listings the user added but never had
+    any download for."""
+    from ..config import kind_base_path
+
+    ids: set[str] = set()
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(select(TrackedListing))
+        ).scalars().all()
+
+    for row in rows:
+        if not (row.name or "").strip():
+            continue
+        safe = _safe_name(
+            row.name, fallback=_safe_name(row.id, fallback="unknown")
+        )
+        target_path = f"{kind_base_path(row.kind)}/{safe}"
+        try:
+            pid = await pikpak_service.lookup_folder_id(target_path)
+        except Exception:  # noqa: BLE001
+            continue
+        if pid:
+            ids.add(pid)
+    return ids
 
 
 async def _cleanup_target_parents(parent_ids: set[str]) -> int:

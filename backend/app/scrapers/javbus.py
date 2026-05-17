@@ -72,6 +72,7 @@ def pick_best_magnet(
     skip_hashes: set[str] | None = None,
     min_size_mb: float | None = None,
     max_size_mb: float | None = None,
+    prefer_max_size_mb: float | None = None,
 ):
     """Return the highest-quality magnet that hasn't been sent before.
 
@@ -80,10 +81,14 @@ def pick_best_magnet(
     [min_size_mb, max_size_mb] byte-size window. Magnets whose advertised
     size can't be parsed (empty string etc.) are kept regardless of the
     size window so we don't silently drop the only candidate.
+    prefer_max_size_mb is a soft cap: candidates at or below it are
+    preferred, but if every candidate exceeds it we keep the oversized
+    ones rather than returning nothing.
     """
     skip_hashes = skip_hashes or set()
     min_b = (min_size_mb or 0) * _MB
     max_b = (max_size_mb or 0) * _MB
+    prefer_max_b = (prefer_max_size_mb or 0) * _MB
 
     def within_size(m) -> bool:
         size = parse_size(m.size)
@@ -106,6 +111,13 @@ def pick_best_magnet(
             candidates = sub
     candidates = [m for m in candidates if extract_btih(m.link) not in skip_hashes]
     candidates = [m for m in candidates if within_size(m)]
+    if prefer_max_b:
+        under = [
+            m for m in candidates
+            if parse_size(m.size) <= 0 or parse_size(m.size) <= prefer_max_b
+        ]
+        if under:
+            candidates = under
     if not candidates:
         return None
     candidates.sort(

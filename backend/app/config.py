@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     tracker_interval_seconds: int = 3600  # 1 hour
     tracker_auto_send_hd_only: bool = True
     tracker_auto_send_skip_sent: bool = True
+    # Soft cap: prefer magnets ≤ this many MB, but if every candidate
+    # exceeds it, fall back to picking from the oversized ones anyway.
+    # 0 disables the preference.
+    tracker_auto_send_max_size_mb: float = 10240
 
     http_proxy: str = ""
 

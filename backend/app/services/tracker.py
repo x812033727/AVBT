@@ -58,6 +58,7 @@ async def _auto_send(codes: list[str]) -> None:
     options = SendAllOptions(
         hd_only=settings.tracker_auto_send_hd_only,
         skip_sent=settings.tracker_auto_send_skip_sent,
+        prefer_max_size_mb=settings.tracker_auto_send_max_size_mb or None,
     )
     try:
         async for _event in send_codes_stream(codes, options):

@@ -173,7 +173,15 @@ async def missing_for_listing(
         if row:
             name = row.name or ""
 
-    extras = _compute_extras(kind, slug, name, expected)
+    # Only flag extras when we actually got a JavBus catalog to compare
+    # against. If the listing fetch returned nothing (network, geo-block,
+    # invalid slug…) every file in the folder would otherwise look like
+    # an extra.
+    extras = (
+        _compute_extras(kind, slug, name, expected)
+        if items
+        else []
+    )
 
     return MissingCodesResult(
         kind=kind,
@@ -204,7 +212,13 @@ async def _summary_item(
             expected_root=expected_root, error=str(exc),
         )
     _, missing, expected = _split_present_missing(items, presence)
-    extras = _compute_extras(row.kind, row.id, row.name or "", expected)
+    # See note in missing_for_listing: skip extras when we got no
+    # listing data, otherwise every file in the folder appears extra.
+    extras = (
+        _compute_extras(row.kind, row.id, row.name or "", expected)
+        if items
+        else []
+    )
     return MissingSummaryItem(
         kind=row.kind,
         id=row.id,

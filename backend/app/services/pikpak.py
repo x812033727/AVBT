@@ -39,20 +39,25 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
         n += 1
 
 
-# Strip suffixes that mark a file as a re-download of the SAME content
-# (PikPak's "(2)/(3)" disambiguator, or quality tags). CD1/CD2/A/B/-1/-2
-# survive untouched because they mark *different* content (parts).
+# Strip suffixes that mark a file as a re-download / variant / part of
+# the SAME canonical work:
+#   "(N)"   — PikPak's auto-dedupe on download collision
+#   "_N"    — our preferred multi-part convention (so we stay idempotent
+#             once files have been renamed once)
+#   quality tags — HD / 720p / 1080p / 高清 / …
+# CD1/CD2 / variant letters A/B/C live on the BASE side of the regex
+# and survive (they mark different content).
 _DUP_SUFFIX_RE = re.compile(
-    r"\s*(?:\(\d+\)|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P|高清|超清)\s*$",
+    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P|高清|超清)\s*$",
     re.IGNORECASE,
 )
 
 
 def _canonical_video_name(name: str) -> str:
-    """Return ``name`` with extension + resolution / dup suffixes stripped,
-    upper-cased. Files whose canonical form matches are treated as the
-    same content (only the largest survives a flatten); files whose
-    canonical form differs are treated as parts (all survive)."""
+    """Return ``name`` with extension + resolution / dup / part-index
+    suffixes stripped, upper-cased. Files whose canonical form matches
+    are treated as the same canonical work — they get grouped, large
+    ones become parts, small ones get dropped."""
     stem = name
     # Strip extension once.
     m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
@@ -64,6 +69,70 @@ def _canonical_video_name(name: str) -> str:
         prev = stem
         stem = _DUP_SUFFIX_RE.sub("", stem).strip()
     return stem.upper()
+
+
+def _dup_sort_index(name: str) -> int:
+    """Extract the PikPak ``(N)`` suffix as an int; "no suffix" = 0.
+    Used to order files within a multi-part group so the bare-name one
+    becomes ``_1`` and ``(2)``/``(3)``/... follow naturally."""
+    m = re.search(r"\((\d+)\)", name)
+    return int(m.group(1)) if m else 0
+
+
+_PART_INDEX_RE = re.compile(r"^(.+)_(\d+)$")
+
+
+def _build_multipart_rename_plan(
+    children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
+    min_size: int,
+    is_video_fn,
+) -> dict[str, str]:
+    """For groups of substantial video files sharing a canonical base,
+    return a ``{current_name: target_name}`` map that renames them into
+    the ``<canonical>_N.<ext>`` convention.
+
+    - Files already correctly named ``<canonical>_N.<ext>`` keep their
+      slot (idempotent — re-running cleanup is a no-op).
+    - Unnamed files are sorted by their PikPak ``(N)`` suffix (no suffix
+      counts as 0) and assigned the next free index.
+    """
+    groups: dict[str, list] = {}
+    for c in children:
+        if getattr(c, "kind", "") == "drive#folder":
+            continue
+        if not is_video_fn(c.name):
+            continue
+        canon = _canonical_video_name(c.name)
+        groups.setdefault(canon, []).append(c)
+
+    plan: dict[str, str] = {}
+    for canon, files in groups.items():
+        if len(files) < 2:
+            continue
+        if not all((f.size or 0) >= min_size for f in files):
+            continue
+        used_indices: set[int] = set()
+        unnamed: list = []
+        for f in files:
+            ext = ext_of(f.name)
+            stem = f.name[: -len(ext)] if ext else f.name
+            m = _PART_INDEX_RE.match(stem)
+            if m and m.group(1).upper() == canon:
+                used_indices.add(int(m.group(2)))
+            else:
+                unnamed.append(f)
+        if not unnamed:
+            continue  # already fully named, nothing to do
+        unnamed.sort(key=lambda f: (_dup_sort_index(f.name), f.name))
+        n = 1
+        for f in unnamed:
+            while n in used_indices:
+                n += 1
+            ext = ext_of(f.name)
+            plan[f.name] = f"{canon}_{n}{ext}"
+            used_indices.add(n)
+            n += 1
+    return plan
 
 
 logger = logging.getLogger(__name__)
@@ -568,6 +637,16 @@ class PikPakService:
             return
 
         taken: set[str] = {c.name for c in children}
+
+        # Pre-scan flat video files: when multiple substantial videos
+        # share a canonical form (real multi-part episodes), plan
+        # ``<canon>_N.<ext>`` renames so they're consistently numbered
+        # instead of carrying PikPak's ``(2)/(3)`` auto-dedupe suffix.
+        PART_MIN_BYTES = 500 * 1024 * 1024
+        multipart_plan = _build_multipart_rename_plan(
+            children, PART_MIN_BYTES, is_video
+        )
+
         summary = {
             "total": len(children),
             "renamed": 0,
@@ -613,7 +692,14 @@ class PikPakService:
 
             try:
                 if kind == "file":
-                    target = f"{code_full}{ext_of(child.name)}"
+                    # Multi-part rename plan wins over the default
+                    # single-file naming: when the file is part of a
+                    # group of substantial same-canonical videos we
+                    # give it a ``<canon>_N.<ext>`` slot.
+                    if child.name in multipart_plan:
+                        target = multipart_plan[child.name]
+                    else:
+                        target = f"{code_full}{ext_of(child.name)}"
                     if target == child.name:
                         summary["skipped"] += 1
                         yield {**base_event, "action": "skip", "target": target, "reason": "already_clean"}
@@ -677,15 +763,23 @@ class PikPakService:
                             keepers.append((canon, vids[0]))
                             dropped_count += len(vids) - 1
 
-                    # Decide naming: single canonical group → use the
-                    # wrapper's code_full. Multiple canonical groups
-                    # (CD1/CD2 etc.) or multiple keepers within one
-                    # canonical → use canonical, dedupe collisions.
-                    unique_canons = {c for c, _ in keepers}
+                    # Decide naming:
+                    #  - 1 keeper total → wrapper's code_full
+                    #  - multiple keepers, all distinct canonicals
+                    #    (CD1/CD2/A/B style) → canonical preserves them
+                    #  - multiple keepers sharing a canonical (real
+                    #    parts that look-alike) → ``<canon>_N.<ext>``
+                    canon_group_size: dict[str, int] = {}
+                    canon_seq: dict[str, int] = {}
+                    for canon, _v in keepers:
+                        canon_group_size[canon] = canon_group_size.get(canon, 0) + 1
                     moved: list[str] = []
                     for canon, video in keepers:
-                        if len(keepers) == 1 and len(unique_canons) == 1:
+                        if len(keepers) == 1:
                             target = f"{code_full}{ext_of(video.name)}"
+                        elif canon_group_size[canon] > 1:
+                            canon_seq[canon] = canon_seq.get(canon, 0) + 1
+                            target = f"{canon}_{canon_seq[canon]}{ext_of(video.name)}"
                         else:
                             target = f"{canon}{ext_of(video.name)}"
                         if target != child.name:

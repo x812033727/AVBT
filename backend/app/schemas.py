@@ -175,6 +175,9 @@ class SendAllOptions(BaseModel):
     # File-size filters in megabytes; 0 / None = unbounded
     min_size_mb: Optional[float] = None
     max_size_mb: Optional[float] = None
+    # Soft upper bound: prefer magnets at or below this size, but fall
+    # back to oversized candidates when nothing fits. 0 / None = no soft cap.
+    prefer_max_size_mb: Optional[float] = None
 
 
 class SendAllResult(BaseModel):

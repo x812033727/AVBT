@@ -387,6 +387,27 @@ class PikPakService:
         self._folder_cache[name] = folder_id or ""
         return self._folder_cache[name]
 
+    async def lookup_folder_id(self, name: Optional[str]) -> str:
+        """Like ``folder_id`` but does NOT auto-create missing segments.
+        Returns ``""`` when the path doesn't exist."""
+        if not name:
+            return ""
+        if name in self._folder_cache:
+            return self._folder_cache[name]
+        client = await self._ensure()
+        path = name if name.startswith("/") else f"/{name}"
+        try:
+            result = await client.path_to_id(path, create=False)
+        except Exception:  # noqa: BLE001
+            return ""
+        if isinstance(result, list):
+            folder_id = result[-1].get("id", "") if result else ""
+        else:
+            folder_id = result or ""
+        if folder_id:
+            self._folder_cache[name] = folder_id
+        return folder_id or ""
+
     async def offline_download(self, payload: OfflineSubmit) -> PikPakTask:
         client = await self._ensure()
         folder = payload.folder or settings.pikpak_download_folder

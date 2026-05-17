@@ -25,12 +25,27 @@ class Settings(BaseSettings):
     missing_listing_cache_seconds: int = 3600  # JavBus listing cache
     missing_max_pages: int = 50                # safety cap when crawling a listing
 
+    # Per-kind hierarchy paths. When empty, derived as
+    # ``<pikpak_download_folder>/<kind>``. Set explicitly when your
+    # PikPak layout differs (e.g. nested under a Chinese label or
+    # custom parent path):
+    #   PIKPAK_SERIES_FOLDER=AVBT/AVBT/系列/系列
+    pikpak_series_folder: str = ""
+    pikpak_star_folder: str = ""
+    pikpak_studio_folder: str = ""
+    pikpak_label_folder: str = ""
+    pikpak_director_folder: str = ""
+
     # Actress tracker: every N seconds, check JavBus for new works of
     # every TrackedActress row.
     tracker_enabled: bool = True
     tracker_interval_seconds: int = 3600  # 1 hour
     tracker_auto_send_hd_only: bool = True
     tracker_auto_send_skip_sent: bool = True
+    # Soft cap: prefer magnets ≤ this many MB, but if every candidate
+    # exceeds it, fall back to picking from the oversized ones anyway.
+    # 0 disables the preference.
+    tracker_auto_send_max_size_mb: float = 10240
 
     http_proxy: str = ""
 
@@ -42,3 +57,31 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+_TRACKED_KINDS = ("star", "series", "studio", "label", "director")
+
+
+def kind_base_path(kind: str) -> str:
+    """Where ``<root>/<kind_label>/<name>/`` lives in PikPak for a given
+    kind.
+
+    Default: ``<pikpak_download_folder>/<chinese_label>`` (matches the
+    archiver's natural-language layout, e.g. ``AVBT/系列/回胴錄``).
+    Override per kind with env vars when your layout is custom — e.g.
+    ``PIKPAK_SERIES_FOLDER=AVBT/AVBT/系列/系列``."""
+    explicit = getattr(settings, f"pikpak_{kind}_folder", "") or ""
+    explicit = explicit.strip().strip("/")
+    if explicit:
+        return explicit
+    # Import locally to avoid a circular import (jav_code is stdlib-only
+    # at import time but services depend on config).
+    from .services.jav_code import KIND_LABELS_CH
+    label = KIND_LABELS_CH.get(kind, kind)
+    download = (settings.pikpak_download_folder or "AVBT").strip().strip("/")
+    return f"{download}/{label}"
+
+
+def all_kind_paths() -> list[tuple[str, str]]:
+    """[(kind, path), ...] for every tracked kind."""
+    return [(k, kind_base_path(k)) for k in _TRACKED_KINDS]

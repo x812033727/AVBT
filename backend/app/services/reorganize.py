@@ -33,7 +33,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import select
 
-from ..config import settings
+from ..config import all_kind_paths, kind_base_path, settings
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
@@ -246,11 +246,20 @@ async def _phase1_migrate(
 
 
 def _avbt_root_skip_names() -> frozenset[str]:
-    """Names we leave alone when sweeping the AVBT root: the kind dirs
-    that the archiver itself owns, both new (Chinese) and legacy
-    (English) variants, plus the legacy ``已完成`` archive dir."""
-    skip = set(KIND_LABELS_CH.values())
-    skip.update(KIND_LABELS_CH.keys())
+    """Names we leave alone when sweeping the AVBT root: every kind dir
+    that the archiver owns (per the live config, plus the English-name
+    fallbacks for legacy installs) and the ``已完成`` archive dir."""
+    skip: set[str] = set(KIND_LABELS_CH.keys())  # legacy English names
+    root_clean = (settings.pikpak_download_folder or "AVBT").strip().strip("/")
+    for _kind, path in all_kind_paths():
+        path_clean = path.strip().strip("/")
+        # Only direct children of the root count — custom configs that
+        # point a kind dir at a nested or sibling tree don't pollute
+        # AVBT root, so nothing to skip there.
+        if path_clean.startswith(root_clean + "/"):
+            leaf = path_clean[len(root_clean) + 1:]
+            if leaf and "/" not in leaf:
+                skip.add(leaf)
     legacy_name = (settings.pikpak_archive_folder or "AVBT/已完成").rsplit(
         "/", 1
     )[-1]
@@ -279,11 +288,15 @@ async def _resolve_folder_winner(
 ) -> dict:
     """A code-bearing folder that survived the dedupe step.
 
-    - If it contains ≥1 main video, flatten: keep the largest as a bare
-      ``<code>.<ext>`` at the parent level, trash everything else (other
-      videos, ads, wrapper).
-    - If it contains zero main videos, just rename the folder to the
-      canonical ``<code>`` (or skip when already there).
+    Try hard to extract a video and trash the wrapper, in this order:
+      1. Largest direct video ≥ ``_JUNK_BYTES`` (the original rule).
+      2. Largest direct video of *any* size (handles small / sample-only
+         downloads).
+      3. Largest video found one level deeper inside a nested folder
+         (handles torrent-name-dir wrappers like
+         ``MIUM-1104/<torrent name>/MIUM-1104.mp4``).
+      4. Truly nothing useful → either trash an empty wrapper or just
+         rename it to the canonical code.
 
     Returns ``{action, target, reason}`` so the caller can emit one
     progress event.
@@ -294,18 +307,59 @@ async def _resolve_folder_winner(
     except Exception as exc:  # noqa: BLE001
         return {"action": "error", "target": canonical_folder, "reason": str(exc)}
 
-    videos = [
+    direct_videos = [
         i for i in inner if i.kind != "drive#folder" and is_video(i.name)
     ]
     main_videos = [
-        v for v in videos if v.size is None or v.size >= _JUNK_BYTES
+        v for v in direct_videos if v.size is None or v.size >= _JUNK_BYTES
     ]
 
+    # Steps 2 + 3: if no "main" video, relax — fall back to any direct
+    # video, then to any video one level deeper. We still flatten in
+    # that case so wrappers like ``MIUM-1104/<torrent dir>/<file>``
+    # collapse correctly.
+    if not main_videos and direct_videos:
+        main_videos = direct_videos
+
     if not main_videos:
-        # Nothing to extract — just normalise the folder name.
+        nested = [i for i in inner if i.kind == "drive#folder"]
+        if nested:
+            try:
+                nested_lists = await asyncio.gather(
+                    *[
+                        pikpak_service.list_files(n.id, size=200)
+                        for n in nested
+                    ],
+                    return_exceptions=True,
+                )
+            except Exception:  # noqa: BLE001
+                nested_lists = []
+            deep_videos: list = []
+            for items in nested_lists:
+                if isinstance(items, Exception):
+                    continue
+                for it in items:
+                    if it.kind != "drive#folder" and is_video(it.name):
+                        deep_videos.append(it)
+            if deep_videos:
+                main_videos = deep_videos
+
+    if not main_videos:
+        # Genuinely nothing to extract.
+        if not inner:
+            # Stray empty wrapper — trash and report as flatten so the
+            # user sees their orphaned folder is gone.
+            if not dry_run:
+                try:
+                    await pikpak_service.trash_files([folder.id])
+                except Exception as exc:  # noqa: BLE001
+                    return {"action": "error", "target": canonical_folder,
+                            "reason": str(exc)}
+            return {"action": "flatten", "target": canonical_folder,
+                    "reason": "空資料夾，已刪除"}
         if folder.name == canonical_folder:
             return {"action": "skip", "target": canonical_folder,
-                    "reason": "already_clean"}
+                    "reason": "already_clean (內部無影片)"}
         if not dry_run:
             try:
                 await pikpak_service.rename_file(folder.id, canonical_folder)
@@ -314,9 +368,12 @@ async def _resolve_folder_winner(
                         "reason": str(exc)}
         return {"action": "rename", "target": canonical_folder, "reason": None}
 
-    # Pick the largest main video.
+    # Pick the largest video at whatever depth we found one.
     main_videos.sort(key=lambda v: int(v.size or 0), reverse=True)
     keeper = main_videos[0]
+    # Anything else among the wrapper's *direct* children gets trashed
+    # individually; the nested folder (if keeper came from inside one)
+    # gets cleared by trashing the wrapper at the end.
     trash_ids = [i.id for i in inner if i.id != keeper.id]
     canonical_file = f"{canonical_folder}{ext_of(keeper.name)}"
 
@@ -547,20 +604,60 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         ).scalars().all()
 
     cleanup_targets: list[tuple[str, str, list]] = []
+    seen_target_paths: set[str] = set()
+
+    # Pass 1: tracked listings (use their explicit safe-name path so
+    # rename quirks vs the actual folder name still resolve via lookup).
     for row in tracked_rows:
         safe = _safe_name(
             row.name, fallback=_safe_name(row.id, fallback="unknown")
         )
-        kind_dir = KIND_LABELS_CH.get(row.kind, row.kind)
-        target_path = f"{root_path}/{kind_dir}/{safe}"
+        target_path = f"{kind_base_path(row.kind)}/{safe}"
         try:
-            target_id = await pikpak_service.folder_id(target_path)
+            # Lookup-only so we don't pollute PikPak with empty folders
+            # for tracked listings that have nothing downloaded yet.
+            target_id = await pikpak_service.lookup_folder_id(target_path)
+            if not target_id:
+                continue
             children = await pikpak_service.list_files(target_id, size=500)
         except Exception as exc:  # noqa: BLE001
             logger.warning("can't list %s: %s", target_path, exc)
             continue
         if children:
             cleanup_targets.append((target_path, target_id, children))
+            seen_target_paths.add(target_path)
+
+    # Pass 2: walk every kind base path and pick up sibling name-folders
+    # the tracked-listing pass missed — stale folders, listings the user
+    # never tracked, or tracked rows whose name no longer matches the
+    # on-disk folder name. Cleanup is identical: dedupe / flatten /
+    # rename children inside ``<kind>/<name>/``.
+    for _kind, kind_path in all_kind_paths():
+        try:
+            kind_id = await pikpak_service.lookup_folder_id(kind_path)
+        except Exception:  # noqa: BLE001
+            continue
+        if not kind_id:
+            continue
+        try:
+            name_dirs = await pikpak_service.list_files(kind_id, size=500)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("can't list %s: %s", kind_path, exc)
+            continue
+        for nd in name_dirs:
+            if nd.kind != "drive#folder":
+                continue
+            target_path = f"{kind_path}/{nd.name}"
+            if target_path in seen_target_paths:
+                continue
+            try:
+                children = await pikpak_service.list_files(nd.id, size=500)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("can't list %s: %s", target_path, exc)
+                continue
+            if children:
+                cleanup_targets.append((target_path, nd.id, children))
+                seen_target_paths.add(target_path)
 
     total = (
         len(root_children)
@@ -584,6 +681,7 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         "total": total,
         "dry_run": dry_run,
         "source_folder": legacy_path,
+        "cleanup_targets": [p for p, _, _ in cleanup_targets],
     }
 
     idx = 0

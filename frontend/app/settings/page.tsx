@@ -436,6 +436,7 @@ function ReorganizeSection({
   const [progress, setProgress] = useState<ReorgProgress[]>([]);
   const [result, setResult] = useState<ReorgResult | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [cleanupTargets, setCleanupTargets] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   const loadPresence = useCallback(async () => {
@@ -484,6 +485,7 @@ function ReorganizeSection({
     setResult(null);
     setProgress([]);
     setTotal(0);
+    setCleanupTargets([]);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     const wasDryRun = dryRun;
@@ -492,7 +494,10 @@ function ReorganizeSection({
         "/api/pikpak/reorganize",
         { dry_run: wasDryRun },
         (event) => {
-          if (event.type === "start") setTotal(event.total ?? 0);
+          if (event.type === "start") {
+            setTotal(event.total ?? 0);
+            setCleanupTargets(event.cleanup_targets ?? []);
+          }
           else if (event.type === "progress")
             setProgress((prev) => [...prev, event]);
           else if (event.type === "done") setResult(event.result);
@@ -685,6 +690,27 @@ function ReorganizeSection({
               />
               <span>只預覽（不實際搬移）</span>
             </label>
+
+            {cleanupTargets.length > 0 && (
+              <details className="rounded-md border border-white/10 bg-ink/40 px-3 py-2 text-xs">
+                <summary className="cursor-pointer text-white/70">
+                  清理階段會掃 {cleanupTargets.length} 個資料夾
+                </summary>
+                <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
+                  {cleanupTargets.map((p) => (
+                    <li key={p} className="truncate font-mono text-white/50">
+                      {p}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-white/40">
+                  路徑不對？檢查 .env 的{" "}
+                  <span className="font-mono">PIKPAK_{"<KIND>"}_FOLDER</span>{" "}
+                  設定（例如{" "}
+                  <span className="font-mono">PIKPAK_SERIES_FOLDER</span>），重啟後重試。
+                </p>
+              </details>
+            )}
 
             {errMsg && (
               <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">

@@ -200,11 +200,15 @@ async def _resolve_folder_winner(
 ) -> dict:
     """A code-bearing folder that survived the dedupe step.
 
-    - If it contains ≥1 main video, flatten: keep the largest as a bare
-      ``<code>.<ext>`` at the parent level, trash everything else (other
-      videos, ads, wrapper).
-    - If it contains zero main videos, just rename the folder to the
-      canonical ``<code>`` (or skip when already there).
+    Try hard to extract a video and trash the wrapper, in this order:
+      1. Largest direct video ≥ ``_JUNK_BYTES`` (the original rule).
+      2. Largest direct video of *any* size (handles small / sample-only
+         downloads).
+      3. Largest video found one level deeper inside a nested folder
+         (handles torrent-name-dir wrappers like
+         ``MIUM-1104/<torrent name>/MIUM-1104.mp4``).
+      4. Truly nothing useful → either trash an empty wrapper or just
+         rename it to the canonical code.
 
     Returns ``{action, target, reason}`` so the caller can emit one
     progress event.
@@ -215,18 +219,59 @@ async def _resolve_folder_winner(
     except Exception as exc:  # noqa: BLE001
         return {"action": "error", "target": canonical_folder, "reason": str(exc)}
 
-    videos = [
+    direct_videos = [
         i for i in inner if i.kind != "drive#folder" and is_video(i.name)
     ]
     main_videos = [
-        v for v in videos if v.size is None or v.size >= _JUNK_BYTES
+        v for v in direct_videos if v.size is None or v.size >= _JUNK_BYTES
     ]
 
+    # Steps 2 + 3: if no "main" video, relax — fall back to any direct
+    # video, then to any video one level deeper. We still flatten in
+    # that case so wrappers like ``MIUM-1104/<torrent dir>/<file>``
+    # collapse correctly.
+    if not main_videos and direct_videos:
+        main_videos = direct_videos
+
     if not main_videos:
-        # Nothing to extract — just normalise the folder name.
+        nested = [i for i in inner if i.kind == "drive#folder"]
+        if nested:
+            try:
+                nested_lists = await asyncio.gather(
+                    *[
+                        pikpak_service.list_files(n.id, size=200)
+                        for n in nested
+                    ],
+                    return_exceptions=True,
+                )
+            except Exception:  # noqa: BLE001
+                nested_lists = []
+            deep_videos: list = []
+            for items in nested_lists:
+                if isinstance(items, Exception):
+                    continue
+                for it in items:
+                    if it.kind != "drive#folder" and is_video(it.name):
+                        deep_videos.append(it)
+            if deep_videos:
+                main_videos = deep_videos
+
+    if not main_videos:
+        # Genuinely nothing to extract.
+        if not inner:
+            # Stray empty wrapper — trash and report as flatten so the
+            # user sees their orphaned folder is gone.
+            if not dry_run:
+                try:
+                    await pikpak_service.trash_files([folder.id])
+                except Exception as exc:  # noqa: BLE001
+                    return {"action": "error", "target": canonical_folder,
+                            "reason": str(exc)}
+            return {"action": "flatten", "target": canonical_folder,
+                    "reason": "空資料夾，已刪除"}
         if folder.name == canonical_folder:
             return {"action": "skip", "target": canonical_folder,
-                    "reason": "already_clean"}
+                    "reason": "already_clean (內部無影片)"}
         if not dry_run:
             try:
                 await pikpak_service.rename_file(folder.id, canonical_folder)
@@ -235,9 +280,12 @@ async def _resolve_folder_winner(
                         "reason": str(exc)}
         return {"action": "rename", "target": canonical_folder, "reason": None}
 
-    # Pick the largest main video.
+    # Pick the largest video at whatever depth we found one.
     main_videos.sort(key=lambda v: int(v.size or 0), reverse=True)
     keeper = main_videos[0]
+    # Anything else among the wrapper's *direct* children gets trashed
+    # individually; the nested folder (if keeper came from inside one)
+    # gets cleared by trashing the wrapper at the end.
     trash_ids = [i.id for i in inner if i.id != keeper.id]
     canonical_file = f"{canonical_folder}{ext_of(keeper.name)}"
 

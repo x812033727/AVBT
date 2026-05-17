@@ -94,6 +94,23 @@ export default function PikpakPage() {
     }
   }
 
+  async function sweepNow() {
+    try {
+      const a = await api.post<ArchiverStatus & { moved: number }>(
+        "/api/pikpak/archiver/sweep"
+      );
+      setArchiver(a);
+      if (a.moved) {
+        toast.success(`掃描 TASK 完成，搬移 ${a.moved} 個`);
+        loadTasks();
+      } else {
+        toast.info("TASK 沒有待搬移的項目");
+      }
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
   const failedCount = useMemo(
     () =>
       tasks.filter(
@@ -332,8 +349,15 @@ export default function PikpakPage() {
               最後 {new Date(archiver.last_run + "Z").toLocaleTimeString()}
             </span>
           )}
-          <button className="ml-auto text-blue-300 hover:underline" onClick={runArchiverNow}>
-            立即執行
+          <button
+            className="ml-auto rounded border border-blue-400/40 bg-blue-500/10 px-2 py-0.5 text-blue-200 hover:bg-blue-500/20"
+            onClick={sweepNow}
+            title={`掃描 ${archiver.task_folder}/ 把已下載完的搬到對應的 系列/女優/... 資料夾`}
+          >
+            掃描 TASK 並搬移
+          </button>
+          <button className="text-blue-300 hover:underline" onClick={runArchiverNow}>
+            立即歸檔
           </button>
           {archiver.last_error && (
             <span className="basis-full text-amber-300/80">

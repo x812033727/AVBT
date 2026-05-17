@@ -24,7 +24,7 @@ from typing import AsyncIterator
 
 from ..config import settings
 from .archiver import _resolve_archive_path, _safe_code
-from .jav_code import extract_jav_code
+from .jav_code import ext_of, extract_jav_code
 from .pikpak import pikpak_service
 from .pikpak_presence import presence_index
 
@@ -49,10 +49,12 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         yield {"type": "error", "message": f"列出資料夾失敗: {exc}"}
         return
 
-    folders = [c for c in children if c.kind == "drive#folder"]
-
+    # Process both folders AND bare files. A folder moves as one unit
+    # into the target kind/name dir (becoming the per-code subfolder).
+    # A bare file moves into the same kind/name dir, keeping the file
+    # form but renamed to its canonical "<code>.<ext>".
     summary = {
-        "total": len(folders),
+        "total": len(children),
         "moved": 0,
         "skipped": 0,
         "errors": 0,
@@ -61,7 +63,7 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
 
     yield {
         "type": "start",
-        "total": len(folders),
+        "total": len(children),
         "dry_run": dry_run,
         "source_folder": legacy_path,
     }
@@ -69,13 +71,15 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
     # Cache resolved target parent IDs within this run so we don't
     # round-trip per item to PikPak for the same target dir.
     target_parent_cache: dict[str, str] = {}
+    siblings_cache: dict[str, set[str]] = {}
 
-    for idx, child in enumerate(folders, start=1):
+    for idx, child in enumerate(children, start=1):
         await asyncio.sleep(0.05)
+        is_folder = (child.kind == "drive#folder")
         base_event = {
             "type": "progress",
             "current": idx,
-            "kind": "folder",
+            "kind": "folder" if is_folder else "file",
             "source": child.name,
         }
 
@@ -102,14 +106,22 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
                    "reason": "no_tracked_match"}
             continue
 
-        # Decompose target into (parent, leaf) so we can check for
-        # existing folder collisions cheaply.
         if "/" not in target_path:
             summary["skipped"] += 1
             yield {**base_event, "action": "skip", "target": target_path,
                    "reason": "bad_target"}
             continue
-        parent_path, leaf = target_path.rsplit("/", 1)
+
+        # target_path is always the "code-leaf" form (kind/name/code).
+        # For a folder we keep it as-is; for a file we drop the trailing
+        # code segment and re-attach the file extension.
+        parent_path, code_leaf = target_path.rsplit("/", 1)
+        if is_folder:
+            leaf = code_leaf
+            display_target = target_path
+        else:
+            leaf = f"{code_leaf}{ext_of(child.name)}"
+            display_target = f"{parent_path}/{leaf}"
 
         try:
             parent_id = target_parent_cache.get(parent_path)
@@ -121,17 +133,25 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
                 parent_id = await pikpak_service.folder_id(parent_path)
                 target_parent_cache[parent_path] = parent_id or ""
 
-            siblings = await pikpak_service.list_files(parent_id, size=500) if parent_id else []
-            if any(s.name == leaf for s in siblings):
+            sibling_names = siblings_cache.get(parent_path)
+            if sibling_names is None:
+                rows = (
+                    await pikpak_service.list_files(parent_id, size=500)
+                    if parent_id else []
+                )
+                sibling_names = {r.name for r in rows}
+                siblings_cache[parent_path] = sibling_names
+
+            if leaf in sibling_names:
                 summary["skipped"] += 1
-                yield {**base_event, "action": "skip", "target": target_path,
+                yield {**base_event, "action": "skip", "target": display_target,
                        "reason": "conflict"}
                 continue
 
             if not dry_run:
                 await pikpak_service.move_files([child.id], parent_id)
-                # If the moved folder's name differs from leaf (e.g.
-                # legacy used "MIDV001" but new uses "MIDV-001"), rename.
+                # Normalise the name so e.g. "kfa55.com@DAM-044.mp4"
+                # becomes "DAM-044.mp4", "MIDV001" → "MIDV-001", etc.
                 if child.name != leaf:
                     try:
                         await pikpak_service.rename_file(child.id, leaf)
@@ -139,14 +159,15 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
                         logger.warning(
                             "rename %s → %s failed: %s", child.name, leaf, exc
                         )
+                sibling_names.add(leaf)
 
             summary["moved"] += 1
-            yield {**base_event, "action": "move", "target": target_path, "reason": None}
+            yield {**base_event, "action": "move", "target": display_target, "reason": None}
 
         except Exception as exc:  # noqa: BLE001
             summary["errors"] += 1
             logger.warning("reorganize %s failed: %s", child.name, exc)
-            yield {**base_event, "action": "error", "target": target_path,
+            yield {**base_event, "action": "error", "target": display_target,
                    "reason": str(exc)}
 
     if not dry_run and summary["moved"]:

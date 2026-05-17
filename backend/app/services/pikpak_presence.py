@@ -171,7 +171,9 @@ class PikPakPresenceIndex:
 
     async def _collect_kind(self, root_path: str, kind_dir_id: str) -> set[str]:
         """For an ``AVBT/<kind>`` dir: list name dirs, then list each
-        name dir's children — those are the code-named leaves."""
+        name dir's children — leaves may be code-named folders
+        (``DAM-043/``) OR bare video files (``DAM-044.mp4``); both
+        count as the code being present."""
         name_dirs = await self._list(kind_dir_id)
         targets = [n for n in name_dirs if n.kind == "drive#folder"]
         if not targets:
@@ -189,11 +191,11 @@ class PikPakPresenceIndex:
         for name_dir, leaves in zip(targets, leaf_lists):
             if isinstance(leaves, Exception):
                 continue
+            parent = f"{root_path}/{name_dir.name}"
             for leaf in leaves:
-                if leaf.kind != "drive#folder":
-                    continue
+                # Leaves may be code-named folders (``DAM-043/``) OR bare
+                # video files (``DAM-044.mp4``); both count as present.
                 leaves_total += 1
-                parent = f"{root_path}/{name_dir.name}"
                 c = normalize_code(leaf.name)
                 if c:
                     codes.add(c)
@@ -216,14 +218,13 @@ class PikPakPresenceIndex:
     async def _collect_legacy(
         self, root_path: str, legacy_dir_id: str
     ) -> set[str]:
-        """``AVBT/已完成/<code>`` — depth 1, the names ARE the codes."""
+        """``AVBT/已完成/<leaf>`` — depth 1. Leaves may be code-named
+        folders or bare video files; both count."""
         leaves = await self._list(legacy_dir_id)
         codes: set[str] = set()
         unrecognized_count = 0
         leaves_total = 0
         for leaf in leaves:
-            if leaf.kind != "drive#folder":
-                continue
             leaves_total += 1
             c = normalize_code(leaf.name)
             if c:

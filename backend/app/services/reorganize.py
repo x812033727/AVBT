@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import AsyncIterator
 
 from sqlalchemy import select
@@ -85,6 +86,32 @@ def _canonical_name(child, code: str) -> str:
     if child.kind == "drive#folder":
         return _safe_code(code) or code
     return f"{_safe_code(code) or code}{ext_of(child.name)}"
+
+
+def _phase1_file_leaf(original_name: str, code_leaf: str, ext: str) -> str:
+    """Pick a leaf name for a file being phase-1 moved/renamed.
+
+    Default ``<code_leaf><ext>``, but if the source already ends in
+    ``<code><variant?>_N`` (a multipart marker — three real episodes,
+    not a resolution dup), preserve the ``_N``. Otherwise three parts
+    sitting in AVBT root all collapse onto ``<code><ext>`` and the
+    later ones end up with ``(2)`` / ``(3)`` collision suffixes, only
+    for a subsequent reorganize phase-2 pass to renumber them back."""
+    stem = (
+        original_name[:-len(ext)]
+        if ext and original_name.endswith(ext)
+        else original_name
+    )
+    # Anchor on the code (with optional variant letter) so prefixed
+    # forms like ``hhd800.com@SOE-462_1`` still get their ``_N`` kept.
+    tail_re = re.compile(
+        rf"(?:^|[^A-Z0-9]){re.escape(code_leaf)}[A-Z]?_(\d+)$",
+        re.IGNORECASE,
+    )
+    m = tail_re.search(stem)
+    if m:
+        return f"{code_leaf}_{m.group(1)}{ext}"
+    return f"{code_leaf}{ext}"
 
 
 async def _phase1_migrate_from(
@@ -167,10 +194,12 @@ async def _phase1_migrate_from(
         # place if needed; don't issue a no-op move.
         if parent_path == source_path:
             if is_folder:
-                leaf = code_leaf
+                leaf = _phase1_file_leaf(child.name, code_leaf, "")
                 display_target = f"{parent_path}/{leaf}"
             else:
-                leaf = f"{code_leaf}{ext_of(child.name)}"
+                leaf = _phase1_file_leaf(
+                    child.name, code_leaf, ext_of(child.name)
+                )
                 display_target = f"{parent_path}/{leaf}"
             if leaf == child.name:
                 yield {**base, "action": "skip", "target": display_target,
@@ -187,10 +216,12 @@ async def _phase1_migrate_from(
             continue
 
         if is_folder:
-            leaf = code_leaf
-            display_target = target_path
+            leaf = _phase1_file_leaf(child.name, code_leaf, "")
+            display_target = f"{parent_path}/{leaf}"
         else:
-            leaf = f"{code_leaf}{ext_of(child.name)}"
+            leaf = _phase1_file_leaf(
+                child.name, code_leaf, ext_of(child.name)
+            )
             display_target = f"{parent_path}/{leaf}"
 
         try:

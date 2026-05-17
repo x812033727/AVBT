@@ -33,7 +33,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import select
 
-from ..config import kind_base_path, settings
+from ..config import all_kind_paths, kind_base_path, settings
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
@@ -457,6 +457,10 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         ).scalars().all()
 
     cleanup_targets: list[tuple[str, str, list]] = []
+    seen_target_paths: set[str] = set()
+
+    # Pass 1: tracked listings (use their explicit safe-name path so
+    # rename quirks vs the actual folder name still resolve via lookup).
     for row in tracked_rows:
         safe = _safe_name(
             row.name, fallback=_safe_name(row.id, fallback="unknown")
@@ -474,6 +478,39 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
             continue
         if children:
             cleanup_targets.append((target_path, target_id, children))
+            seen_target_paths.add(target_path)
+
+    # Pass 2: walk every kind base path and pick up sibling name-folders
+    # the tracked-listing pass missed — stale folders, listings the user
+    # never tracked, or tracked rows whose name no longer matches the
+    # on-disk folder name. Cleanup is identical: dedupe / flatten /
+    # rename children inside ``<kind>/<name>/``.
+    for _kind, kind_path in all_kind_paths():
+        try:
+            kind_id = await pikpak_service.lookup_folder_id(kind_path)
+        except Exception:  # noqa: BLE001
+            continue
+        if not kind_id:
+            continue
+        try:
+            name_dirs = await pikpak_service.list_files(kind_id, size=500)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("can't list %s: %s", kind_path, exc)
+            continue
+        for nd in name_dirs:
+            if nd.kind != "drive#folder":
+                continue
+            target_path = f"{kind_path}/{nd.name}"
+            if target_path in seen_target_paths:
+                continue
+            try:
+                children = await pikpak_service.list_files(nd.id, size=500)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("can't list %s: %s", target_path, exc)
+                continue
+            if children:
+                cleanup_targets.append((target_path, nd.id, children))
+                seen_target_paths.add(target_path)
 
     total = len(legacy_children) + sum(len(c) for _, _, c in cleanup_targets)
 

@@ -384,7 +384,7 @@ type ReorgProgress = {
   current: number;
   source: string;
   kind: "folder" | "file";
-  action: "move" | "rename" | "dedupe" | "skip" | "error";
+  action: "move" | "rename" | "flatten" | "dedupe" | "skip" | "error";
   target: string | null;
   reason: string | null;
   section?: "migrate" | "cleanup";
@@ -395,6 +395,7 @@ type ReorgResult = {
   total: number;
   moved: number;
   renamed: number;
+  flattened: number;
   deduped: number;
   skipped: number;
   errors: number;
@@ -404,6 +405,7 @@ type ReorgResult = {
 const REORG_ACTION: Record<ReorgProgress["action"], { text: string; cls: string }> = {
   move: { text: "→ 搬移", cls: "text-blue-300" },
   rename: { text: "✎ 改名", cls: "text-cyan-300" },
+  flatten: { text: "📤 攤平", cls: "text-emerald-300" },
   dedupe: { text: "🗑 去重", cls: "text-purple-300" },
   skip: { text: "⏭ 略過", cls: "text-white/50" },
   error: { text: "✗ 失敗", cls: "text-red-300" },
@@ -664,9 +666,9 @@ function ReorganizeSection({
                 <span className="rounded bg-purple-500/15 px-1 text-[10px] text-purple-300">
                   清理
                 </span>{" "}
-                走訪每個追蹤分類的目的資料夾，髒名字改成 canonical
+                走訪每個追蹤分類的目的資料夾：髒名字改成 canonical
                 <span className="font-mono">（&lt;番號&gt; / &lt;番號&gt;.ext）</span>
-                ；同番號重複出現時保留較大者，其餘移到 PikPak 回收筒（可救回）。
+                ；wrapper 資料夾裡有 ≥1 個主檔（≥300 MB）就攤平，取最大的影片到父層、其餘垃圾與空殼丟回收筒；同番號重複時保留較大者。
               </p>
             </div>
 
@@ -696,6 +698,7 @@ function ReorganizeSection({
                   <span>
                     搬 {progress.filter((p) => p.action === "move").length} ／
                     名 {progress.filter((p) => p.action === "rename").length} ／
+                    平 {progress.filter((p) => p.action === "flatten").length} ／
                     去 {progress.filter((p) => p.action === "dedupe").length} ／
                     略 {progress.filter((p) => p.action === "skip").length} ／
                     錯 {progress.filter((p) => p.action === "error").length}
@@ -770,6 +773,7 @@ function ReorganizeSection({
                 </div>
                 <div className="text-blue-300">→ 搬移 {result.moved}</div>
                 <div className="text-cyan-300">✎ 改名 {result.renamed}</div>
+                <div className="text-emerald-300">📤 攤平 {result.flattened}</div>
                 <div className="text-purple-300">🗑 去重 {result.deduped}</div>
                 <div className="text-white/60">⏭ 略過 {result.skipped}</div>
                 {result.errors > 0 && (

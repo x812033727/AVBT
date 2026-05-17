@@ -7,11 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
 from .routers import backup, collection, img, javbus, pikpak, tracked
 from .services import archiver, notify, tracker
+from .services.download_queue import download_queue
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await download_queue.start()
     background = [
         asyncio.create_task(archiver.run_loop()),
         asyncio.create_task(tracker.run_loop()),
@@ -26,6 +28,7 @@ async def lifespan(app: FastAPI):
                 await t
             except asyncio.CancelledError:
                 pass
+        await download_queue.stop()
         await img.aclose_client()
         await notify.aclose_client()
 

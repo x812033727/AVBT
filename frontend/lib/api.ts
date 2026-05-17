@@ -369,3 +369,29 @@ export type PresenceCodeLookup = {
   code: string;
   paths: string[];
 };
+
+export type QueueStatus = {
+  concurrency: number;
+  pending: number;
+  processing: { code: string; source: string }[];
+  totals: {
+    sent: number;
+    skipped_no_magnet: number;
+    skipped_already_sent: number;
+    failed: number;
+    cancelled: number;
+  };
+  recent: {
+    at: string;
+    code: string;
+    source: string;
+    status:
+      | "sent"
+      | "skipped_no_magnet"
+      | "skipped_already_sent"
+      | "failed"
+      | "cancelled";
+    message: string;
+    magnet_name: string;
+  }[];
+};

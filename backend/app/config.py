@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     # 0 disables the preference.
     tracker_auto_send_max_size_mb: float = 10240
 
+    # Global download queue: every PikPak offline submission (tracker
+    # auto-send, bulk send-all, single magnet) routes through one queue
+    # with a fixed worker pool. Higher = faster but more likely to trip
+    # PikPak's rate limits. 5 is a safe default; bump to 8 for bursty
+    # backlog catch-up.
+    download_queue_concurrency: int = 5
+
     http_proxy: str = ""
 
     # Optional webhook fired after each successful auto-archive. Body is

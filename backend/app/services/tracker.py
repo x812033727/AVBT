@@ -10,7 +10,7 @@ import random
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
@@ -18,7 +18,7 @@ from ..models import TrackedListing
 from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
 from . import missing as missing_svc
-from .bulk import send_codes_stream
+from .download_queue import Job, download_queue
 from .notify import send_webhook
 from .pikpak_presence import presence_index
 
@@ -54,48 +54,56 @@ class TrackerState:
 state = TrackerState()
 
 
-async def _auto_send(codes: list[str]) -> None:
-    if not codes:
-        return
-    options = SendAllOptions(
+def _tracker_options() -> SendAllOptions:
+    return SendAllOptions(
         hd_only=settings.tracker_auto_send_hd_only,
         skip_sent=settings.tracker_auto_send_skip_sent,
         prefer_max_size_mb=settings.tracker_auto_send_max_size_mb or None,
     )
-    try:
-        async for _event in send_codes_stream(codes, options):
-            pass
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("tracker auto-send failed: %s", exc)
 
 
-async def _auto_send_missing(kind: str, slug: str) -> None:
-    """For an auto_send-enabled tracked listing, also push any codes
-    that are in the JavBus catalog but not yet on PikPak — not just
-    ones newer than the baseline. Skips silently when the presence
-    index isn't built (we'd otherwise mistake "no data" for "nothing
-    downloaded" and try to send the entire catalog)."""
+async def _enqueue_auto_send(
+    kind: str, slug: str, new_codes: list[str]
+) -> int:
+    """Combine ``new_codes`` (just-detected on page 1) with the listing's
+    missing-from-PikPak codes (when the presence index is ready), dedupe,
+    and push everything into the global download queue.
+
+    Returns the number of codes enqueued. The queue itself coalesces
+    duplicates that are already pending or in-flight, so calling this
+    every tracker tick is safe — codes already being processed won't
+    get re-submitted to PikPak."""
+    combined: list[str] = list(new_codes)
+    seen: set[str] = {c for c in combined if c}
+
     status = presence_index.status()
-    if not status.get("ready"):
-        return  # no PikPak inventory data → can't safely tell what's missing
-    if status.get("last_error"):
-        return  # presence build had errors → don't trust the data
-    try:
-        result = await missing_svc.missing_for_listing(kind, slug)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "auto-send-missing: missing_for_listing %s/%s failed: %s",
-            kind, slug, exc,
+    # Only walk the JavBus catalog for the missing list when we have
+    # trustworthy PikPak inventory data. Otherwise we'd mistake "no data"
+    # for "nothing downloaded" and try to send the entire catalog.
+    if status.get("ready") and not status.get("last_error"):
+        try:
+            result = await missing_svc.missing_for_listing(kind, slug)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "auto-send-missing %s/%s failed: %s", kind, slug, exc
+            )
+            result = None
+        if result and result.total:
+            for m in result.missing:
+                if m.code and m.code not in seen:
+                    seen.add(m.code)
+                    combined.append(m.code)
+
+    if not combined:
+        return 0
+
+    options = _tracker_options()
+    source = f"tracker:{kind}:{slug}"
+    for code in combined:
+        await download_queue.enqueue(
+            Job(code=code, options=options, source=source)
         )
-        return
-    if not result.total:
-        # JavBus listing returned nothing (slug invalid / network etc.) —
-        # we already short-circuit extras in missing_for_listing; nothing
-        # safe to send here either.
-        return
-    codes = [m.code for m in result.missing if m.code]
-    if codes:
-        await _auto_send(codes)
+    return len(combined)
 
 
 async def _detect_new(
@@ -163,15 +171,18 @@ async def check_listing(kind: str, listing_id: str) -> dict:
         asyncio.create_task(send_webhook(msg))
 
     if auto_send:
-        # Two-tier send:
-        # 1. Always fire on freshly-seen new_codes (cheap — just page 1).
-        # 2. Also try to fill ANY missing-from-PikPak code in the catalog
-        #    (walks all listing pages — cached for 1h). Without this the
-        #    auto_send flag only catches works that appeared AFTER you
-        #    started tracking, never the older missing entries.
-        if had_baseline and new_codes:
-            asyncio.create_task(_auto_send(new_codes))
-        asyncio.create_task(_auto_send_missing(actual_kind, slug))
+        # One-pass enqueue:
+        #   freshly-seen new_codes (cheap — just page 1)
+        #   ∪ JavBus catalog codes still missing from PikPak (walks all
+        #     listing pages, cached for 1h; only when presence index is
+        #     ready)
+        # Both sets go to the global download queue, which dedupes
+        # in-flight, so the worker pool serialises submissions across
+        # every listing rather than each listing firing its own burst.
+        # We don't await — tracker stays responsive even when the
+        # listing's backlog is hundreds of codes.
+        fresh = new_codes if had_baseline else []
+        asyncio.create_task(_enqueue_auto_send(actual_kind, slug, fresh))
 
     return {
         "kind": kind,

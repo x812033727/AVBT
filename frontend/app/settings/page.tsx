@@ -564,8 +564,12 @@ function ReorganizeSection({
         >
           {refreshing ? "重建索引中…" : "重建索引"}
         </button>
-        <button className="btn-ghost" onClick={() => setOpen(true)}>
-          整理舊資料夾…
+        <button
+          className="btn-ghost"
+          onClick={() => setOpen(true)}
+          title="掃 AVBT 根目錄 + 舊版「已完成」,依番號對應的追蹤分類搬到 AVBT/<類別>/<名稱>/,並做命名正規化"
+        >
+          整理 PikPak 資料夾…
         </button>
         <button
           className="btn-ghost"
@@ -655,8 +659,8 @@ function ReorganizeSection({
                 <span className="rounded bg-blue-500/15 px-1 text-[10px] text-blue-300">
                   搬移
                 </span>{" "}
-                把{" "}
-                <span className="font-mono">AVBT/已完成</span> 下的番號搬到對應追蹤分類（優先序 series &gt; director &gt; label &gt; studio &gt; star）
+                掃 <span className="font-mono">AVBT/</span> 根目錄裡的散檔 / BT 命名資料夾,加上舊版{" "}
+                <span className="font-mono">AVBT/已完成</span> 的內容,依番號對應的追蹤分類搬到（優先序 series &gt; director &gt; label &gt; studio &gt; star）
                 <span className="font-mono">
                   AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;
                 </span>

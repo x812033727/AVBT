@@ -37,8 +37,12 @@ from ..config import settings
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
-from .jav_code import ext_of, extract_jav_code, is_video
-from .pikpak import pikpak_service
+from .jav_code import KIND_LABELS_CH, ext_of, extract_jav_code, is_video
+from .pikpak import (
+    _build_video_rename_plan,
+    _uniquify_target,
+    pikpak_service,
+)
 from .pikpak_presence import presence_index
 
 
@@ -83,31 +87,36 @@ def _canonical_name(child, code: str) -> str:
     return f"{_safe_code(code) or code}{ext_of(child.name)}"
 
 
-async def _phase1_migrate(
-    *, dry_run: bool, idx_start: int
+async def _phase1_migrate_from(
+    source_path: str,
+    *,
+    dry_run: bool,
+    idx_start: int,
+    skip_names: frozenset[str] = frozenset(),
 ) -> AsyncIterator[dict]:
-    """Yield events for legacy → hierarchy migration. Returns when done.
+    """Walk ``source_path`` and migrate each child to its kind/name
+    target. Children whose ``name`` is in ``skip_names`` are left alone
+    (used at the AVBT root to skip the kind dirs themselves and the
+    legacy ``已完成`` dir)."""
+    try:
+        source_id = await pikpak_service.folder_id(source_path)
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "_phase1_error", "message": f"無法解析 {source_path}: {exc}"}
+        return
+    if not source_id:
+        yield {"type": "_phase1_error", "message": f"找不到資料夾 {source_path}"}
+        return
 
-    Uses module-level counters via closure-style state by yielding event
-    dicts that already contain the proper ``current`` value."""
+    try:
+        children_all = await pikpak_service.list_files(source_id, size=500)
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "_phase1_error", "message": f"列出 {source_path} 失敗: {exc}"}
+        return
+
+    children = [c for c in children_all if c.name not in skip_names]
+    yield {"type": "_phase1_total", "count": len(children), "source": source_path}
+
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
-    try:
-        legacy_id = await pikpak_service.folder_id(legacy_path)
-    except Exception as exc:  # noqa: BLE001
-        yield {"type": "_phase1_error", "message": f"無法解析來源資料夾: {exc}"}
-        return
-    if not legacy_id:
-        yield {"type": "_phase1_error", "message": f"找不到資料夾 {legacy_path}"}
-        return
-
-    try:
-        children = await pikpak_service.list_files(legacy_id, size=500)
-    except Exception as exc:  # noqa: BLE001
-        yield {"type": "_phase1_error", "message": f"列出資料夾失敗: {exc}"}
-        return
-
-    yield {"type": "_phase1_total", "count": len(children), "source": legacy_path}
-
     target_parent_cache: dict[str, str] = {}
     siblings_cache: dict[str, set[str]] = {}
 
@@ -122,7 +131,7 @@ async def _phase1_migrate(
             "kind": "folder" if is_folder else "file",
             "source": child.name,
             "section": "migrate",
-            "context": legacy_path,
+            "context": source_path,
         }
 
         code = extract_jav_code(child.name)
@@ -137,8 +146,10 @@ async def _phase1_migrate(
                    "reason": f"resolve_failed: {exc}"}
             continue
 
+        # If the resolved target equals the source-as-archive fallback
+        # AND we're already processing that source, nothing to do.
         legacy_target = f"{legacy_path}/{_safe_code(code)}"
-        if target_path == legacy_target:
+        if source_path == legacy_path and target_path == legacy_target:
             yield {**base, "action": "skip", "target": target_path,
                    "reason": "no_tracked_match"}
             continue
@@ -149,6 +160,32 @@ async def _phase1_migrate(
             continue
 
         parent_path, code_leaf = target_path.rsplit("/", 1)
+
+        # When the child is already a direct child of the resolved
+        # target's parent (e.g. ``MFCW-054/`` already in AVBT root and
+        # target resolves to ``AVBT/已完成/MFCW-054``), only rename in
+        # place if needed; don't issue a no-op move.
+        if parent_path == source_path:
+            if is_folder:
+                leaf = code_leaf
+                display_target = f"{parent_path}/{leaf}"
+            else:
+                leaf = f"{code_leaf}{ext_of(child.name)}"
+                display_target = f"{parent_path}/{leaf}"
+            if leaf == child.name:
+                yield {**base, "action": "skip", "target": display_target,
+                       "reason": "already_in_place"}
+                continue
+            try:
+                if not dry_run:
+                    await pikpak_service.rename_file(child.id, leaf)
+                yield {**base, "action": "rename", "target": display_target,
+                       "reason": None}
+            except Exception as exc:  # noqa: BLE001
+                yield {**base, "action": "error", "target": display_target,
+                       "reason": str(exc)}
+            continue
+
         if is_folder:
             leaf = code_leaf
             display_target = target_path
@@ -171,21 +208,23 @@ async def _phase1_migrate(
                 sibling_names = {r.name for r in rows}
                 siblings_cache[parent_path] = sibling_names
 
-            if leaf in sibling_names:
-                yield {**base, "action": "skip", "target": display_target,
-                       "reason": "conflict"}
-                continue
+            # On collision, deduplicate with " (N)" rather than skipping.
+            # Phase 2 cleanup will resolve real winners + apply _N
+            # multipart naming after all moves land.
+            final_leaf = _uniquify_target(leaf, sibling_names)
+            if final_leaf != leaf:
+                display_target = f"{parent_path}/{final_leaf}"
 
             if not dry_run:
                 await pikpak_service.move_files([child.id], parent_id)
-                if child.name != leaf:
+                if child.name != final_leaf:
                     try:
-                        await pikpak_service.rename_file(child.id, leaf)
+                        await pikpak_service.rename_file(child.id, final_leaf)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
-                            "rename %s → %s failed: %s", child.name, leaf, exc
+                            "rename %s → %s failed: %s", child.name, final_leaf, exc
                         )
-                sibling_names.add(leaf)
+                sibling_names.add(final_leaf)
 
             yield {**base, "action": "move", "target": display_target, "reason": None}
 
@@ -193,6 +232,46 @@ async def _phase1_migrate(
             logger.warning("reorganize %s failed: %s", child.name, exc)
             yield {**base, "action": "error", "target": display_target,
                    "reason": str(exc)}
+
+
+async def _phase1_migrate(
+    *, dry_run: bool, idx_start: int
+) -> AsyncIterator[dict]:
+    """Walk the legacy ``AVBT/已完成`` folder (back-compat wrapper)."""
+    legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
+    async for ev in _phase1_migrate_from(
+        legacy_path, dry_run=dry_run, idx_start=idx_start
+    ):
+        yield ev
+
+
+def _avbt_root_skip_names() -> frozenset[str]:
+    """Names we leave alone when sweeping the AVBT root: the kind dirs
+    that the archiver itself owns, both new (Chinese) and legacy
+    (English) variants, plus the legacy ``已完成`` archive dir."""
+    skip = set(KIND_LABELS_CH.values())
+    skip.update(KIND_LABELS_CH.keys())
+    legacy_name = (settings.pikpak_archive_folder or "AVBT/已完成").rsplit(
+        "/", 1
+    )[-1]
+    skip.add(legacy_name)
+    return frozenset(skip)
+
+
+async def _phase1_migrate_root(
+    *, dry_run: bool, idx_start: int
+) -> AsyncIterator[dict]:
+    """Pick up files/folders that landed at the AVBT root (manual
+    uploads, magnet drops outside the app, leftovers from past tools)
+    and route them into the kind/name hierarchy too."""
+    root = settings.pikpak_download_folder or "AVBT"
+    async for ev in _phase1_migrate_from(
+        root,
+        dry_run=dry_run,
+        idx_start=idx_start,
+        skip_names=_avbt_root_skip_names(),
+    ):
+        yield ev
 
 
 async def _resolve_folder_winner(
@@ -283,11 +362,53 @@ async def _phase2_cleanup_target(
     idx_start: int,
 ) -> AsyncIterator[dict]:
     """Yield events for one ``AVBT/<kind>/<name>/`` cleanup."""
-    # Group children by extracted code.
+    PART_MIN = 500 * 1024 * 1024
+
+    # First: detect real multi-part groups (2+ substantial videos that
+    # share a canonical). Those get _N naming and are EXCLUDED from
+    # the winner-based dedup below — otherwise we'd trash the smaller
+    # episodes thinking they were resolution duplicates.
+    multipart_plan, multipart_members = _build_video_rename_plan(
+        children, PART_MIN, is_video
+    )
+    handled_ids: set[str] = set()
+    idx = idx_start
+    for c in children:
+        if c.name not in multipart_members:
+            continue
+        await asyncio.sleep(0.03)
+        idx += 1
+        base = {
+            "type": "progress",
+            "current": idx,
+            "kind": "folder" if c.kind == "drive#folder" else "file",
+            "source": c.name,
+            "section": "cleanup",
+            "context": target_path,
+        }
+        try:
+            if c.name in multipart_plan:
+                new_name = multipart_plan[c.name]
+                if not dry_run:
+                    await pikpak_service.rename_file(c.id, new_name)
+                yield {**base, "action": "rename", "target": new_name,
+                       "reason": "多分集"}
+            else:
+                yield {**base, "action": "skip", "target": c.name,
+                       "reason": "already_clean"}
+            handled_ids.add(c.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("multipart rename %s failed: %s", c.name, exc)
+            yield {**base, "action": "error", "target": None,
+                   "reason": str(exc)}
+
+    # Group remaining children by extracted code for the winner-pick
+    # / canonical-name pass.
+    remaining = [c for c in children if c.id not in handled_ids]
     groups: dict[str, list] = {}
     no_code_items: list = []
 
-    for c in children:
+    for c in remaining:
         code = extract_jav_code(c.name)
         if not code:
             no_code_items.append(c)
@@ -343,7 +464,8 @@ async def _phase2_cleanup_target(
     order = {"dedupe": 0, "winner_folder": 1, "rename": 2, "skip": 3}
     plan.sort(key=lambda p: order.get(p[1], 4))
 
-    idx = idx_start
+    # ``idx`` is already advanced from the multipart pre-pass above;
+    # don't reset it or the progress bar will rewind.
     for c, phase, target_name, reason, code in plan:
         await asyncio.sleep(0.03)
         idx += 1
@@ -382,14 +504,29 @@ async def _phase2_cleanup_target(
 
 async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
+    root_path = settings.pikpak_download_folder or "AVBT"
 
     # ---- Pre-flight: resolve totals so the progress bar has a real
     # denominator. Also lets us short-circuit if PikPak isn't reachable.
     try:
+        root_id = await pikpak_service.folder_id(root_path)
         legacy_id = await pikpak_service.folder_id(legacy_path)
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "message": f"無法解析來源資料夾: {exc}"}
         return
+
+    # Sources for migration:
+    #  - AVBT root direct children (skipping the kind dirs and legacy)
+    #  - the legacy 已完成 dir
+    try:
+        root_children_all = (
+            await pikpak_service.list_files(root_id, size=500) if root_id else []
+        )
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "error", "message": f"列出 {root_path} 失敗: {exc}"}
+        return
+    skip_names = _avbt_root_skip_names()
+    root_children = [c for c in root_children_all if c.name not in skip_names]
 
     try:
         legacy_children = (
@@ -397,24 +534,25 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
             if legacy_id else []
         )
     except Exception as exc:  # noqa: BLE001
-        yield {"type": "error", "message": f"列出資料夾失敗: {exc}"}
+        yield {"type": "error", "message": f"列出 {legacy_path} 失敗: {exc}"}
         return
 
     # Resolve every tracked listing's destination folder. folder_id auto-
     # creates, so an empty tracked listing just yields an empty folder
-    # with zero work — harmless.
+    # with zero work — harmless. Uses the Chinese kind label to match
+    # what the archiver actually writes to (AVBT/系列/X not AVBT/series/X).
     async with SessionLocal() as session:
         tracked_rows = (
             await session.execute(select(TrackedListing))
         ).scalars().all()
 
-    root = settings.pikpak_download_folder or "AVBT"
     cleanup_targets: list[tuple[str, str, list]] = []
     for row in tracked_rows:
         safe = _safe_name(
             row.name, fallback=_safe_name(row.id, fallback="unknown")
         )
-        target_path = f"{root}/{row.kind}/{safe}"
+        kind_dir = KIND_LABELS_CH.get(row.kind, row.kind)
+        target_path = f"{root_path}/{kind_dir}/{safe}"
         try:
             target_id = await pikpak_service.folder_id(target_path)
             children = await pikpak_service.list_files(target_id, size=500)
@@ -424,7 +562,11 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         if children:
             cleanup_targets.append((target_path, target_id, children))
 
-    total = len(legacy_children) + sum(len(c) for _, _, c in cleanup_targets)
+    total = (
+        len(root_children)
+        + len(legacy_children)
+        + sum(len(c) for _, _, c in cleanup_targets)
+    )
 
     summary = {
         "total": total,
@@ -446,7 +588,26 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
 
     idx = 0
 
-    # ---- Phase 1: migrate ----
+    # ---- Phase 1a: migrate AVBT root ----
+    async for ev in _phase1_migrate_root(dry_run=dry_run, idx_start=idx):
+        if ev.get("type") == "_phase1_error":
+            yield {"type": "error", "message": ev.get("message", "")}
+            continue
+        if ev.get("type") == "_phase1_total":
+            continue
+        action = ev.get("action")
+        if action == "move":
+            summary["moved"] += 1
+        elif action == "rename":
+            summary["renamed"] += 1
+        elif action == "skip":
+            summary["skipped"] += 1
+        elif action == "error":
+            summary["errors"] += 1
+        idx = ev.get("current", idx)
+        yield ev
+
+    # ---- Phase 1b: migrate legacy 已完成 ----
     async for ev in _phase1_migrate(dry_run=dry_run, idx_start=idx):
         if ev.get("type") == "_phase1_error":
             yield {"type": "error", "message": ev.get("message", "")}
@@ -457,6 +618,8 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         action = ev.get("action")
         if action == "move":
             summary["moved"] += 1
+        elif action == "rename":
+            summary["renamed"] += 1
         elif action == "skip":
             summary["skipped"] += 1
         elif action == "error":

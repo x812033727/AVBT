@@ -382,14 +382,19 @@ export default function SettingsPage() {
 type ReorgProgress = {
   current: number;
   source: string;
-  action: "move" | "skip" | "error";
+  kind: "folder" | "file";
+  action: "move" | "rename" | "dedupe" | "skip" | "error";
   target: string | null;
   reason: string | null;
+  section?: "migrate" | "cleanup";
+  context?: string;
 };
 
 type ReorgResult = {
   total: number;
   moved: number;
+  renamed: number;
+  deduped: number;
   skipped: number;
   errors: number;
   dry_run: boolean;
@@ -397,6 +402,8 @@ type ReorgResult = {
 
 const REORG_ACTION: Record<ReorgProgress["action"], { text: string; cls: string }> = {
   move: { text: "→ 搬移", cls: "text-blue-300" },
+  rename: { text: "✎ 改名", cls: "text-cyan-300" },
+  dedupe: { text: "🗑 去重", cls: "text-purple-300" },
   skip: { text: "⏭ 略過", cls: "text-white/50" },
   error: { text: "✗ 失敗", cls: "text-red-300" },
 };
@@ -407,6 +414,8 @@ const REORG_REASON: Record<string, string> = {
   conflict: "目標已有同名資料夾",
   bad_target: "解析目標路徑失敗",
   resolve_failed: "查詢 JavBus 失敗",
+  already_clean: "已經規範化",
+  duplicate: "重複（保留較大者）",
 };
 
 function ReorganizeSection({
@@ -562,7 +571,7 @@ function ReorganizeSection({
         >
           <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
             <div className="flex items-center">
-              <h2 className="text-lg font-semibold">整理 AVBT/已完成</h2>
+              <h2 className="text-lg font-semibold">重新整理 PikPak 結構</h2>
               <button
                 className="ml-auto text-white/40 hover:text-white"
                 onClick={close}
@@ -571,14 +580,27 @@ function ReorganizeSection({
               </button>
             </div>
 
-            <p className="text-xs text-white/50">
-              掃描{" "}
-              <span className="font-mono">AVBT/已完成</span> 下的每個番號資料夾，根據 JavBus 詳情找到對應的追蹤分類（優先序 series &gt; director &gt; label &gt; studio &gt; star），把資料夾搬到{" "}
-              <span className="font-mono">
-                AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;
-              </span>
-              。沒有對應追蹤分類的會留在原位。
-            </p>
+            <div className="space-y-1 text-xs text-white/50">
+              <p>
+                <span className="rounded bg-blue-500/15 px-1 text-[10px] text-blue-300">
+                  搬移
+                </span>{" "}
+                把{" "}
+                <span className="font-mono">AVBT/已完成</span> 下的番號搬到對應追蹤分類（優先序 series &gt; director &gt; label &gt; studio &gt; star）
+                <span className="font-mono">
+                  AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;
+                </span>
+                。
+              </p>
+              <p>
+                <span className="rounded bg-purple-500/15 px-1 text-[10px] text-purple-300">
+                  清理
+                </span>{" "}
+                走訪每個追蹤分類的目的資料夾，髒名字改成 canonical
+                <span className="font-mono">（&lt;番號&gt; / &lt;番號&gt;.ext）</span>
+                ；同番號重複出現時保留較大者，其餘移到 PikPak 回收筒（可救回）。
+              </p>
+            </div>
 
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -605,6 +627,8 @@ function ReorganizeSection({
                   </span>
                   <span>
                     搬 {progress.filter((p) => p.action === "move").length} ／
+                    名 {progress.filter((p) => p.action === "rename").length} ／
+                    去 {progress.filter((p) => p.action === "dedupe").length} ／
                     略 {progress.filter((p) => p.action === "skip").length} ／
                     錯 {progress.filter((p) => p.action === "error").length}
                   </span>
@@ -627,17 +651,29 @@ function ReorganizeSection({
                         : p.reason
                         ? `（${p.reason}）`
                         : "";
+                    const icon = p.kind === "file" ? "📄" : "📁";
+                    const sectionTag =
+                      p.section === "cleanup" ? (
+                        <span className="rounded bg-purple-500/15 px-1 text-[10px] text-purple-300">
+                          清理
+                        </span>
+                      ) : p.section === "migrate" ? (
+                        <span className="rounded bg-blue-500/15 px-1 text-[10px] text-blue-300">
+                          搬移
+                        </span>
+                      ) : null;
                     return (
                       <li
-                        key={p.current}
+                        key={`${p.current}-${p.source}`}
                         className="flex items-baseline gap-2 py-0.5"
                       >
+                        {sectionTag}
                         <span className={lbl.cls}>
                           {lbl.text}
                           {reasonTxt}
                         </span>
                         <span className="truncate text-white/60">
-                          📁 {p.source}
+                          {icon} {p.source}
                         </span>
                         {p.target && (
                           <>
@@ -657,14 +693,16 @@ function ReorganizeSection({
             {result && (
               <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
                 <div>
-                  共 <strong>{result.total}</strong> 個資料夾
+                  共 <strong>{result.total}</strong> 個項目
                   {result.dry_run && (
                     <span className="ml-2 text-amber-300/80">
-                      （僅預覽，未搬移）
+                      （僅預覽，未修改）
                     </span>
                   )}
                 </div>
                 <div className="text-blue-300">→ 搬移 {result.moved}</div>
+                <div className="text-cyan-300">✎ 改名 {result.renamed}</div>
+                <div className="text-purple-300">🗑 去重 {result.deduped}</div>
                 <div className="text-white/60">⏭ 略過 {result.skipped}</div>
                 {result.errors > 0 && (
                   <div className="text-red-300">✗ 失敗 {result.errors}</div>

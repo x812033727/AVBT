@@ -37,12 +37,17 @@ from ..config import settings
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
-from .jav_code import ext_of, extract_jav_code
+from .jav_code import ext_of, extract_jav_code, is_video
 from .pikpak import pikpak_service
 from .pikpak_presence import presence_index
 
 
 logger = logging.getLogger(__name__)
+
+
+# BT releases bundle tiny ad mp4s alongside the real video. Anything well
+# below 300 MB is junk; the real episode is almost always larger.
+_JUNK_BYTES = 300 * 1024 * 1024
 
 
 async def _item_size(item) -> int:
@@ -190,8 +195,88 @@ async def _phase1_migrate(
                    "reason": str(exc)}
 
 
+async def _resolve_folder_winner(
+    folder, code: str, parent_id: str, *, dry_run: bool
+) -> dict:
+    """A code-bearing folder that survived the dedupe step.
+
+    - If it contains ≥1 main video, flatten: keep the largest as a bare
+      ``<code>.<ext>`` at the parent level, trash everything else (other
+      videos, ads, wrapper).
+    - If it contains zero main videos, just rename the folder to the
+      canonical ``<code>`` (or skip when already there).
+
+    Returns ``{action, target, reason}`` so the caller can emit one
+    progress event.
+    """
+    canonical_folder = _safe_code(code) or code
+    try:
+        inner = await pikpak_service.list_files(folder.id, size=200)
+    except Exception as exc:  # noqa: BLE001
+        return {"action": "error", "target": canonical_folder, "reason": str(exc)}
+
+    videos = [
+        i for i in inner if i.kind != "drive#folder" and is_video(i.name)
+    ]
+    main_videos = [
+        v for v in videos if v.size is None or v.size >= _JUNK_BYTES
+    ]
+
+    if not main_videos:
+        # Nothing to extract — just normalise the folder name.
+        if folder.name == canonical_folder:
+            return {"action": "skip", "target": canonical_folder,
+                    "reason": "already_clean"}
+        if not dry_run:
+            try:
+                await pikpak_service.rename_file(folder.id, canonical_folder)
+            except Exception as exc:  # noqa: BLE001
+                return {"action": "error", "target": canonical_folder,
+                        "reason": str(exc)}
+        return {"action": "rename", "target": canonical_folder, "reason": None}
+
+    # Pick the largest main video.
+    main_videos.sort(key=lambda v: int(v.size or 0), reverse=True)
+    keeper = main_videos[0]
+    trash_ids = [i.id for i in inner if i.id != keeper.id]
+    canonical_file = f"{canonical_folder}{ext_of(keeper.name)}"
+
+    if not dry_run:
+        try:
+            await pikpak_service.move_files([keeper.id], parent_id)
+            if keeper.name != canonical_file:
+                try:
+                    await pikpak_service.rename_file(keeper.id, canonical_file)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "rename keeper %s → %s failed: %s",
+                        keeper.name, canonical_file, exc,
+                    )
+            if trash_ids:
+                try:
+                    await pikpak_service.trash_files(trash_ids)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("trash inner of %s failed: %s",
+                                   folder.name, exc)
+            try:
+                await pikpak_service.trash_files([folder.id])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("trash wrapper %s failed: %s",
+                               folder.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            return {"action": "error", "target": canonical_file,
+                    "reason": f"flatten failed: {exc}"}
+
+    extras = len(trash_ids)
+    reason = (
+        f"取出主檔，清掉 {extras} 個垃圾/額外檔" if extras else "取出主檔"
+    )
+    return {"action": "flatten", "target": canonical_file, "reason": reason}
+
+
 async def _phase2_cleanup_target(
     target_path: str,
+    target_id: str,
     children,
     *,
     dry_run: bool,
@@ -200,13 +285,12 @@ async def _phase2_cleanup_target(
     """Yield events for one ``AVBT/<kind>/<name>/`` cleanup."""
     # Group children by extracted code.
     groups: dict[str, list] = {}
-    plan: list[tuple[object, str, str, str | None, str | None]] = []
-    # plan items: (child, action, target_name, reason, code)
+    no_code_items: list = []
 
     for c in children:
         code = extract_jav_code(c.name)
         if not code:
-            plan.append((c, "skip", None, "no_code", None))
+            no_code_items.append(c)
             continue
         groups.setdefault(code, []).append(c)
 
@@ -225,25 +309,42 @@ async def _phase2_cleanup_target(
         ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
         winner_ids[code] = ranked[0][2].id
 
-    # Build the rest of the plan.
+    # Build the plan. plan items: (child, phase, target_name, reason, code)
+    # phase ∈ {"skip", "dedupe", "rename", "winner_folder"}
+    plan: list[tuple[object, str, str | None, str | None, str | None]] = []
+    for c in no_code_items:
+        plan.append((c, "skip", None, "no_code", None))
+
     for code, items in groups.items():
         for c in items:
-            canonical = _canonical_name(c, code)
-            if c.id == winner_ids[code]:
+            if c.id != winner_ids[code]:
+                # Loser — trash regardless of kind.
+                plan.append(
+                    (c, "dedupe", _canonical_name(c, code), "duplicate", code)
+                )
+                continue
+            # Winner.
+            if c.kind == "drive#folder":
+                # Defer decision: needs an inner-content peek.
+                plan.append(
+                    (c, "winner_folder", _canonical_name(c, code), None, code)
+                )
+            else:
+                canonical = _canonical_name(c, code)
                 if c.name == canonical:
-                    plan.append((c, "skip", canonical, "already_clean", code))
+                    plan.append(
+                        (c, "skip", canonical, "already_clean", code)
+                    )
                 else:
                     plan.append((c, "rename", canonical, None, code))
-            else:
-                plan.append((c, "dedupe", canonical, "duplicate", code))
 
-    # Execute dedupes first so the names they occupy free up before
-    # winners get renamed.
-    order = {"dedupe": 0, "rename": 1, "skip": 2}
-    plan.sort(key=lambda p: order.get(p[1], 3))
+    # Order: dedupes first (free up names), then winner_folder (may
+    # flatten into a freed name), then plain renames, then skips.
+    order = {"dedupe": 0, "winner_folder": 1, "rename": 2, "skip": 3}
+    plan.sort(key=lambda p: order.get(p[1], 4))
 
     idx = idx_start
-    for c, action, target_name, reason, _code in plan:
+    for c, phase, target_name, reason, code in plan:
         await asyncio.sleep(0.03)
         idx += 1
         base = {
@@ -255,12 +356,17 @@ async def _phase2_cleanup_target(
             "context": target_path,
         }
         try:
-            if action == "dedupe":
+            if phase == "dedupe":
                 if not dry_run:
                     await pikpak_service.trash_files([c.id])
                 yield {**base, "action": "dedupe", "target": target_name,
                        "reason": reason}
-            elif action == "rename":
+            elif phase == "winner_folder":
+                resolved = await _resolve_folder_winner(
+                    c, code or "", target_id, dry_run=dry_run
+                )
+                yield {**base, **resolved}
+            elif phase == "rename":
                 if not dry_run:
                     await pikpak_service.rename_file(c.id, target_name)
                 yield {**base, "action": "rename", "target": target_name,
@@ -303,7 +409,7 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         ).scalars().all()
 
     root = settings.pikpak_download_folder or "AVBT"
-    cleanup_targets: list[tuple[str, list]] = []
+    cleanup_targets: list[tuple[str, str, list]] = []
     for row in tracked_rows:
         safe = _safe_name(
             row.name, fallback=_safe_name(row.id, fallback="unknown")
@@ -316,14 +422,15 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
             logger.warning("can't list %s: %s", target_path, exc)
             continue
         if children:
-            cleanup_targets.append((target_path, children))
+            cleanup_targets.append((target_path, target_id, children))
 
-    total = len(legacy_children) + sum(len(c) for _, c in cleanup_targets)
+    total = len(legacy_children) + sum(len(c) for _, _, c in cleanup_targets)
 
     summary = {
         "total": total,
         "moved": 0,
         "renamed": 0,
+        "flattened": 0,
         "deduped": 0,
         "skipped": 0,
         "errors": 0,
@@ -358,13 +465,15 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         yield ev
 
     # ---- Phase 2: cleanup destinations ----
-    for target_path, children in cleanup_targets:
+    for target_path, target_id, children in cleanup_targets:
         async for ev in _phase2_cleanup_target(
-            target_path, children, dry_run=dry_run, idx_start=idx
+            target_path, target_id, children, dry_run=dry_run, idx_start=idx
         ):
             action = ev.get("action")
             if action == "rename":
                 summary["renamed"] += 1
+            elif action == "flatten":
+                summary["flattened"] += 1
             elif action == "dedupe":
                 summary["deduped"] += 1
             elif action == "skip":
@@ -376,7 +485,10 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
 
     mutated = (
         not dry_run
-        and (summary["moved"] + summary["renamed"] + summary["deduped"]) > 0
+        and (
+            summary["moved"] + summary["renamed"]
+            + summary["flattened"] + summary["deduped"]
+        ) > 0
     )
     if mutated:
         presence_index.invalidate()

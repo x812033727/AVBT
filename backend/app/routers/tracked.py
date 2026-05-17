@@ -122,7 +122,11 @@ async def upsert_tracked(
         raise HTTPException(status_code=400, detail="missing id")
 
     row = await session.get(TrackedListing, (kind, slug))
+    auto_send_just_enabled = False
     if row:
+        auto_send_just_enabled = (
+            bool(payload.auto_send) and not bool(row.auto_send)
+        )
         row.name = payload.name or row.name
         row.avatar = payload.avatar or row.avatar
         row.uncensored = payload.uncensored
@@ -150,8 +154,18 @@ async def upsert_tracked(
             created_at=datetime.utcnow(),
         )
         session.add(row)
+        auto_send_just_enabled = bool(payload.auto_send)
     await session.commit()
     await session.refresh(row)
+
+    # When the user newly turns auto_send ON, kick off a missing-codes
+    # backfill right away instead of making them wait for the next
+    # hourly tracker cycle.
+    if auto_send_just_enabled:
+        from ..services.tracker import _auto_send_missing  # local: avoid cycles
+        import asyncio
+        asyncio.create_task(_auto_send_missing(kind, slug))
+
     return _to_out(row)
 
 

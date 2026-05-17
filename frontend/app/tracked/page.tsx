@@ -500,7 +500,10 @@ export default function TrackedPage() {
               )}
             </div>
             <div className="flex flex-col items-end gap-1 text-xs">
-              <label className="flex items-center gap-1">
+              <label
+                className="flex items-center gap-1"
+                title="開啟後,排程檢查時會把 JavBus 列表上、PikPak 還沒有的番號都自動送上去(不只新作品),已送過的會用 btih 去重"
+              >
                 <input
                   type="checkbox"
                   checked={it.auto_send}

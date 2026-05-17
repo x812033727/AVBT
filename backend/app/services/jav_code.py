@@ -23,14 +23,12 @@ _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _SPLIT_RE = re.compile(r"(\d{0,4}[A-Z]{2,8})(\d{2,6})$", re.IGNORECASE)
 _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 
-# Numeric prefixes that are legitimate parts of a JAV studio label
-# (Prestige amateur lines and similar). Keys are the digit clusters as
-# strings; anything not in here is treated as BT noise and stripped.
-KNOWN_NUMERIC_PREFIXES: frozenset[str] = frozenset({
-    "200", "221", "230", "259", "261", "277",
-    "300", "326", "345", "348", "358",
-    "390", "408", "418", "432", "451", "463", "477", "498",
-})
+# Numeric prefixes were once whitelisted as part of the canonical code
+# (300MIUM, 259LUXU, 200GANA, …). In practice JavBus catalogs these
+# without the prefix — e.g. the series listing for 60b shows MIUM-1098,
+# not 300MIUM-1098 — so keeping them on the PikPak side meant the
+# presence index never matched. Strip every leading digit cluster.
+KNOWN_NUMERIC_PREFIXES: frozenset[str] = frozenset()
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",

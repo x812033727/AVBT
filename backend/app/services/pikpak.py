@@ -425,6 +425,46 @@ class PikPakService:
         }
 
 
+    async def _collect_main_videos(
+        self, folder_id: str, junk_bytes: int, *, max_depth: int = 2
+    ) -> tuple[list[PikPakFile], int]:
+        """Walk ``folder_id`` recursively (up to ``max_depth`` levels) and
+        return ``(top_level_main_videos, total_main_count)``.
+
+        The first element is just the direct-child videos at the wrapper
+        level (used when we flatten); the count covers every descendant
+        so callers can refuse to flatten when nested CD2/disc2 content
+        would be lost."""
+        try:
+            inner = await self.list_files(folder_id, size=100)
+        except Exception:  # noqa: BLE001
+            return [], 0
+        top_videos: list[PikPakFile] = []
+        total_count = 0
+        sub_jobs = []
+        for c in inner:
+            if c.kind == "drive#folder":
+                if max_depth > 1:
+                    sub_jobs.append(
+                        self._collect_main_videos(
+                            c.id, junk_bytes, max_depth=max_depth - 1
+                        )
+                    )
+            elif is_video(c.name) and (c.size is None or c.size >= junk_bytes):
+                top_videos.append(c)
+                total_count += 1
+        if sub_jobs:
+            sub_results = await asyncio.gather(*sub_jobs, return_exceptions=True)
+            for r in sub_results:
+                if isinstance(r, tuple):
+                    nested_videos, nested_count = r
+                    total_count += nested_count
+                    # Promote nested videos to the "flattenable" list so
+                    # callers can pick the single video even when it's
+                    # buried inside a Sample/ wrapper or similar.
+                    top_videos.extend(nested_videos)
+        return top_videos, total_count
+
     async def cleanup_folder_stream(
         self, folder_id: str, *, dry_run: bool = True
     ) -> AsyncIterator[dict]:
@@ -432,10 +472,12 @@ class PikPakService:
         name to a clean JAV code.
 
         - File: rename to ``<code>.<ext>``
-        - Folder containing exactly one video and no subfolders: flatten
-          (rename the inner video, move it to the outer folder, trash the
-          empty wrapper)
-        - Otherwise (mixed contents): rename the folder itself to ``<code>``
+        - Folder containing exactly one main video anywhere up to two
+          levels deep: flatten — pull the inner video out, rename it to
+          ``<code>.<ext>``, then trash the whole wrapper (taking any
+          Sample/poster subfolder with it).
+        - Otherwise (2+ main videos or no real video found): rename the
+          wrapper to ``<code>`` so the structure stays intact.
 
         Yields NDJSON-shaped events: ``start`` / ``progress`` / ``done``.
         When ``dry_run`` is true the function emits the same events but
@@ -507,45 +549,40 @@ class PikPakService:
                     continue
 
                 # ---- folder ----
-                inner = await self.list_files(child.id, size=50)
-                videos = [
-                    i for i in inner
-                    if i.kind != "drive#folder" and is_video(i.name)
-                ]
-                subfolders = [i for i in inner if i.kind == "drive#folder"]
-
                 # Real JAV episodes are ≥500MB. BT releases bundle tiny
                 # ad mp4s alongside the real video. Anything well under
                 # 500MB is junk; 300MB threshold gives a 200MB buffer
                 # for unusual encodes. None size → assume legit.
                 JUNK_BYTES = 300 * 1024 * 1024
-                main_videos = [
-                    v for v in videos
-                    if v.size is None or v.size >= JUNK_BYTES
-                ]
 
-                if len(main_videos) == 1 and not subfolders:
-                    # Flatten: rename inner video → move to outer → trash
-                    # any leftover junk → trash empty wrapper.
+                # Walk up to two levels deep so flatten still works for
+                # the common BT shape ``300MIUM-1098/Sample/...`` (one
+                # main video at the top, junk subfolder beside it).
+                main_videos, total_main_count = await self._collect_main_videos(
+                    child.id, JUNK_BYTES, max_depth=2
+                )
+
+                if total_main_count == 1:
+                    # Flatten: pull the one real video out, trash
+                    # everything else inside the wrapper (junk subfolders
+                    # included — PikPak's trash is recoverable).
                     video = main_videos[0]
                     target = f"{code}{ext_of(video.name)}"
                     if target in taken and target != child.name:
                         summary["skipped"] += 1
                         yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
                         continue
-                    leftover_ids = [i.id for i in inner if i.id != video.id]
                     if not dry_run:
                         if video.name != target:
                             await self.rename_file(video.id, target)
                         await self.move_files([video.id], folder_id)
-                        if leftover_ids:
-                            await self.trash_files(leftover_ids)
+                        # Trashing the wrapper takes everything else with
+                        # it — subfolders, posters, samples.
                         await self.trash_files([child.id])
                     taken.discard(child.name)
                     taken.add(target)
                     summary["flattened"] += 1
-                    reason = f"順手清掉 {len(leftover_ids)} 個垃圾檔" if leftover_ids else None
-                    yield {**base_event, "action": "flatten", "target": target, "reason": reason}
+                    yield {**base_event, "action": "flatten", "target": target, "reason": None}
                     continue
 
                 # Mixed contents: just rename the wrapper folder.

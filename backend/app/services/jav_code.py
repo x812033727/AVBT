@@ -16,7 +16,7 @@ import re
 
 
 _CODE_RE = re.compile(
-    r"(?:^|[^A-Z0-9])(\d{0,4}[A-Z]{2,8}-?\d{2,6})(?=$|[^A-Z0-9])",
+    r"(?:^|[^A-Z0-9])(\d{0,4}[A-Z]{2,8}-?\d{2,6})[A-Z]?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -84,6 +84,10 @@ def extract_jav_code(name: str) -> str | None:
     (``483DAM043`` → ``483DAM-043``) → drop a leading digit cluster
     unless it belongs to a known numeric-prefix label.
     Returns None when nothing matches.
+
+    A single trailing letter (``SDMM-14903C``, ``ABP-123A``) is allowed
+    but stripped — JavBus catalogs the base code, so variant suffixes
+    collapse to the same product for our purposes.
     """
     if not name:
         return None

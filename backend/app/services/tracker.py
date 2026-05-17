@@ -17,8 +17,10 @@ from ..database import SessionLocal
 from ..models import TrackedListing
 from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
+from . import missing as missing_svc
 from .bulk import send_codes_stream
 from .notify import send_webhook
+from .pikpak_presence import presence_index
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,35 @@ async def _auto_send(codes: list[str]) -> None:
             pass
     except Exception as exc:  # noqa: BLE001
         logger.warning("tracker auto-send failed: %s", exc)
+
+
+async def _auto_send_missing(kind: str, slug: str) -> None:
+    """For an auto_send-enabled tracked listing, also push any codes
+    that are in the JavBus catalog but not yet on PikPak — not just
+    ones newer than the baseline. Skips silently when the presence
+    index isn't built (we'd otherwise mistake "no data" for "nothing
+    downloaded" and try to send the entire catalog)."""
+    status = presence_index.status()
+    if not status.get("ready"):
+        return  # no PikPak inventory data → can't safely tell what's missing
+    if status.get("last_error"):
+        return  # presence build had errors → don't trust the data
+    try:
+        result = await missing_svc.missing_for_listing(kind, slug)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "auto-send-missing: missing_for_listing %s/%s failed: %s",
+            kind, slug, exc,
+        )
+        return
+    if not result.total:
+        # JavBus listing returned nothing (slug invalid / network etc.) —
+        # we already short-circuit extras in missing_for_listing; nothing
+        # safe to send here either.
+        return
+    codes = [m.code for m in result.missing if m.code]
+    if codes:
+        await _auto_send(codes)
 
 
 async def _detect_new(
@@ -130,8 +161,17 @@ async def check_listing(kind: str, listing_id: str) -> dict:
             f"{', '.join(new_codes)}"
         )
         asyncio.create_task(send_webhook(msg))
-        if auto_send:
+
+    if auto_send:
+        # Two-tier send:
+        # 1. Always fire on freshly-seen new_codes (cheap — just page 1).
+        # 2. Also try to fill ANY missing-from-PikPak code in the catalog
+        #    (walks all listing pages — cached for 1h). Without this the
+        #    auto_send flag only catches works that appeared AFTER you
+        #    started tracking, never the older missing entries.
+        if had_baseline and new_codes:
             asyncio.create_task(_auto_send(new_codes))
+        asyncio.create_task(_auto_send_missing(actual_kind, slug))
 
     return {
         "kind": kind,

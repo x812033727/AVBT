@@ -877,6 +877,11 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
     )
     if mutated:
         presence_index.invalidate()
+        try:
+            from . import missing as missing_svc  # avoid cycle
+            missing_svc.invalidate_result_caches()
+        except Exception:  # noqa: BLE001
+            pass
         pikpak_service._folder_cache.clear()
 
     yield {"type": "done", "result": summary}

@@ -78,6 +78,27 @@ logger = logging.getLogger(__name__)
 _listing_cache: dict[tuple[str, str, bool], tuple[datetime, list[MovieListItem], int]] = {}
 _summary_lock = asyncio.Lock()
 
+# Result caches for the aggregate views. The /tracked page hits
+# missing_summary on every mount; with N=78 listings even a fully warm
+# JavBus + presence cache still costs hundreds of ms (ownership map
+# build + per-row extras scan). Cache the final result and only rebuild
+# when an explicit invalidation fires (check / tracker tick / add /
+# delete / archive / reorganize / presence refresh). Held forever
+# until invalidated — the events above are reliable and the user has
+# a "重算缺漏" button (refresh=true) as a manual override.
+_summary_result: MissingSummary | None = None
+_all_result: AggregatedMissing | None = None
+
+
+def invalidate_result_caches() -> None:
+    """Drop the cached missing_summary / missing_all aggregate results.
+    Cheap — does not touch the JavBus listing cache or the PikPak
+    presence index (call presence_index.invalidate() separately when
+    PikPak state has changed)."""
+    global _summary_result, _all_result
+    _summary_result = None
+    _all_result = None
+
 
 async def _ownership_map(
     rows: list[TrackedListing],
@@ -306,11 +327,19 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
     first listing that claims them (alpha kind+id order), matching how
     the /missing page displays them.
 
-    Single in-flight via _summary_lock so a concurrent page load doesn't
-    spawn 50 JavBus crawls twice. Listing results are themselves cached
-    (1h) so subsequent calls are cheap.
+    The result is memoised; subsequent calls return the cached
+    MissingSummary until ``invalidate_result_caches()`` is called or
+    ``refresh=True`` is passed. Single in-flight via _summary_lock so a
+    concurrent page load doesn't spawn 50 JavBus crawls twice.
     """
+    global _summary_result
+    if not refresh and _summary_result is not None:
+        return _summary_result
     async with _summary_lock:
+        # Re-check inside the lock: another caller may have just rebuilt
+        # while we were waiting.
+        if not refresh and _summary_result is not None:
+            return _summary_result
         presence = await presence_index.get(force=refresh)
         async with SessionLocal() as session:
             rows = (
@@ -335,11 +364,13 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
                 )
             )
 
-        return MissingSummary(
+        result = MissingSummary(
             built_at=datetime.utcnow(),
             presence_built_at=presence_index._built_at,  # type: ignore[attr-defined]
             items=items,
         )
+        _summary_result = result
+        return result
 
 
 async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
@@ -348,44 +379,54 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
 
     Deduped: a movie missing from multiple tracked listings appears only
     under the first listing (alpha kind+id order) that claims it. The
-    later listings simply don't include it in their card grid."""
-    presence = await presence_index.get(force=refresh)
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(TrackedListing).order_by(TrackedListing.kind, TrackedListing.id)
-            )
-        ).scalars().all()
+    later listings simply don't include it in their card grid.
 
-    owner = await _ownership_map(rows)
-    owned_by_row: dict[tuple[str, str], set[str]] = {}
-    for code, key in owner.items():
-        owned_by_row.setdefault(key, set()).add(code)
-
-    items: list[AggregatedMissingItem] = []
-    for row in rows:
-        try:
-            listing, _pages = await fetch_all_listing_codes(
-                row.kind, row.id, uncensored=bool(row.uncensored)
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
-            continue
-        _, missing, _expected = _split_present_missing(listing, presence)
-        owned = owned_by_row.get((row.kind, row.id), set())
-        missing = [m for m in missing if m.code in owned]
-        if missing:
-            items.append(
-                AggregatedMissingItem(
-                    kind=row.kind,
-                    id=row.id,
-                    name=row.name or row.id,
-                    missing=missing,
+    Cached via the same invalidation events as missing_summary."""
+    global _all_result
+    if not refresh and _all_result is not None:
+        return _all_result
+    async with _summary_lock:
+        if not refresh and _all_result is not None:
+            return _all_result
+        presence = await presence_index.get(force=refresh)
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(TrackedListing).order_by(TrackedListing.kind, TrackedListing.id)
                 )
-            )
+            ).scalars().all()
 
-    return AggregatedMissing(
-        built_at=datetime.utcnow(),
-        presence_built_at=presence_index._built_at,  # type: ignore[attr-defined]
-        items=items,
-    )
+        owner = await _ownership_map(rows)
+        owned_by_row: dict[tuple[str, str], set[str]] = {}
+        for code, key in owner.items():
+            owned_by_row.setdefault(key, set()).add(code)
+
+        items: list[AggregatedMissingItem] = []
+        for row in rows:
+            try:
+                listing, _pages = await fetch_all_listing_codes(
+                    row.kind, row.id, uncensored=bool(row.uncensored)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
+                continue
+            _, missing, _expected = _split_present_missing(listing, presence)
+            owned = owned_by_row.get((row.kind, row.id), set())
+            missing = [m for m in missing if m.code in owned]
+            if missing:
+                items.append(
+                    AggregatedMissingItem(
+                        kind=row.kind,
+                        id=row.id,
+                        name=row.name or row.id,
+                        missing=missing,
+                    )
+                )
+
+        result = AggregatedMissing(
+            built_at=datetime.utcnow(),
+            presence_built_at=presence_index._built_at,  # type: ignore[attr-defined]
+            items=items,
+        )
+        _all_result = result
+        return result

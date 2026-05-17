@@ -224,6 +224,11 @@ async def run_loop() -> None:
                 results = await check_all()
                 state.last_new_total = sum(len(r.get("new_codes") or []) for r in results)
                 state.last_error = ""
+                # A scheduled batch just touched every listing's
+                # last_seen_code and may have enqueued downloads —
+                # drop the cached missing-summary so the next /tracked
+                # page load reflects the new state.
+                missing_svc.invalidate_result_caches()
             consecutive_errors = 0
         except asyncio.CancelledError:
             raise

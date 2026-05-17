@@ -316,7 +316,9 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         logger.info("root sweep moved %d orphan(s) to kind/name", moved)
         try:
             from .pikpak_presence import presence_index  # avoid cycle
+            from . import missing as missing_svc  # avoid cycle
             presence_index.invalidate()
+            missing_svc.invalidate_result_caches()
         except Exception:  # noqa: BLE001
             pass
         # Folder cache may now point at trashed/renamed wrappers; drop
@@ -513,7 +515,9 @@ async def archive_once() -> int:
             # Newly-archived codes change which codes count as "present".
             try:
                 from .pikpak_presence import presence_index  # avoid cycle
+                from . import missing as missing_svc  # avoid cycle
                 presence_index.invalidate()
+                missing_svc.invalidate_result_caches()
             except Exception:  # noqa: BLE001
                 pass
             for msg in notifications:

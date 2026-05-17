@@ -192,14 +192,20 @@ async def missing_codes_for(
     slug: str,
     refresh: bool = False,
     uncensored: bool = False,
+    dedup: bool = True,
     session: AsyncSession = Depends(get_session),
 ):
     # Prefer the DB row's uncensored flag when present — keeps client
     # callers concise (just /missing-codes, no extra query string).
+    #
+    # dedup=true (default) hides codes claimed by an earlier-ordered
+    # listing under the global first-seen rule, matching the badge count
+    # from /missing-summary. Pass ?dedup=false to see this listing's
+    # full missing catalog regardless of overlap.
     row = await session.get(TrackedListing, (kind, slug))
     eff_uncensored = bool(row.uncensored) if row else uncensored
     return await missing_svc.missing_for_listing(
-        kind, slug, uncensored=eff_uncensored, refresh=refresh
+        kind, slug, uncensored=eff_uncensored, refresh=refresh, dedup=dedup
     )
 
 

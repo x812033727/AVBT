@@ -79,6 +79,46 @@ _listing_cache: dict[tuple[str, str, bool], tuple[datetime, list[MovieListItem],
 _summary_lock = asyncio.Lock()
 
 
+async def _ownership_map(
+    rows: list[TrackedListing],
+) -> dict[str, tuple[str, str]]:
+    """For dedup-aware display: walk every tracked listing in display
+    order (the same ``(kind, id)`` alpha order used by missing_summary
+    / missing_all) and claim each code for the FIRST listing it appears
+    in. Returns ``{code: (kind, id)}``.
+
+    The "first seen" rule means that, given the same set of tracked
+    listings, every code has exactly one owner — so summing the per-
+    listing deduped missing counts equals the total unique missing
+    count. Listings later in alpha order may end up displaying fewer
+    codes than their raw catalog when those codes are claimed earlier.
+
+    Reuses ``fetch_all_listing_codes``'s 1h cache, so this is cheap on
+    a warm cache (just hash-lookups + a single set traversal)."""
+    owner: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        try:
+            items, _pages = await fetch_all_listing_codes(
+                row.kind, row.id, uncensored=bool(row.uncensored)
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        key = (row.kind, row.id)
+        for it in items:
+            if it.code and it.code not in owner:
+                owner[it.code] = key
+    return owner
+
+
+def _owned_by(
+    kind: str, slug: str, owner: dict[str, tuple[str, str]] | None
+) -> set[str]:
+    """Subset of ``owner.keys()`` that belongs to this listing."""
+    if owner is None:
+        return set()
+    return {c for c, k in owner.items() if k == (kind, slug)}
+
+
 def _cache_fresh(built_at: datetime) -> bool:
     ttl = max(60, settings.missing_listing_cache_seconds)
     return datetime.utcnow() - built_at < timedelta(seconds=ttl)
@@ -159,6 +199,7 @@ async def missing_for_listing(
     *,
     uncensored: bool = False,
     refresh: bool = False,
+    dedup: bool = False,
 ) -> MissingCodesResult:
     items, pages = await fetch_all_listing_codes(
         kind, slug, uncensored=uncensored, refresh=refresh
@@ -172,6 +213,25 @@ async def missing_for_listing(
         row = await session.get(TrackedListing, (kind, slug))
         if row:
             name = row.name or ""
+
+    # Display-side dedup: when the same code is missing from multiple
+    # tracked listings (e.g. ABC-001 features star A and is also a
+    # series-X entry), show it only under the listing that the global
+    # ownership map claimed it for. Disabled by default so callers like
+    # the tracker auto-send still see every code this listing claims
+    # (the download queue handles the cross-listing dedup downstream).
+    if dedup and missing:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(TrackedListing).order_by(
+                        TrackedListing.kind, TrackedListing.id
+                    )
+                )
+            ).scalars().all()
+        owner = await _ownership_map(rows)
+        owned = _owned_by(kind, slug, owner)
+        missing = [m for m in missing if m.code in owned]
 
     # Only flag extras when we actually got a JavBus catalog to compare
     # against. If the listing fetch returned nothing (network, geo-block,
@@ -198,8 +258,14 @@ async def missing_for_listing(
 
 
 async def _summary_item(
-    row: TrackedListing, presence: set[str]
+    row: TrackedListing,
+    presence: set[str],
+    owned: set[str] | None = None,
 ) -> MissingSummaryItem:
+    """``owned`` (when not None) restricts missing_count to codes this
+    listing owns under the global first-seen ownership rule. Missing
+    counts then sum to the deduped total — same numbers the /missing
+    page shows after dedup."""
     expected_root = _expected_root(row.kind, row.id, row.name or "")
     try:
         items, pages = await fetch_all_listing_codes(
@@ -212,6 +278,8 @@ async def _summary_item(
             expected_root=expected_root, error=str(exc),
         )
     _, missing, expected = _split_present_missing(items, presence)
+    if owned is not None:
+        missing = [m for m in missing if m.code in owned]
     # See note in missing_for_listing: skip extras when we got no
     # listing data, otherwise every file in the folder appears extra.
     extras = (
@@ -234,6 +302,10 @@ async def _summary_item(
 async def missing_summary(*, refresh: bool = False) -> MissingSummary:
     """Aggregate missing-counts for every TrackedListing row.
 
+    Deduped: codes shared by multiple listings are counted under the
+    first listing that claims them (alpha kind+id order), matching how
+    the /missing page displays them.
+
     Single in-flight via _summary_lock so a concurrent page load doesn't
     spawn 50 JavBus crawls twice. Listing results are themselves cached
     (1h) so subsequent calls are cheap.
@@ -247,11 +319,21 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
                 )
             ).scalars().all()
 
-        # Sequential to avoid hammering JavBus. Each per-listing call is
-        # cached, so a warm cache makes this loop O(N) hash-lookups.
+        owner = await _ownership_map(rows)
+        # Bucket the ownership map once so per-row lookups are O(1).
+        owned_by_row: dict[tuple[str, str], set[str]] = {}
+        for code, key in owner.items():
+            owned_by_row.setdefault(key, set()).add(code)
+
         items: list[MissingSummaryItem] = []
         for row in rows:
-            items.append(await _summary_item(row, presence))
+            items.append(
+                await _summary_item(
+                    row,
+                    presence,
+                    owned=owned_by_row.get((row.kind, row.id), set()),
+                )
+            )
 
         return MissingSummary(
             built_at=datetime.utcnow(),
@@ -262,7 +344,11 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
 
 async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
     """Like missing_summary but returns the full MovieListItem list for
-    each tracked listing (not just counts). Powers the /missing page."""
+    each tracked listing (not just counts). Powers the /missing page.
+
+    Deduped: a movie missing from multiple tracked listings appears only
+    under the first listing (alpha kind+id order) that claims it. The
+    later listings simply don't include it in their card grid."""
     presence = await presence_index.get(force=refresh)
     async with SessionLocal() as session:
         rows = (
@@ -270,6 +356,11 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
                 select(TrackedListing).order_by(TrackedListing.kind, TrackedListing.id)
             )
         ).scalars().all()
+
+    owner = await _ownership_map(rows)
+    owned_by_row: dict[tuple[str, str], set[str]] = {}
+    for code, key in owner.items():
+        owned_by_row.setdefault(key, set()).add(code)
 
     items: list[AggregatedMissingItem] = []
     for row in rows:
@@ -281,6 +372,8 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
             logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
             continue
         _, missing, _expected = _split_present_missing(listing, presence)
+        owned = owned_by_row.get((row.kind, row.id), set())
+        missing = [m for m in missing if m.code in owned]
         if missing:
             items.append(
                 AggregatedMissingItem(

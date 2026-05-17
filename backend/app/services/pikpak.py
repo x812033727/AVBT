@@ -17,7 +17,25 @@ from pikpakapi import PikPakApi
 
 from ..config import settings
 from ..schemas import OfflineSubmit, PikPakFile, PikPakQuota, PikPakTask
-from .jav_code import ext_of, extract_jav_code, is_video
+from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
+
+
+def _uniquify_target(target: str, taken: set[str]) -> str:
+    """Return ``target`` if free, otherwise ``<stem> (2).<ext>`` / (3) /
+    (4) … until it doesn't collide with anything in ``taken``."""
+    if target not in taken:
+        return target
+    if "." in target:
+        stem, _, ext = target.rpartition(".")
+        ext = f".{ext}"
+    else:
+        stem, ext = target, ""
+    n = 2
+    while True:
+        candidate = f"{stem} ({n}){ext}"
+        if candidate not in taken:
+            return candidate
+        n += 1
 
 
 logger = logging.getLogger(__name__)
@@ -466,18 +484,29 @@ class PikPakService:
         return top_videos, total_count
 
     async def cleanup_folder_stream(
-        self, folder_id: str, *, dry_run: bool = True
+        self,
+        folder_id: str,
+        *,
+        dry_run: bool = True,
+        recursive: bool = True,
+        _depth: int = 0,
     ) -> AsyncIterator[dict]:
         """Walk every direct child of ``folder_id`` and try to normalise its
         name to a clean JAV code.
 
-        - File: rename to ``<code>.<ext>``
-        - Folder containing exactly one main video anywhere up to two
-          levels deep: flatten — pull the inner video out, rename it to
-          ``<code>.<ext>``, then trash the whole wrapper (taking any
-          Sample/poster subfolder with it).
-        - Otherwise (2+ main videos or no real video found): rename the
-          wrapper to ``<code>`` so the structure stays intact.
+        - File: rename to ``<code>.<ext>`` (preserves variant letter)
+        - Folder with exactly one main video (≥300 MB) anywhere up to
+          two levels deep: flatten — pull the inner video out, rename
+          to ``<code>.<ext>``, trash the whole wrapper (junk + Sample
+          subfolders go with it).
+        - Folder with 2+ main videos OR none: rename the wrapper to
+          ``<code>`` and (when ``recursive``) clean its insides too.
+
+        Naming uses :func:`extract_jav_code_full` so variant letters are
+        kept (``SDMM-14903C`` stays as ``SDMM-14903C``) and multiple
+        variants of the same base code coexist. When a target name does
+        collide we deduplicate with ``" (2)"`` / ``" (3)"`` suffixes
+        instead of silently skipping.
 
         Yields NDJSON-shaped events: ``start`` / ``progress`` / ``done``.
         When ``dry_run`` is true the function emits the same events but
@@ -500,23 +529,27 @@ class PikPakService:
             "partial": partial,
         }
 
-        yield {
-            "type": "start",
-            "total": len(children),
-            "dry_run": dry_run,
-            "folder_id": folder_id,
-            "partial": partial,
-        }
-        if partial:
+        # The top-level call emits start/done; recursive calls just emit
+        # progress events so the existing UI can show them in line.
+        if _depth == 0:
             yield {
-                "type": "warn",
-                "message": "此資料夾項目過多,可能僅處理部分子項",
+                "type": "start",
+                "total": len(children),
+                "dry_run": dry_run,
+                "folder_id": folder_id,
+                "partial": partial,
             }
+            if partial:
+                yield {
+                    "type": "warn",
+                    "message": "此資料夾項目過多,可能僅處理部分子項",
+                }
 
         for idx, child in enumerate(children, start=1):
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             kind = "folder" if child.kind == "drive#folder" else "file"
             code = extract_jav_code(child.name)
+            code_full = extract_jav_code_full(child.name) or code
             base_event = {
                 "type": "progress",
                 "current": idx,
@@ -531,15 +564,13 @@ class PikPakService:
 
             try:
                 if kind == "file":
-                    target = f"{code}{ext_of(child.name)}"
+                    target = f"{code_full}{ext_of(child.name)}"
                     if target == child.name:
                         summary["skipped"] += 1
                         yield {**base_event, "action": "skip", "target": target, "reason": "already_clean"}
                         continue
-                    if target in taken:
-                        summary["skipped"] += 1
-                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
-                        continue
+                    # Auto-dedupe on collision instead of silently skipping.
+                    target = _uniquify_target(target, taken)
                     if not dry_run:
                         await self.rename_file(child.id, target)
                     taken.discard(child.name)
@@ -567,17 +598,13 @@ class PikPakService:
                     # everything else inside the wrapper (junk subfolders
                     # included — PikPak's trash is recoverable).
                     video = main_videos[0]
-                    target = f"{code}{ext_of(video.name)}"
-                    if target in taken and target != child.name:
-                        summary["skipped"] += 1
-                        yield {**base_event, "action": "skip", "target": target, "reason": "conflict"}
-                        continue
+                    target = f"{code_full}{ext_of(video.name)}"
+                    if target != child.name:
+                        target = _uniquify_target(target, taken)
                     if not dry_run:
                         if video.name != target:
                             await self.rename_file(video.id, target)
                         await self.move_files([video.id], folder_id)
-                        # Trashing the wrapper takes everything else with
-                        # it — subfolders, posters, samples.
                         await self.trash_files([child.id])
                     taken.discard(child.name)
                     taken.add(target)
@@ -585,28 +612,41 @@ class PikPakService:
                     yield {**base_event, "action": "flatten", "target": target, "reason": None}
                     continue
 
-                # Mixed contents: just rename the wrapper folder.
-                if child.name == code:
+                # Mixed / weird contents: rename the wrapper, then
+                # recursively clean its insides so nested junk gets
+                # normalised too. (Skip recursion at max depth.)
+                target_name = code_full
+                if child.name != target_name:
+                    target_name = _uniquify_target(target_name, taken)
+                    if not dry_run:
+                        await self.rename_file(child.id, target_name)
+                    taken.discard(child.name)
+                    taken.add(target_name)
+                    summary["renamed"] += 1
+                    yield {**base_event, "action": "rename", "target": target_name, "reason": None}
+                else:
                     summary["skipped"] += 1
-                    yield {**base_event, "action": "skip", "target": code, "reason": "already_clean"}
-                    continue
-                if code in taken:
-                    summary["skipped"] += 1
-                    yield {**base_event, "action": "skip", "target": code, "reason": "conflict"}
-                    continue
-                if not dry_run:
-                    await self.rename_file(child.id, code)
-                taken.discard(child.name)
-                taken.add(code)
-                summary["renamed"] += 1
-                yield {**base_event, "action": "rename", "target": code, "reason": None}
+                    yield {**base_event, "action": "skip", "target": target_name, "reason": "already_clean"}
+
+                if recursive and _depth < 1:
+                    async for evt in self.cleanup_folder_stream(
+                        child.id, dry_run=dry_run, recursive=recursive,
+                        _depth=_depth + 1,
+                    ):
+                        # Bubble inner progress up with a "nested:" tag
+                        # so the UI shows which wrapper they belong to.
+                        if evt.get("type") == "progress":
+                            yield {**evt, "nested_in": child.name}
+                        # Skip inner start/done — the outer one represents
+                        # the whole tree.
 
             except Exception as exc:  # noqa: BLE001
                 summary["errors"] += 1
                 logger.warning("cleanup failed for %s: %s", child.name, exc)
                 yield {**base_event, "action": "error", "target": None, "reason": str(exc)}
 
-        yield {"type": "done", "result": summary}
+        if _depth == 0:
+            yield {"type": "done", "result": summary}
 
 
 pikpak_service = PikPakService()

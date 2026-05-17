@@ -29,8 +29,17 @@ from ..schemas import (
     MovieListItem,
 )
 from ..scrapers import javbus as scraper
-from .jav_code import normalize_code
+from .jav_code import normalize_code, safe_folder_name
 from .pikpak_presence import presence_index
+
+
+def _expected_root(kind: str, slug: str, name: str) -> str:
+    """Mirror the archiver: ``<download_folder>/<kind>/<safe_name>``.
+    Uses the display name when present, falling back to the slug so the
+    user always sees a path (not an empty segment)."""
+    root = settings.pikpak_download_folder or "AVBT"
+    safe = safe_folder_name(name, fallback=safe_folder_name(slug, fallback=slug))
+    return f"{root}/{kind}/{safe}"
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +147,7 @@ async def missing_for_listing(
         present_codes=present_codes,
         missing=missing,
         pages_scanned=pages,
+        expected_root=_expected_root(kind, slug, name),
         built_at=datetime.utcnow(),
     )
 
@@ -145,6 +155,7 @@ async def missing_for_listing(
 async def _summary_item(
     row: TrackedListing, presence: set[str]
 ) -> MissingSummaryItem:
+    expected_root = _expected_root(row.kind, row.id, row.name or "")
     try:
         items, pages = await fetch_all_listing_codes(
             row.kind, row.id, uncensored=bool(row.uncensored)
@@ -152,7 +163,8 @@ async def _summary_item(
     except Exception as exc:  # noqa: BLE001
         return MissingSummaryItem(
             kind=row.kind, id=row.id, name=row.name or "",
-            total=0, missing_count=0, pages_scanned=0, error=str(exc),
+            total=0, missing_count=0, pages_scanned=0,
+            expected_root=expected_root, error=str(exc),
         )
     _, missing = _split_present_missing(items, presence)
     return MissingSummaryItem(
@@ -162,6 +174,7 @@ async def _summary_item(
         total=len(items),
         missing_count=len(missing),
         pages_scanned=pages,
+        expected_root=expected_root,
     )
 
 

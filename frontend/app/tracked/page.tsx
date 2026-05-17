@@ -532,9 +532,10 @@ function MissingDetailPanel({
   lookupBusy: Set<string>;
   onLookup: (code: string) => void;
 }) {
-  const safeName = (tracked.name || tracked.id).replace(/[^\w一-鿿\-]/g, "");
   function expectedPath(code: string) {
-    return `AVBT/${tracked.kind}/${safeName || tracked.id}/${code}`;
+    // expected_root comes from the backend so it matches the actual
+    // archiver sanitization (preserves kana, spaces, etc.).
+    return `${detail?.expected_root || `AVBT/${tracked.kind}/${tracked.name || tracked.id}`}/${code}`;
   }
   if (loading && !detail) {
     return (
@@ -553,16 +554,26 @@ function MissingDetailPanel({
   }
   return (
     <div className="border-t border-white/10 px-4 py-3 text-xs">
-      <div className="mb-2 text-white/60">
-        共 <span className="font-mono">{detail.total}</span> 部・已下載{" "}
-        <span className="font-mono text-emerald-300/80">
-          {detail.present_codes.length}
-        </span>
-        ・缺漏{" "}
-        <span className="font-mono text-amber-300">
-          {detail.missing.length}
-        </span>
-        <span className="ml-2 text-white/40">（掃 {detail.pages_scanned} 頁）</span>
+      <div className="mb-2 space-y-1">
+        <div className="text-white/60">
+          共 <span className="font-mono">{detail.total}</span> 部・已下載{" "}
+          <span className="font-mono text-emerald-300/80">
+            {detail.present_codes.length}
+          </span>
+          ・缺漏{" "}
+          <span className="font-mono text-amber-300">
+            {detail.missing.length}
+          </span>
+          <span className="ml-2 text-white/40">
+            (掃 {detail.pages_scanned} 頁)
+          </span>
+        </div>
+        <div className="text-white/40">
+          判斷路徑:
+          <span className="ml-1 font-mono text-white/70">
+            {detail.expected_root}/&lt;番號&gt;
+          </span>
+        </div>
       </div>
       <ul className="divide-y divide-white/5">
         {detail.missing.map((m: MovieListItem) => {

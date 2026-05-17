@@ -289,6 +289,7 @@ export type MissingCodesResult = {
   present_codes: string[];
   missing: MovieListItem[];
   pages_scanned: number;
+  expected_root: string;
   built_at: string;
 };
 
@@ -299,6 +300,7 @@ export type MissingSummaryItem = {
   total: number;
   missing_count: number;
   pages_scanned: number;
+  expected_root: string;
   error: string;
 };
 

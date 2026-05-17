@@ -33,7 +33,6 @@ from .pikpak import PikPakError, pikpak_service
 logger = logging.getLogger(__name__)
 
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_\-]+")
-_SAFE_NAME = re.compile(r'[/\\:<>*?|"\x00-\x1f]+')
 
 # Hierarchy priority — when a code belongs to multiple tracked listings,
 # the leftmost match wins. Most-specific first.
@@ -45,11 +44,9 @@ def _safe_code(code: str) -> str:
     return _SAFE_CODE.sub("", code.strip())[:64]
 
 
-def _safe_name(name: str, *, fallback: str = "") -> str:
-    """Strip path-unsafe chars from a display name. Returns fallback when
-    the cleaned result is empty."""
-    cleaned = _SAFE_NAME.sub("", (name or "").strip()).strip()
-    return cleaned[:64] or fallback
+# Delegate to the shared helper so missing-code services can compute the
+# same path without importing the archiver (which would cycle).
+from .jav_code import safe_folder_name as _safe_name  # noqa: E402
 
 
 # A small per-pass cache so two completed tasks with the same code don't

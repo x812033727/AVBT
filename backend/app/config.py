@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
 
+    # Auto-sweep: in addition to the OfflineTaskLog-driven archive pass,
+    # periodically scan the AVBT root for orphans dropped there outside
+    # the backend (PikPak App / web manual adds, magnets handed straight
+    # to PikPak, leftovers from past tools) and route them into the
+    # kind/name hierarchy too. Reuses the reorganize phase-1 logic.
+    archive_sweep_root_enabled: bool = True
+    archive_sweep_interval_seconds: int = 300
+
     # PikPak presence index + missing-codes feature
     presence_ttl_seconds: int = 300            # cache lifetime
     missing_listing_cache_seconds: int = 3600  # JavBus listing cache

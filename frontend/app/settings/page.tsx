@@ -148,6 +148,27 @@ export default function SettingsPage() {
     }
   }
 
+  async function sweepRootNow() {
+    setBusy(true);
+    try {
+      const a = await api.post<ArchiverStatus & { moved: number }>(
+        "/api/pikpak/archiver/sweep"
+      );
+      setArchiver(a);
+      setMsg({
+        kind: "ok",
+        text:
+          a.moved > 0
+            ? `整理根目錄完畢，搬了 ${a.moved} 個項目`
+            : "根目錄沒有需要搬的散落檔案",
+      });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleTracker(enabled: boolean) {
     const t = await api.post<TrackerStatus>("/api/tracked/status/toggle", {
       enabled,
@@ -327,6 +348,37 @@ export default function SettingsPage() {
             >
               立即執行
             </button>
+
+            <div className="mt-3 border-t border-white/10 pt-3 space-y-1">
+              <div className="text-sm font-medium text-white/80">
+                根目錄自動整理
+              </div>
+              <div className="text-xs text-white/60">
+                順便把不是從本站送出、直接掉在 AVBT 根目錄的檔案搬到{" "}
+                <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;/</span>
+                （每 {archiver.sweep_interval_seconds} 秒一次）
+              </div>
+              <div className="text-xs text-white/60">
+                累計搬移：{archiver.sweep_swept_total} ・ 上次
+                {" "}
+                {fmt(archiver.last_sweep_at)}
+                {archiver.last_sweep_at != null
+                  ? `（搬了 ${archiver.last_sweep_moved} 個）`
+                  : ""}
+              </div>
+              {archiver.last_sweep_error && (
+                <div className="text-xs text-amber-300/80">
+                  ⚠ {archiver.last_sweep_error}
+                </div>
+              )}
+              <button
+                className="btn-ghost"
+                onClick={sweepRootNow}
+                disabled={busy}
+              >
+                立即整理根目錄
+              </button>
+            </div>
           </>
         ) : (
           <div className="text-sm text-white/40">載入中…</div>

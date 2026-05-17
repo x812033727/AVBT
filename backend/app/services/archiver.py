@@ -122,10 +122,78 @@ class ArchiverState:
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "archived_total": self.archived_total,
             "last_error": self.last_error,
+            "sweep_enabled": settings.archive_sweep_root_enabled,
+            "sweep_interval_seconds": settings.archive_sweep_interval_seconds,
+            "last_sweep_at": (
+                _last_sweep_at.isoformat() if _last_sweep_at else None
+            ),
+            "last_sweep_moved": _last_sweep_moved,
+            "last_sweep_error": _last_sweep_error,
+            "sweep_swept_total": _swept_total,
         }
 
 
 state = ArchiverState()
+
+
+# Module-level cooldown state for the AVBT-root sweep. Kept separate
+# from ArchiverState so we can mutate from free functions without
+# threading the instance through.
+_last_sweep_at: datetime | None = None
+_last_sweep_moved: int = 0
+_last_sweep_error: str = ""
+_swept_total: int = 0
+
+
+def _sweep_due() -> bool:
+    """True when the AVBT-root sweep should run now (interval elapsed
+    or never run yet). Respects the on/off setting."""
+    if not settings.archive_sweep_root_enabled:
+        return False
+    if _last_sweep_at is None:
+        return True
+    interval = max(60, settings.archive_sweep_interval_seconds)
+    return (datetime.utcnow() - _last_sweep_at).total_seconds() >= interval
+
+
+async def _sweep_root_once() -> int:
+    """Reuse the reorganize phase-1 logic to tidy orphans that landed
+    in the AVBT root outside the OfflineTaskLog flow (PikPak App / web
+    manual adds, magnets dropped straight into PikPak). Returns the
+    number of items moved or renamed.
+
+    Streaming events from ``_phase1_migrate_root`` are consumed silently
+    — this is a background tidy, not a UI flow."""
+    global _last_sweep_at, _last_sweep_moved, _last_sweep_error, _swept_total
+
+    # Local import: reorganize already imports archiver at module load,
+    # so a top-level import here would cycle.
+    from .reorganize import _phase1_migrate_root
+
+    moved = 0
+    try:
+        async for ev in _phase1_migrate_root(dry_run=False, idx_start=0):
+            if ev.get("type") != "progress":
+                continue
+            if ev.get("action") in ("move", "rename"):
+                moved += 1
+        _last_sweep_error = ""
+    except Exception as exc:  # noqa: BLE001
+        _last_sweep_error = str(exc)
+        logger.warning("root sweep failed: %s", exc)
+    finally:
+        _last_sweep_at = datetime.utcnow()
+        _last_sweep_moved = moved
+        _swept_total += moved
+
+    if moved:
+        logger.info("root sweep moved %d orphan(s) to kind/name", moved)
+        try:
+            from .pikpak_presence import presence_index  # avoid cycle
+            presence_index.invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+    return moved
 
 
 async def archive_once() -> int:
@@ -133,6 +201,19 @@ async def archive_once() -> int:
     state.last_error = ""
     if not state.enabled or not settings.pikpak_username:
         return 0
+
+    # Catch orphans that never went through OfflineTaskLog (manual
+    # PikPak App / web adds, leftover files). Runs on its own cooldown
+    # so we don't bombard PikPak / JavBus every 15 s when the AVBT root
+    # has nothing new to sweep. Independent of list_tasks: a sweep
+    # should still happen even if the task list itself is unreachable
+    # or has no completed entries.
+    if _sweep_due():
+        try:
+            await _sweep_root_once()
+        except Exception as exc:  # noqa: BLE001
+            state.last_error = f"sweep_root failed: {exc}"
+            logger.warning("sweep_root failed: %s", exc)
 
     try:
         tasks = await pikpak_service.list_tasks(size=200)

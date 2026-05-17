@@ -322,7 +322,7 @@ async def presence_status():
 
 @router.post("/presence/refresh", response_model=PresenceStatus)
 async def presence_refresh():
-    await presence_index.rebuild()
+    await presence_index.rebuild(force=True)
     return PresenceStatus(**presence_index.status())
 
 
@@ -332,7 +332,7 @@ async def presence_detail(refresh: bool = False):
     normalise into a JAV code. Lets the user spot files stored in
     unexpected locations or under odd folder names."""
     if refresh:
-        await presence_index.rebuild()
+        await presence_index.rebuild(force=True)
     elif presence_index.status().get("built_at") is None:
         await presence_index.get()
     return PresenceDetail(**presence_index.detail())

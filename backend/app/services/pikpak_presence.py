@@ -98,12 +98,17 @@ class PikPakPresenceIndex:
     async def get(self, *, force: bool = False) -> set[str]:
         if not force and self._is_fresh():
             return set(self._codes or set())
-        return await self.rebuild()
+        return await self.rebuild(force=force)
 
-    async def rebuild(self) -> set[str]:
+    async def rebuild(self, *, force: bool = False) -> set[str]:
         async with self._lock:
-            # Another coroutine may have rebuilt while we were waiting.
-            if self._is_fresh():
+            # Skip the rebuild if a concurrent caller already finished
+            # one within the TTL — but ONLY when this call wasn't an
+            # explicit refresh. Without the ``force`` carve-out an
+            # /presence/refresh click right after a fresh build would
+            # be a silent no-op, leaving the user staring at stale data
+            # (the "deleted files still show as 多餘" case).
+            if not force and self._is_fresh():
                 return set(self._codes or set())
             try:
                 codes = await self._build()

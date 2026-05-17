@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 # Direct children of AVBT/ that we treat as category buckets.
-_KIND_DIRS = ("star", "series", "studio", "label", "director")
+# The new layout uses Chinese labels (女優/系列/...). The English names
+# are kept so pre-rename installs still resolve.
+_KIND_DIRS = (
+    "女優", "系列", "製作商", "發行商", "導演",
+    "star", "series", "studio", "label", "director",
+)
 
 _LIST_CONCURRENCY = 4
 _LIST_PAGE_SIZE = 500

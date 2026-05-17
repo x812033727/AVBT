@@ -38,6 +38,36 @@ VIDEO_EXTS = {
 }
 
 
+# Chinese labels for each tracked-listing kind. Used as the folder name
+# under AVBT/ so users see ``AVBT/系列/回胴錄`` instead of
+# ``AVBT/series/回胴錄`` — both the archiver and the missing-code service
+# read from this same source so paths stay consistent.
+KIND_LABELS_CH: dict[str, str] = {
+    "star": "女優",
+    "series": "系列",
+    "studio": "製作商",
+    "label": "發行商",
+    "director": "導演",
+}
+
+
+# JavBus appends "<kind label> - 影片" to every listing page title — e.g.
+# the series 11pb's H3 reads "回胴錄 - 系列 - 影片" instead of just
+# "回胴錄". Strip that template suffix so archived folders are named with
+# the bare title.
+_LISTING_SUFFIX_RE = re.compile(
+    r"\s*[-‐－–—]\s*(?:女優|系列|製作商|發行商|導演)\s*[-‐－–—]\s*影片\s*$"
+)
+
+
+def clean_listing_name(name: str) -> str:
+    """Strip JavBus' template suffix from a scraped listing title.
+    Idempotent: passing an already-clean name returns it unchanged."""
+    if not name:
+        return ""
+    return _LISTING_SUFFIX_RE.sub("", name.strip()).strip()
+
+
 def ext_of(name: str) -> str:
     """Return the lower-cased dotted extension or empty string."""
     m = _EXT_RE.search(name or "")

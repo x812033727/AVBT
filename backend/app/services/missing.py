@@ -29,17 +29,18 @@ from ..schemas import (
     MovieListItem,
 )
 from ..scrapers import javbus as scraper
-from .jav_code import normalize_code, safe_folder_name
+from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
 from .pikpak_presence import presence_index
 
 
 def _expected_root(kind: str, slug: str, name: str) -> str:
-    """Mirror the archiver: ``<download_folder>/<kind>/<safe_name>``.
+    """Mirror the archiver: ``<download_folder>/<中文 kind>/<safe_name>``.
     Uses the display name when present, falling back to the slug so the
     user always sees a path (not an empty segment)."""
     root = settings.pikpak_download_folder or "AVBT"
     safe = safe_folder_name(name, fallback=safe_folder_name(slug, fallback=slug))
-    return f"{root}/{kind}/{safe}"
+    kind_dir = KIND_LABELS_CH.get(kind, kind)
+    return f"{root}/{kind_dir}/{safe}"
 
 
 logger = logging.getLogger(__name__)

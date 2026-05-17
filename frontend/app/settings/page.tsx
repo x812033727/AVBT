@@ -159,8 +159,8 @@ export default function SettingsPage() {
         kind: "ok",
         text:
           a.moved > 0
-            ? `整理根目錄完畢，搬了 ${a.moved} 個項目`
-            : "根目錄沒有需要搬的散落檔案",
+            ? `掃描 TASK 完畢，搬了 ${a.moved} 個項目`
+            : "TASK 沒有需要搬的項目",
       });
     } catch (e: any) {
       setMsg({ kind: "err", text: e.message });
@@ -383,7 +383,7 @@ export default function SettingsPage() {
                 onClick={sweepRootNow}
                 disabled={busy}
               >
-                立即整理根目錄
+                掃描 TASK 並搬移
               </button>
             </div>
           </>

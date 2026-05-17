@@ -1,13 +1,17 @@
 """Cached index of every JAV code currently present in the PikPak account.
 
-The archiver writes new completions into a hierarchical layout
-``AVBT/<kind>/<name>/<code>/`` (e.g. ``AVBT/series/MIDV/MIDV-001``). Codes
-that pre-date the hierarchy still sit under ``AVBT/已完成/<code>``.
+The archiver writes new completions into a hierarchical layout like
+``AVBT/<kind label>/<name>/<code>/`` (e.g. ``AVBT/系列/MIDV/MIDV-001``).
+Codes that pre-date the hierarchy still sit under ``AVBT/已完成/<code>``.
 
 A "missing code" UI needs a flat lookup ("is code X present anywhere?"),
 so we walk those known roots once and keep the resulting set in memory
 with a short TTL. Cross-category membership is handled at query time:
 the index doesn't care which kind/name folder physically stores a code.
+
+Each scan target is taken from ``config.all_kind_paths()``, which honours
+per-kind env overrides like ``PIKPAK_SERIES_FOLDER`` — so a non-standard
+layout (e.g. ``AVBT/AVBT/系列/系列/<name>``) can still be reached.
 """
 
 from __future__ import annotations
@@ -17,21 +21,13 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from ..config import settings
+from ..config import all_kind_paths, settings
 from .jav_code import normalize_code
 from .pikpak import PikPakError, pikpak_service
 
 
 logger = logging.getLogger(__name__)
 
-
-# Direct children of AVBT/ that we treat as category buckets.
-# The new layout uses Chinese labels (女優/系列/...). The English names
-# are kept so pre-rename installs still resolve.
-_KIND_DIRS = (
-    "女優", "系列", "製作商", "發行商", "導演",
-    "star", "series", "studio", "label", "director",
-)
 
 _LIST_CONCURRENCY = 4
 _LIST_PAGE_SIZE = 500
@@ -143,42 +139,31 @@ class PikPakPresenceIndex:
                 logger.warning("list_files(%s) failed: %s", parent_id, exc)
                 return []
 
+    def _record(self, code: str, path: str) -> None:
+        bucket = self._paths.setdefault(code, [])
+        if path not in bucket:
+            bucket.append(path)
+
     async def _build(self) -> set[str]:
-        # Resolve the root folder once. We accept any failure here by
-        # propagating it up so the caller records last_error.
-        root_path = settings.pikpak_download_folder or "AVBT"
-        root_id = await pikpak_service.folder_id(root_path)
-        # Reset path/root tracking on every build so stale diagnostics
-        # don't survive a failed rebuild.
+        # Reset diagnostics so stale results don't survive a failed rebuild.
         self._paths = {}
         self._roots = []
         self._unrecognized = []
-        if not root_id:
-            return set()
 
-        top_children = await self._list(root_id)
         codes: set[str] = set()
 
-        kind_jobs: list = []
-        legacy_jobs: list = []
-
-        legacy_name = (settings.pikpak_archive_folder or "AVBT/已完成").rsplit(
-            "/", 1
-        )[-1]
-
-        for child in top_children:
-            if child.kind != "drive#folder":
-                continue
-            name = child.name or ""
-            if name in _KIND_DIRS:
-                kind_jobs.append(self._collect_kind(f"{root_path}/{name}", child.id))
-            elif name == legacy_name:
-                legacy_jobs.append(
-                    self._collect_legacy(f"{root_path}/{name}", child.id)
-                )
+        # Walk each configured kind base path. lookup_folder_id avoids
+        # creating side-effect empty folders for unused kinds.
+        kind_jobs = [
+            self._scan_kind_path(path) for _kind, path in all_kind_paths()
+        ]
+        legacy_path = (
+            settings.pikpak_archive_folder or "AVBT/已完成"
+        ).strip().strip("/")
+        legacy_job = self._scan_legacy_path(legacy_path)
 
         results = await asyncio.gather(
-            *kind_jobs, *legacy_jobs, return_exceptions=True
+            *kind_jobs, legacy_job, return_exceptions=True
         )
         for r in results:
             if isinstance(r, set):
@@ -186,16 +171,34 @@ class PikPakPresenceIndex:
 
         return codes
 
-    def _record(self, code: str, path: str) -> None:
-        bucket = self._paths.setdefault(code, [])
-        if path not in bucket:
-            bucket.append(path)
+    async def _scan_kind_path(self, kind_path: str) -> set[str]:
+        """Resolve ``kind_path`` (e.g. ``AVBT/系列`` or a custom override
+        like ``AVBT/AVBT/系列/系列``), then walk depth 2 (name dirs →
+        code leaves). Returns an empty set when the path doesn't exist."""
+        try:
+            kind_id = await pikpak_service.lookup_folder_id(kind_path)
+        except Exception:  # noqa: BLE001
+            return set()
+        if not kind_id:
+            return set()
+        return await self._collect_kind(kind_path, kind_id)
 
-    async def _collect_kind(self, root_path: str, kind_dir_id: str) -> set[str]:
-        """For an ``AVBT/<kind>`` dir: list name dirs, then list each
-        name dir's children — leaves may be code-named folders
-        (``DAM-043/``) OR bare video files (``DAM-044.mp4``); both
-        count as the code being present."""
+    async def _scan_legacy_path(self, legacy_path: str) -> set[str]:
+        try:
+            legacy_id = await pikpak_service.lookup_folder_id(legacy_path)
+        except Exception:  # noqa: BLE001
+            return set()
+        if not legacy_id:
+            return set()
+        return await self._collect_legacy(legacy_path, legacy_id)
+
+    async def _collect_kind(
+        self, root_path: str, kind_dir_id: str
+    ) -> set[str]:
+        """For a kind dir: list name dirs, then list each name dir's
+        children. Leaves may be code-named folders (``DAM-043/``) OR
+        bare video files (``DAM-044.mp4``); both count as the code
+        being present."""
         name_dirs = await self._list(kind_dir_id)
         targets = [n for n in name_dirs if n.kind == "drive#folder"]
         if not targets:
@@ -215,8 +218,6 @@ class PikPakPresenceIndex:
                 continue
             parent = f"{root_path}/{name_dir.name}"
             for leaf in leaves:
-                # Leaves may be code-named folders (``DAM-043/``) OR bare
-                # video files (``DAM-044.mp4``); both count as present.
                 leaves_total += 1
                 c = normalize_code(leaf.name)
                 if c:

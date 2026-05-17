@@ -6,6 +6,7 @@ import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
 import {
   api,
+  type MissingCodesResult,
   type SearchResult,
   type TrackedKind,
   type TrackedListing,
@@ -29,6 +30,12 @@ export default function ListingPage({
   const [tracked, setTracked] = useState<TrackedListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [presence, setPresence] = useState<Set<string> | null>(null);
+  const [presenceMeta, setPresenceMeta] = useState<{
+    total: number;
+    missing: number;
+  } | null>(null);
+  const [presenceBusy, setPresenceBusy] = useState(false);
   const trackable = kind !== "genre";  // 類別變動太頻繁，不適合做追蹤
 
   const run = useCallback(
@@ -74,6 +81,34 @@ export default function ListingPage({
       alive = false;
     };
   }, [kind, id, trackable]);
+
+  const loadPresence = useCallback(
+    async (refresh: boolean) => {
+      if (!trackable || !tracked) return;
+      setPresenceBusy(true);
+      try {
+        const params = new URLSearchParams({
+          uncensored: String(uncensored),
+        });
+        if (refresh) params.set("refresh", "true");
+        const r = await api.get<MissingCodesResult>(
+          `/api/tracked/${kind}/${encodeURIComponent(id)}/missing-codes?${params}`
+        );
+        setPresence(new Set(r.present_codes));
+        setPresenceMeta({ total: r.total, missing: r.missing.length });
+      } catch {
+        setPresence(null);
+        setPresenceMeta(null);
+      } finally {
+        setPresenceBusy(false);
+      }
+    },
+    [kind, id, uncensored, trackable, tracked]
+  );
+
+  useEffect(() => {
+    loadPresence(false);
+  }, [loadPresence]);
 
   async function toggleTrack() {
     if (tracked) {
@@ -167,9 +202,38 @@ export default function ListingPage({
               <span className="ml-2 text-white/30">・最新：{firstTitle}</span>
             )}
           </div>
+          {tracked && presenceMeta && (
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-white/10 bg-panel/40 px-3 py-2 text-xs text-white/70">
+              <span>
+                追蹤全集共{" "}
+                <span className="font-semibold text-white/90">
+                  {presenceMeta.total}
+                </span>{" "}
+                部 ・{" "}
+                <span className="text-emerald-300">
+                  已下載 {presenceMeta.total - presenceMeta.missing}
+                </span>{" "}
+                ／{" "}
+                <span className="text-amber-300">
+                  缺漏 {presenceMeta.missing}
+                </span>
+              </span>
+              <button
+                onClick={() => loadPresence(true)}
+                disabled={presenceBusy}
+                className="ml-auto rounded border border-white/15 px-2 py-0.5 hover:bg-white/5 disabled:opacity-40"
+              >
+                {presenceBusy ? "重建中…" : "重新整理 PikPak 索引"}
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {data.items.map((it) => (
-              <MovieCard key={it.code + it.detail_url} item={it} />
+              <MovieCard
+                key={it.code + it.detail_url}
+                item={it}
+                present={presence ? presence.has(it.code) : undefined}
+              />
             ))}
           </div>
           <div className="flex items-center justify-center gap-2 pt-2">

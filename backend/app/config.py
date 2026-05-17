@@ -14,8 +14,16 @@ class Settings(BaseSettings):
     # Auto-archiver: every N seconds, scan PikPak completed offline tasks
     # and move their files to <archive_folder>/<code>/.
     archive_enabled: bool = True
+    # Legacy / fallback flat archive. New downloads matching a tracked
+    # listing go to AVBT/<kind>/<name>/<code>/ instead; codes with no
+    # tracked match still land here.
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
+
+    # PikPak presence index + missing-codes feature
+    presence_ttl_seconds: int = 300            # cache lifetime
+    missing_listing_cache_seconds: int = 3600  # JavBus listing cache
+    missing_max_pages: int = 50                # safety cap when crawling a listing
 
     # Actress tracker: every N seconds, check JavBus for new works of
     # every TrackedActress row.

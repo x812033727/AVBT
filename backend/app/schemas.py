@@ -211,3 +211,57 @@ class PikPakQuota(BaseModel):
     used: int = 0
     limit: int = 0
     expire: Optional[str] = None
+
+
+# ---------- Missing-codes / presence index ----------
+
+class MissingCodesResult(BaseModel):
+    kind: str
+    id: str
+    name: str = ""
+    total: int = 0
+    present_codes: list[str] = Field(default_factory=list)
+    missing: list[MovieListItem] = Field(default_factory=list)
+    pages_scanned: int = 0
+    built_at: datetime
+
+
+class MissingSummaryItem(BaseModel):
+    kind: str
+    id: str
+    name: str = ""
+    total: int = 0
+    missing_count: int = 0
+    pages_scanned: int = 0
+    error: str = ""
+
+
+class MissingSummary(BaseModel):
+    built_at: datetime
+    presence_built_at: Optional[datetime] = None
+    items: list[MissingSummaryItem] = Field(default_factory=list)
+
+
+class AggregatedMissingItem(BaseModel):
+    kind: str
+    id: str
+    name: str = ""
+    missing: list[MovieListItem] = Field(default_factory=list)
+
+
+class AggregatedMissing(BaseModel):
+    built_at: datetime
+    presence_built_at: Optional[datetime] = None
+    items: list[AggregatedMissingItem] = Field(default_factory=list)
+
+
+class PresenceStatus(BaseModel):
+    built_at: Optional[datetime] = None
+    size: int = 0
+    last_error: str = ""
+    ttl_seconds: int = 0
+    ready: bool = False
+
+
+class ReorganizeOptions(BaseModel):
+    dry_run: bool = True

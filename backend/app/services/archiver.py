@@ -25,18 +25,87 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import OfflineTaskLog
+from ..models import OfflineTaskLog, TrackedListing
+from ..scrapers import javbus as scraper
 from .notify import send_webhook
 from .pikpak import PikPakError, pikpak_service
 
 logger = logging.getLogger(__name__)
 
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_\-]+")
+_SAFE_NAME = re.compile(r'[/\\:<>*?|"\x00-\x1f]+')
+
+# Hierarchy priority — when a code belongs to multiple tracked listings,
+# the leftmost match wins. Most-specific first.
+_KIND_PRIORITY = ("series", "director", "label", "studio", "star")
 
 
 def _safe_code(code: str) -> str:
     """Sanitise a code so it can be used as a folder name."""
     return _SAFE_CODE.sub("", code.strip())[:64]
+
+
+def _safe_name(name: str, *, fallback: str = "") -> str:
+    """Strip path-unsafe chars from a display name. Returns fallback when
+    the cleaned result is empty."""
+    cleaned = _SAFE_NAME.sub("", (name or "").strip()).strip()
+    return cleaned[:64] or fallback
+
+
+# A small per-pass cache so two completed tasks with the same code don't
+# trigger two JavBus fetches.
+_detail_cache: dict[str, object] = {}
+
+
+def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
+    """From a MovieDetail, return {kind: (slug, name)} for whatever
+    listing-kind attributes are populated."""
+    out: dict[str, tuple[str, str]] = {}
+    for kind in ("series", "director", "label", "studio"):
+        ref = getattr(detail, kind, None)
+        if ref and getattr(ref, "id", "") and getattr(ref, "name", ""):
+            out[kind] = (ref.id, ref.name)
+    for actress in getattr(detail, "actresses", None) or []:
+        if actress.id and actress.name:
+            out["star"] = (actress.id, actress.name)
+            break  # use the first credited actress
+    return out
+
+
+async def _resolve_archive_path(code: str) -> str:
+    """Pick the destination folder for ``code`` based on TrackedListing
+    membership. Falls back to ``pikpak_archive_folder/<code>`` when no
+    tracked listing matches (or detail lookup fails)."""
+    safe_code = _safe_code(code)
+    fallback = f"{settings.pikpak_archive_folder}/{safe_code}"
+
+    detail = _detail_cache.get(code)
+    if detail is None:
+        try:
+            detail = await scraper.fetch_detail(code)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("fetch_detail(%s) failed: %s", code, exc)
+            return fallback
+        _detail_cache[code] = detail
+
+    kinds = _detail_kinds(detail)  # type: ignore[arg-type]
+    if not kinds:
+        return fallback
+
+    async with SessionLocal() as session:
+        for kind in _KIND_PRIORITY:
+            ref = kinds.get(kind)
+            if not ref:
+                continue
+            slug, name = ref
+            row = await session.get(TrackedListing, (kind, slug))
+            if row is None:
+                continue
+            safe = _safe_name(name, fallback=_safe_name(slug, fallback="unknown"))
+            root = settings.pikpak_download_folder or "AVBT"
+            return f"{root}/{kind}/{safe}/{safe_code}"
+
+    return fallback
 
 
 class ArchiverState:
@@ -84,6 +153,8 @@ async def archive_once() -> int:
         return 0
 
     moved = 0
+    # Reset per-pass detail cache.
+    _detail_cache.clear()
     async with SessionLocal() as session:
         rows = (
             await session.execute(
@@ -97,11 +168,10 @@ async def archive_once() -> int:
 
         notifications: list[str] = []
         for row in rows:
-            code = _safe_code(row.code)
-            if not code:
+            if not _safe_code(row.code):
                 continue
-            target_path = f"{settings.pikpak_archive_folder}/{code}"
             try:
+                target_path = await _resolve_archive_path(row.code)
                 target_id = await pikpak_service.folder_id(target_path)
                 if not target_id:
                     continue
@@ -119,6 +189,12 @@ async def archive_once() -> int:
 
         if moved:
             await session.commit()
+            # Newly-archived codes change which codes count as "present".
+            try:
+                from .pikpak_presence import presence_index  # avoid cycle
+                presence_index.invalidate()
+            except Exception:  # noqa: BLE001
+                pass
             for msg in notifications:
                 asyncio.create_task(send_webhook(msg))
 

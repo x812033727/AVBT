@@ -7,10 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_session
 from ..models import TrackedListing
 from ..schemas import (
+    AggregatedMissing,
     CheckListingResult,
+    MissingCodesResult,
+    MissingSummary,
     TrackedListingIn,
     TrackedListingOut,
 )
+from ..services import missing as missing_svc
 from ..services import tracker
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import LISTING_KINDS
@@ -63,6 +67,22 @@ async def tracker_run_now():
         "new_total": new_total,
         **tracker.state.to_dict(),
     }
+
+
+# ---------- missing-codes ----------
+
+# Registered ABOVE the catch-all /{kind}/{slug:path} so the literal
+# "missing-summary" / "missing-all" paths win over the slug route.
+
+
+@router.get("/missing-summary", response_model=MissingSummary)
+async def missing_summary_endpoint(refresh: bool = False):
+    return await missing_svc.missing_summary(refresh=refresh)
+
+
+@router.get("/missing-all", response_model=AggregatedMissing)
+async def missing_all_endpoint(refresh: bool = False):
+    return await missing_svc.missing_all(refresh=refresh)
 
 
 # ---------- CRUD ----------
@@ -138,6 +158,28 @@ async def upsert_tracked(
 # slug:path so legacy / mis-entered slugs that contain a slash (e.g.
 # "series/11pb") can still be looked up and deleted. New writes go
 # through upsert_tracked which strips the prefix.
+#
+# Note: the GET /{kind}/{slug:path} catch-all is greedy — any literal
+# suffix endpoints (/missing-codes, /check, /reset-new-count) MUST be
+# declared *before* it, otherwise FastAPI routes "star/abc/missing-codes"
+# to get_tracked with slug="abc/missing-codes" and the suffix is lost.
+
+
+@router.get("/{kind}/{slug:path}/missing-codes", response_model=MissingCodesResult)
+async def missing_codes_for(
+    kind: str,
+    slug: str,
+    refresh: bool = False,
+    uncensored: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    # Prefer the DB row's uncensored flag when present — keeps client
+    # callers concise (just /missing-codes, no extra query string).
+    row = await session.get(TrackedListing, (kind, slug))
+    eff_uncensored = bool(row.uncensored) if row else uncensored
+    return await missing_svc.missing_for_listing(
+        kind, slug, uncensored=eff_uncensored, refresh=refresh
+    )
 
 
 @router.get("/{kind}/{slug:path}", response_model=TrackedListingOut)

@@ -75,3 +75,14 @@ def extract_jav_code(name: str) -> str | None:
 
 def is_video(name: str) -> bool:
     return ext_of(name) in VIDEO_EXTS
+
+
+def normalize_code(s: str) -> str:
+    """Canonicalise an already-clean JAV code (e.g. PikPak folder name or
+    a JavBus code) to ``LABEL-NNN`` form.
+
+    Reuses extract_jav_code so leading-zero / missing-hyphen variants all
+    collapse to the same string. Returns '' when nothing parses.
+    """
+    code = extract_jav_code(s or "")
+    return code or ""

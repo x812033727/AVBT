@@ -5,8 +5,10 @@ import { confirmDialog } from "@/components/Toast";
 import {
   API_BASE,
   api,
+  streamNdjson,
   type ArchiverStatus,
   type PikPakStatus,
+  type PresenceStatus,
   type TrackerStatus,
 } from "@/lib/api";
 
@@ -357,6 +359,8 @@ export default function SettingsPage() {
         )}
       </section>
 
+      <ReorganizeSection setMsg={setMsg} />
+
       <BackupSection setMsg={setMsg} />
 
       <section className="space-y-1 rounded-lg border border-white/10 bg-panel p-4 text-xs text-white/60">
@@ -374,6 +378,326 @@ export default function SettingsPage() {
     </div>
   );
 }
+
+type ReorgProgress = {
+  current: number;
+  source: string;
+  action: "move" | "skip" | "error";
+  target: string | null;
+  reason: string | null;
+};
+
+type ReorgResult = {
+  total: number;
+  moved: number;
+  skipped: number;
+  errors: number;
+  dry_run: boolean;
+};
+
+const REORG_ACTION: Record<ReorgProgress["action"], { text: string; cls: string }> = {
+  move: { text: "→ 搬移", cls: "text-blue-300" },
+  skip: { text: "⏭ 略過", cls: "text-white/50" },
+  error: { text: "✗ 失敗", cls: "text-red-300" },
+};
+
+const REORG_REASON: Record<string, string> = {
+  no_code: "無法辨識番號",
+  no_tracked_match: "沒有對應的追蹤分類",
+  conflict: "目標已有同名資料夾",
+  bad_target: "解析目標路徑失敗",
+  resolve_failed: "查詢 JavBus 失敗",
+};
+
+function ReorganizeSection({
+  setMsg,
+}: {
+  setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
+}) {
+  const [presence, setPresence] = useState<PresenceStatus | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [dryRun, setDryRun] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [progress, setProgress] = useState<ReorgProgress[]>([]);
+  const [result, setResult] = useState<ReorgResult | null>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const loadPresence = useCallback(async () => {
+    try {
+      const p = await api.get<PresenceStatus>("/api/pikpak/presence/status");
+      setPresence(p);
+    } catch {
+      setPresence(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPresence();
+  }, [loadPresence]);
+
+  async function refreshIndex() {
+    setRefreshing(true);
+    try {
+      const p = await api.post<PresenceStatus>("/api/pikpak/presence/refresh");
+      setPresence(p);
+      setMsg({
+        kind: "ok",
+        text: `PikPak 索引已重建（共 ${p.size} 個番號）`,
+      });
+    } catch (e: any) {
+      setMsg({ kind: "err", text: `重建索引失敗：${e.message}` });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function runReorg() {
+    if (!dryRun) {
+      if (
+        !confirm(
+          "正式整理會把 AVBT/已完成 下的番號資料夾搬到對應的 series / star 子資料夾。確定？"
+        )
+      )
+        return;
+    }
+    setBusy(true);
+    setErrMsg(null);
+    setResult(null);
+    setProgress([]);
+    setTotal(0);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const wasDryRun = dryRun;
+    try {
+      await streamNdjson(
+        "/api/pikpak/reorganize",
+        { dry_run: wasDryRun },
+        (event) => {
+          if (event.type === "start") setTotal(event.total ?? 0);
+          else if (event.type === "progress")
+            setProgress((prev) => [...prev, event]);
+          else if (event.type === "done") setResult(event.result);
+          else if (event.type === "error") setErrMsg(event.message);
+        },
+        ctrl.signal
+      );
+      if (!wasDryRun) {
+        loadPresence();
+      }
+    } catch (e: any) {
+      if (e.name !== "AbortError") setErrMsg(e.message);
+    } finally {
+      setBusy(false);
+      abortRef.current = null;
+    }
+  }
+
+  function close() {
+    if (busy) return;
+    setOpen(false);
+    setProgress([]);
+    setResult(null);
+    setErrMsg(null);
+    setTotal(0);
+    setDryRun(true);
+  }
+
+  const percent = total ? Math.round((progress.length / total) * 100) : 0;
+  const recent = progress.slice(-10).reverse();
+
+  return (
+    <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+      <h2 className="text-lg font-semibold">PikPak 資料夾結構整理</h2>
+      <p className="text-xs text-white/50">
+        新下載會自動依追蹤的系列 / 女優分類，歸檔到{" "}
+        <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;</span>
+        。下方可重建索引、或把舊的扁平歸檔搬到新結構。
+      </p>
+      {presence ? (
+        <div className="space-y-1 text-xs text-white/60">
+          <div>
+            索引狀態：{presence.ready ? (
+              <span className="text-emerald-300">已建立</span>
+            ) : (
+              <span className="text-amber-300">尚未建立</span>
+            )}
+            ・收錄 <span className="font-mono">{presence.size}</span> 個番號
+          </div>
+          <div>
+            最後建立：
+            {presence.built_at
+              ? new Date(presence.built_at + "Z").toLocaleString()
+              : "從未"}
+            ・TTL {presence.ttl_seconds}s
+          </div>
+          {presence.last_error && (
+            <div className="text-amber-300/80">⚠ {presence.last_error}</div>
+          )}
+        </div>
+      ) : (
+        <div className="text-sm text-white/40">載入中…</div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          className="btn-ghost"
+          onClick={refreshIndex}
+          disabled={refreshing}
+        >
+          {refreshing ? "重建索引中…" : "重建索引"}
+        </button>
+        <button className="btn-ghost" onClick={() => setOpen(true)}>
+          整理舊資料夾…
+        </button>
+      </div>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) close();
+          }}
+        >
+          <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
+            <div className="flex items-center">
+              <h2 className="text-lg font-semibold">整理 AVBT/已完成</h2>
+              <button
+                className="ml-auto text-white/40 hover:text-white"
+                onClick={close}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-white/50">
+              掃描{" "}
+              <span className="font-mono">AVBT/已完成</span> 下的每個番號資料夾，根據 JavBus 詳情找到對應的追蹤分類（優先序 series &gt; director &gt; label &gt; studio &gt; star），把資料夾搬到{" "}
+              <span className="font-mono">
+                AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;
+              </span>
+              。沒有對應追蹤分類的會留在原位。
+            </p>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={dryRun}
+                onChange={(e) => setDryRun(e.target.checked)}
+                disabled={busy}
+              />
+              <span>只預覽（不實際搬移）</span>
+            </label>
+
+            {errMsg && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {errMsg}
+              </div>
+            )}
+
+            {(busy || result) && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs text-white/60">
+                  <span>
+                    {progress.length} / {total} ({percent}%)
+                    {result?.dry_run && " ・ 預覽模式"}
+                  </span>
+                  <span>
+                    搬 {progress.filter((p) => p.action === "move").length} ／
+                    略 {progress.filter((p) => p.action === "skip").length} ／
+                    錯 {progress.filter((p) => p.action === "error").length}
+                  </span>
+                </div>
+                <div className="h-2 overflow-hidden rounded bg-white/10">
+                  <div
+                    className="h-full bg-accent transition-[width]"
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+                <ul className="max-h-56 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
+                  {recent.length === 0 && (
+                    <li className="text-white/40">等待第一筆…</li>
+                  )}
+                  {recent.map((p) => {
+                    const lbl = REORG_ACTION[p.action];
+                    const reasonTxt =
+                      p.reason && REORG_REASON[p.reason]
+                        ? `（${REORG_REASON[p.reason]}）`
+                        : p.reason
+                        ? `（${p.reason}）`
+                        : "";
+                    return (
+                      <li
+                        key={p.current}
+                        className="flex items-baseline gap-2 py-0.5"
+                      >
+                        <span className={lbl.cls}>
+                          {lbl.text}
+                          {reasonTxt}
+                        </span>
+                        <span className="truncate text-white/60">
+                          📁 {p.source}
+                        </span>
+                        {p.target && (
+                          <>
+                            <span className="text-white/30">→</span>
+                            <span className="truncate font-mono text-accent">
+                              {p.target}
+                            </span>
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {result && (
+              <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+                <div>
+                  共 <strong>{result.total}</strong> 個資料夾
+                  {result.dry_run && (
+                    <span className="ml-2 text-amber-300/80">
+                      （僅預覽，未搬移）
+                    </span>
+                  )}
+                </div>
+                <div className="text-blue-300">→ 搬移 {result.moved}</div>
+                <div className="text-white/60">⏭ 略過 {result.skipped}</div>
+                {result.errors > 0 && (
+                  <div className="text-red-300">✗ 失敗 {result.errors}</div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              {busy ? (
+                <button
+                  className="btn-ghost"
+                  onClick={() => abortRef.current?.abort()}
+                >
+                  取消
+                </button>
+              ) : (
+                <>
+                  <button className="btn-ghost" onClick={close}>
+                    關閉
+                  </button>
+                  <button className="btn-primary" onClick={runReorg}>
+                    {dryRun ? "預覽" : "執行"}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 
 function BackupSection({
   setMsg,

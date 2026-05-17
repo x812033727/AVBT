@@ -86,19 +86,27 @@ def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
     is_video_fn,
-) -> dict[str, str]:
-    """Pre-scan video children and return ``{current_name: target_name}``
-    covering two corrections:
+) -> tuple[dict[str, str], set[str]]:
+    """Pre-scan video children and return ``(plan, group_members)``:
 
-    1. **Lonely variant** — if a base code has ≤ 1 file with a trailing
-       variant letter (``SDMM-14903A`` alone, no ``B`` companion), the
-       letter is meaningless and gets stripped so the file becomes
-       ``<base>.<ext>``.
-    2. **Multi-part group** — when 2+ video files share a canonical and
-       all of them are ≥ ``min_size``, rename them to
-       ``<canonical>_N.<ext>`` (sorted by PikPak ``(N)`` suffix; bare
-       name = 0 = ``_1``). Files already in this form keep their slot
-       so re-running cleanup is a no-op.
+    - ``plan`` — ``{current_name: target_name}`` covering two corrections:
+
+      1. **Lonely variant** — if a base code has ≤ 1 file with a trailing
+         variant letter (``SDMM-14903A`` alone, no ``B`` companion), the
+         letter is meaningless and gets stripped so the file becomes
+         ``<base>.<ext>``.
+      2. **Multi-part group** — when 2+ video files share a canonical and
+         all of them are ≥ ``min_size``, rename them to
+         ``<canonical>_N.<ext>`` (sorted by PikPak ``(N)`` suffix; bare
+         name = 0 = ``_1``). Files already in this form keep their slot
+         so re-running cleanup is a no-op.
+
+    - ``group_members`` — every filename that belongs to a multi-part
+      group (whether or not it's in ``plan``). The caller uses this to
+      avoid blindly applying the single-file default name to a member
+      that's already correctly named — without this guard, on a second
+      run ``SDMM-053_1.mp4``, ``_2``, ``_3``, ``_4`` would all collapse
+      to ``SDMM-053.mp4`` + ``(2)/(3)/(4)`` dedup suffixes.
     """
     # Pass 1: count files-with-variant per base code, so we know which
     # variants are "lonely" and should be stripped.
@@ -131,6 +139,7 @@ def _build_video_rename_plan(
         groups.setdefault(canon, []).append(c)
 
     plan: dict[str, str] = {}
+    group_members: set[str] = set()
     for canon, files in groups.items():
         if len(files) == 1:
             # Singleton: only acts if it has a lonely variant to strip.
@@ -146,6 +155,9 @@ def _build_video_rename_plan(
         # Multi-file group: multipart naming if all substantial.
         if not all((f.size or 0) >= min_size for f in files):
             continue
+        # Members get protected from the single-file default-name path.
+        for f in files:
+            group_members.add(f.name)
         used_indices: set[int] = set()
         unnamed: list = []
         for f in files:
@@ -167,7 +179,7 @@ def _build_video_rename_plan(
             plan[f.name] = f"{canon}_{n}{ext}"
             used_indices.add(n)
             n += 1
-    return plan
+    return plan, group_members
 
 
 logger = logging.getLogger(__name__)
@@ -658,8 +670,12 @@ class PikPakService:
         # - real multi-part groups (2+ substantial-size files sharing a
         #   canonical) → number them ``<canon>_N.<ext>`` instead of
         #   keeping PikPak's "(2)/(3)" auto-dedupe form
+        #
+        # ``multipart_members`` also includes already-correctly-named
+        # members so the file branch leaves them alone instead of
+        # collapsing them via the default single-file naming.
         PART_MIN_BYTES = 500 * 1024 * 1024
-        multipart_plan = _build_video_rename_plan(
+        multipart_plan, multipart_members = _build_video_rename_plan(
             children, PART_MIN_BYTES, is_video
         )
 
@@ -714,6 +730,14 @@ class PikPakService:
                     # give it a ``<canon>_N.<ext>`` slot.
                     if child.name in multipart_plan:
                         target = multipart_plan[child.name]
+                    elif child.name in multipart_members:
+                        # Already-correctly-named member of a multi-part
+                        # group — leaving it alone is critical, otherwise
+                        # the default ``<code_full>.<ext>`` would
+                        # collapse all variants on every cleanup re-run.
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": child.name, "reason": "already_clean"}
+                        continue
                     else:
                         target = f"{code_full}{ext_of(child.name)}"
                     if target == child.name:

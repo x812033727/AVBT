@@ -263,5 +263,28 @@ class PresenceStatus(BaseModel):
     ready: bool = False
 
 
+class PresenceRoot(BaseModel):
+    path: str
+    leaves: int = 0
+    codes: int = 0
+    unrecognized: int = 0
+
+
+class PresenceUnrecognized(BaseModel):
+    parent: str
+    name: str
+
+
+class PresenceDetail(PresenceStatus):
+    roots: list[PresenceRoot] = Field(default_factory=list)
+    unrecognized: list[PresenceUnrecognized] = Field(default_factory=list)
+    unrecognized_total: int = 0
+
+
+class PresenceCodeLookup(BaseModel):
+    code: str
+    paths: list[str] = Field(default_factory=list)
+
+
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True

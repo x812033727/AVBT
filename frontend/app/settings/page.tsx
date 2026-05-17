@@ -8,6 +8,7 @@ import {
   streamNdjson,
   type ArchiverStatus,
   type PikPakStatus,
+  type PresenceDetail,
   type PresenceStatus,
   type TrackerStatus,
 } from "@/lib/api";
@@ -414,8 +415,9 @@ function ReorganizeSection({
 }: {
   setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
 }) {
-  const [presence, setPresence] = useState<PresenceStatus | null>(null);
+  const [presence, setPresence] = useState<PresenceDetail | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [open, setOpen] = useState(false);
   const [dryRun, setDryRun] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -427,7 +429,7 @@ function ReorganizeSection({
 
   const loadPresence = useCallback(async () => {
     try {
-      const p = await api.get<PresenceStatus>("/api/pikpak/presence/status");
+      const p = await api.get<PresenceDetail>("/api/pikpak/presence/detail");
       setPresence(p);
     } catch {
       setPresence(null);
@@ -441,7 +443,10 @@ function ReorganizeSection({
   async function refreshIndex() {
     setRefreshing(true);
     try {
-      const p = await api.post<PresenceStatus>("/api/pikpak/presence/refresh");
+      await api.post<PresenceStatus>("/api/pikpak/presence/refresh");
+      const p = await api.get<PresenceDetail>(
+        "/api/pikpak/presence/detail"
+      );
       setPresence(p);
       setMsg({
         kind: "ok",
@@ -551,7 +556,70 @@ function ReorganizeSection({
         <button className="btn-ghost" onClick={() => setOpen(true)}>
           整理舊資料夾…
         </button>
+        <button
+          className="btn-ghost"
+          onClick={() => setShowDebug((v) => !v)}
+        >
+          {showDebug ? "收合偵錯" : "看索引偵錯"}
+        </button>
       </div>
+
+      {showDebug && presence && (
+        <div className="space-y-2 rounded-md border border-white/10 bg-ink/40 p-3 text-xs">
+          <div className="font-semibold text-white/70">
+            掃描的根目錄(共 {presence.roots.length})
+          </div>
+          {presence.roots.length === 0 ? (
+            <div className="text-white/40">
+              索引還沒建立過。請點上方「重建索引」。
+            </div>
+          ) : (
+            <ul className="space-y-0.5 font-mono">
+              {presence.roots.map((r) => (
+                <li key={r.path} className="flex flex-wrap gap-2">
+                  <span className="text-white/80">{r.path}</span>
+                  <span className="text-white/40">
+                    leaves={r.leaves} · codes={r.codes}
+                    {r.unrecognized > 0 && (
+                      <span className="text-amber-300">
+                        {" · ⚠ unrecognized=" + r.unrecognized}
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="pt-1 font-semibold text-white/70">
+            無法辨識為番號的資料夾名(共 {presence.unrecognized_total}
+            ,最多顯示 50 個)
+          </div>
+          {presence.unrecognized.length === 0 ? (
+            <div className="text-white/40">
+              ✓ 所有掃到的葉節點都成功辨識為番號。
+            </div>
+          ) : (
+            <ul className="max-h-64 space-y-0.5 overflow-auto font-mono">
+              {presence.unrecognized.map((u, i) => (
+                <li key={i} className="text-amber-200/80">
+                  <span className="text-white/40">{u.parent}/</span>
+                  {u.name}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="pt-1 text-white/40">
+            說明:索引只會掃 <span className="font-mono">AVBT/star</span>、
+            <span className="font-mono">/series</span>、
+            <span className="font-mono">/studio</span>、
+            <span className="font-mono">/label</span>、
+            <span className="font-mono">/director</span> 下的
+            <span className="font-mono">&lt;name&gt;/&lt;code&gt;</span>
+            ,加上舊版 <span className="font-mono">AVBT/已完成/&lt;code&gt;</span>
+            。若你的檔案在其他路徑(例如直接放在 AVBT/),會被當成「找不到」。
+          </div>
+        </div>
+      )}
 
       {open && (
         <div

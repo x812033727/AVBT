@@ -12,6 +12,8 @@ from ..schemas import (
     PikPakLogin,
     PikPakQuota,
     PikPakTask,
+    PresenceCodeLookup,
+    PresenceDetail,
     PresenceStatus,
     ReorganizeOptions,
 )
@@ -322,6 +324,27 @@ async def presence_status():
 async def presence_refresh():
     await presence_index.rebuild()
     return PresenceStatus(**presence_index.status())
+
+
+@router.get("/presence/detail", response_model=PresenceDetail)
+async def presence_detail(refresh: bool = False):
+    """Status + which roots were scanned + which leaf folder names didn't
+    normalise into a JAV code. Lets the user spot files stored in
+    unexpected locations or under odd folder names."""
+    if refresh:
+        await presence_index.rebuild()
+    elif presence_index.status().get("built_at") is None:
+        await presence_index.get()
+    return PresenceDetail(**presence_index.detail())
+
+
+@router.get("/presence/codes/{code}", response_model=PresenceCodeLookup)
+async def presence_lookup_code(code: str):
+    """Return every PikPak folder path the presence index found for
+    ``code``. Empty list means the index doesn't see it anywhere."""
+    if presence_index.status().get("built_at") is None:
+        await presence_index.get()
+    return PresenceCodeLookup(code=code, paths=presence_index.paths_for(code))
 
 
 @router.post("/reorganize")

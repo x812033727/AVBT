@@ -328,3 +328,26 @@ export type PresenceStatus = {
   ttl_seconds: number;
   ready: boolean;
 };
+
+export type PresenceRoot = {
+  path: string;
+  leaves: number;
+  codes: number;
+  unrecognized: number;
+};
+
+export type PresenceUnrecognized = {
+  parent: string;
+  name: string;
+};
+
+export type PresenceDetail = PresenceStatus & {
+  roots: PresenceRoot[];
+  unrecognized: PresenceUnrecognized[];
+  unrecognized_total: number;
+};
+
+export type PresenceCodeLookup = {
+  code: string;
+  paths: string[];
+};

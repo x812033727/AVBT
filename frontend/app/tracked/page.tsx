@@ -8,8 +8,11 @@ import {
   api,
   imgProxy,
   type CheckListingResult,
+  type MissingCodesResult,
   type MissingSummary,
   type MissingSummaryItem,
+  type MovieListItem,
+  type PresenceCodeLookup,
   type TrackedKind,
   type TrackedListing,
 } from "@/lib/api";
@@ -54,6 +57,15 @@ export default function TrackedPage() {
     null
   );
   const [missingLoading, setMissingLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [details, setDetails] = useState<Map<string, MissingCodesResult>>(
+    new Map()
+  );
+  const [detailLoading, setDetailLoading] = useState<Set<string>>(new Set());
+  const [lookups, setLookups] = useState<Map<string, PresenceCodeLookup>>(
+    new Map()
+  );
+  const [lookupBusy, setLookupBusy] = useState<Set<string>>(new Set());
 
   // Manual-add form state
   const [addKind, setAddKind] = useState<TrackedKind>("studio");
@@ -141,6 +153,53 @@ export default function TrackedPage() {
       `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/reset-new-count`
     );
     load();
+  }
+
+  async function toggleExpand(it: TrackedListing) {
+    const key = keyOf(it);
+    const next = new Set(expanded);
+    if (next.has(key)) {
+      next.delete(key);
+      setExpanded(next);
+      return;
+    }
+    next.add(key);
+    setExpanded(next);
+    if (details.has(key)) return;
+    setDetailLoading((s) => new Set(s).add(key));
+    try {
+      const res = await api.get<MissingCodesResult>(
+        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/missing-codes`
+      );
+      setDetails((m) => new Map(m).set(key, res));
+    } catch (e: any) {
+      toast.error(e.message || "讀取缺漏明細失敗");
+    } finally {
+      setDetailLoading((s) => {
+        const n = new Set(s);
+        n.delete(key);
+        return n;
+      });
+    }
+  }
+
+  async function lookupCode(code: string) {
+    if (lookupBusy.has(code) || lookups.has(code)) return;
+    setLookupBusy((s) => new Set(s).add(code));
+    try {
+      const res = await api.get<PresenceCodeLookup>(
+        `/api/pikpak/presence/codes/${encodeURIComponent(code)}`
+      );
+      setLookups((m) => new Map(m).set(code, res));
+    } catch (e: any) {
+      toast.error(e.message || "查詢失敗");
+    } finally {
+      setLookupBusy((s) => {
+        const n = new Set(s);
+        n.delete(code);
+        return n;
+      });
+    }
   }
 
   async function checkAll() {
@@ -313,8 +372,9 @@ export default function TrackedPage() {
         {filtered.map((it) => (
           <div
             key={keyOf(it)}
-            className="flex flex-wrap gap-3 rounded-lg border border-white/10 bg-panel p-3"
+            className="rounded-lg border border-white/10 bg-panel"
           >
+            <div className="flex flex-wrap gap-3 p-3">
             {it.avatar ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -374,12 +434,14 @@ export default function TrackedPage() {
                   }
                   if (m.missing_count > 0) {
                     return (
-                      <span
-                        className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-300"
-                        title={`全集 ${m.total} 部，掃 ${m.pages_scanned} 頁`}
+                      <button
+                        onClick={() => toggleExpand(it)}
+                        className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-400/30"
+                        title={`全集 ${m.total} 部，掃 ${m.pages_scanned} 頁 · 點擊看明細`}
                       >
-                        {m.missing_count} 個未下載
-                      </span>
+                        {m.missing_count} 個未下載{" "}
+                        {expanded.has(keyOf(it)) ? "▾" : "▸"}
+                      </button>
                     );
                   }
                   return (
@@ -436,9 +498,135 @@ export default function TrackedPage() {
                 </button>
               </div>
             </div>
+            </div>
+
+            {expanded.has(keyOf(it)) && (
+              <MissingDetailPanel
+                tracked={it}
+                detail={details.get(keyOf(it)) || null}
+                loading={detailLoading.has(keyOf(it))}
+                lookups={lookups}
+                lookupBusy={lookupBusy}
+                onLookup={lookupCode}
+              />
+            )}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function MissingDetailPanel({
+  tracked,
+  detail,
+  loading,
+  lookups,
+  lookupBusy,
+  onLookup,
+}: {
+  tracked: TrackedListing;
+  detail: MissingCodesResult | null;
+  loading: boolean;
+  lookups: Map<string, PresenceCodeLookup>;
+  lookupBusy: Set<string>;
+  onLookup: (code: string) => void;
+}) {
+  const safeName = (tracked.name || tracked.id).replace(/[^\w一-鿿\-]/g, "");
+  function expectedPath(code: string) {
+    return `AVBT/${tracked.kind}/${safeName || tracked.id}/${code}`;
+  }
+  if (loading && !detail) {
+    return (
+      <div className="border-t border-white/10 px-4 py-3 text-xs text-white/50">
+        讀取缺漏明細中…
+      </div>
+    );
+  }
+  if (!detail) return null;
+  if (!detail.missing.length) {
+    return (
+      <div className="border-t border-white/10 px-4 py-3 text-xs text-emerald-300/80">
+        ✓ 已無缺漏
+      </div>
+    );
+  }
+  return (
+    <div className="border-t border-white/10 px-4 py-3 text-xs">
+      <div className="mb-2 text-white/60">
+        共 <span className="font-mono">{detail.total}</span> 部・已下載{" "}
+        <span className="font-mono text-emerald-300/80">
+          {detail.present_codes.length}
+        </span>
+        ・缺漏{" "}
+        <span className="font-mono text-amber-300">
+          {detail.missing.length}
+        </span>
+        <span className="ml-2 text-white/40">（掃 {detail.pages_scanned} 頁）</span>
+      </div>
+      <ul className="divide-y divide-white/5">
+        {detail.missing.map((m: MovieListItem) => {
+          const lookup = lookups.get(m.code);
+          const busy = lookupBusy.has(m.code);
+          return (
+            <li key={m.code} className="py-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Link
+                  href={`/movie/${encodeURIComponent(m.code)}`}
+                  className="font-mono text-accent hover:underline"
+                >
+                  {m.code}
+                </Link>
+                <span className="truncate text-white/70" title={m.title}>
+                  {m.title}
+                </span>
+                <span className="ml-auto flex items-center gap-2">
+                  <span
+                    className="font-mono text-white/40"
+                    title="archiver 預期會放這裡"
+                  >
+                    {expectedPath(m.code)}
+                  </span>
+                  <button
+                    onClick={() => onLookup(m.code)}
+                    disabled={busy || lookup !== undefined}
+                    className="text-blue-300 hover:underline disabled:opacity-40"
+                  >
+                    {busy
+                      ? "查詢中…"
+                      : lookup !== undefined
+                      ? "已查詢"
+                      : "查實際位置"}
+                  </button>
+                </span>
+              </div>
+              {lookup && (
+                <div className="mt-1 pl-2 text-[11px]">
+                  {lookup.paths.length === 0 ? (
+                    <span className="text-amber-300/80">
+                      ⚠ 索引裡找不到此番號(或在未被掃描的路徑下)
+                    </span>
+                  ) : (
+                    <div className="space-y-0.5">
+                      <span className="text-emerald-300/80">
+                        ✓ 實際在以下路徑找到({lookup.paths.length}):
+                      </span>
+                      {lookup.paths.map((p) => (
+                        <div
+                          key={p}
+                          className="font-mono text-emerald-200/80"
+                        >
+                          ・{p}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

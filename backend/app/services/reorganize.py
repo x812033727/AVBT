@@ -157,6 +157,10 @@ async def _phase1_migrate_from(
             "current": idx,
             "kind": "folder" if is_folder else "file",
             "source": child.name,
+            # source_id lets background callers (the sweep) cross-ref
+            # OfflineTaskLog and rerun phase-2 flatten on moved wrappers
+            # without having to relist the source folder afterwards.
+            "source_id": child.id,
             "section": "migrate",
             "context": source_path,
         }
@@ -257,7 +261,19 @@ async def _phase1_migrate_from(
                         )
                 sibling_names.add(final_leaf)
 
-            yield {**base, "action": "move", "target": display_target, "reason": None}
+            yield {
+                **base,
+                "action": "move",
+                "target": display_target,
+                "reason": None,
+                # Metadata the sweep needs to (a) rerun phase-2 flatten
+                # on the just-moved wrapper and (b) mark the matching
+                # OfflineTaskLog row as archived so the DB-driven pass
+                # doesn't try to move it again.
+                "code": code,
+                "target_parent_id": parent_id,
+                "leaf": final_leaf,
+            }
 
         except Exception as exc:  # noqa: BLE001
             logger.warning("reorganize %s failed: %s", child.name, exc)

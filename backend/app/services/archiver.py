@@ -159,11 +159,19 @@ def _sweep_due() -> bool:
 async def _sweep_root_once() -> int:
     """Reuse the reorganize phase-1 logic to tidy orphans that landed
     in the AVBT root outside the OfflineTaskLog flow (PikPak App / web
-    manual adds, magnets dropped straight into PikPak). Returns the
-    number of items moved or renamed.
+    manual adds, magnets dropped straight into PikPak). Then, for each
+    wrapper we just moved, rerun the phase-2 flatten so the user sees
+    the canonical ``<code>.<ext>`` in the target folder instead of a
+    BT-noise wrapper. Finally mark matching OfflineTaskLog rows as
+    archived so the DB-driven pass doesn't try to re-move them.
+
+    Returns the number of root children moved.
 
     Streaming events from ``_phase1_migrate_root`` are consumed silently
-    — this is a background tidy, not a UI flow."""
+    — this is a background tidy, not a UI flow — but ``_phase1_error``
+    events are surfaced into ``_last_sweep_error`` so settings/UI can
+    show what went wrong (the migrate generator signals init failures
+    via that event type instead of raising)."""
     global _last_sweep_at, _last_sweep_moved, _last_sweep_error, _swept_total
 
     # Local import: reorganize already imports archiver at module load,
@@ -171,20 +179,68 @@ async def _sweep_root_once() -> int:
     from .reorganize import _phase1_migrate_root
 
     moved = 0
+    sweep_error = ""
+    # All source_ids we moved — used to mark OfflineTaskLog archived.
+    moved_ids: list[str] = []
+    # (folder_id, parent_id, code, leaf) tuples — used to phase-2
+    # flatten each just-moved wrapper at its new location.
+    moved_wrappers: list[tuple[str, str, str, str]] = []
+
     try:
         async for ev in _phase1_migrate_root(dry_run=False, idx_start=0):
-            if ev.get("type") != "progress":
+            ev_type = ev.get("type")
+            if ev_type == "_phase1_error":
+                # First _phase1_error wins so the UI sees the original
+                # failure rather than a downstream cascade message.
+                sweep_error = sweep_error or ev.get("message", "")
                 continue
-            if ev.get("action") in ("move", "rename"):
-                moved += 1
-        _last_sweep_error = ""
+            if ev_type != "progress":
+                continue
+            if ev.get("action") != "move":
+                continue
+            moved += 1
+            sid = ev.get("source_id")
+            if not sid:
+                continue
+            moved_ids.append(sid)
+            if ev.get("kind") == "folder":
+                pid = ev.get("target_parent_id")
+                code = ev.get("code")
+                leaf = ev.get("leaf")
+                if pid and code and leaf:
+                    moved_wrappers.append((sid, pid, code, leaf))
     except Exception as exc:  # noqa: BLE001
-        _last_sweep_error = str(exc)
+        sweep_error = str(exc)
         logger.warning("root sweep failed: %s", exc)
     finally:
         _last_sweep_at = datetime.utcnow()
         _last_sweep_moved = moved
+        _last_sweep_error = sweep_error
         _swept_total += moved
+
+    # Phase-2 flatten on every wrapper we just moved. Extracts the main
+    # video to the kind/name folder, trashes inner clutter + the wrapper.
+    # PikPak's trash is recoverable for ~30 days, so a misjudgement is
+    # not destructive.
+    if moved_wrappers:
+        try:
+            flattened = await _flatten_swept_wrappers(moved_wrappers)
+            if flattened:
+                logger.info(
+                    "root sweep flattened %d wrapper(s)", flattened
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("flatten swept wrappers failed: %s", exc)
+
+    # Stop the DB-driven pass from re-moving what we just moved. Without
+    # this, every loop iteration retries the move (PikPak rejects it
+    # because the file's no longer a child of AVBT root) and the log
+    # fills with "move failed" warnings.
+    if moved_ids:
+        try:
+            await _mark_offline_log_archived(moved_ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("offline log sync failed: %s", exc)
 
     if moved:
         logger.info("root sweep moved %d orphan(s) to kind/name", moved)
@@ -193,7 +249,65 @@ async def _sweep_root_once() -> int:
             presence_index.invalidate()
         except Exception:  # noqa: BLE001
             pass
+        # Folder cache may now point at trashed/renamed wrappers; drop
+        # so the next folder_id() relists. reorganize_stream does the
+        # same after its mutating runs.
+        try:
+            pikpak_service._folder_cache.clear()
+        except Exception:  # noqa: BLE001
+            pass
     return moved
+
+
+async def _flatten_swept_wrappers(
+    wrappers: list[tuple[str, str, str, str]],
+) -> int:
+    """Rerun phase-2 flatten on each just-moved wrapper. Synthesises a
+    PikPakFile stub from the post-move metadata — _resolve_folder_winner
+    only reads .id / .name / .kind, so a fresh server fetch is
+    unnecessary. Returns the count of wrappers actually flattened."""
+    from .reorganize import _resolve_folder_winner
+    from ..schemas import PikPakFile
+
+    flattened = 0
+    for folder_id, parent_id, code, leaf in wrappers:
+        folder = PikPakFile(
+            id=folder_id,
+            name=leaf,
+            kind="drive#folder",
+            size=None,
+        )
+        try:
+            result = await _resolve_folder_winner(
+                folder, code, parent_id, dry_run=False
+            )
+            if result.get("action") == "flatten":
+                flattened += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "flatten swept wrapper %s (%s) failed: %s",
+                folder_id, code, exc,
+            )
+    return flattened
+
+
+async def _mark_offline_log_archived(file_ids: list[str]) -> None:
+    """Mark OfflineTaskLog rows for ``file_ids`` archived so the
+    DB-driven pass skips them (the sweep already moved the files)."""
+    if not file_ids:
+        return
+    from sqlalchemy import update
+
+    async with SessionLocal() as session:
+        await session.execute(
+            update(OfflineTaskLog)
+            .where(
+                OfflineTaskLog.file_id.in_(file_ids),
+                OfflineTaskLog.archived.is_(False),
+            )
+            .values(archived=True, archived_at=datetime.utcnow())
+        )
+        await session.commit()
 
 
 async def archive_once() -> int:

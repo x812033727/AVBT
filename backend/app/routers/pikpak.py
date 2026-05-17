@@ -309,6 +309,10 @@ async def presence_status():
 @router.post("/presence/refresh", response_model=PresenceStatus)
 async def presence_refresh():
     await presence_index.rebuild(force=True)
+    # The presence set changed (or may have); drop the cached
+    # missing-summary so the /tracked badges reflect the rebuild.
+    from ..services import missing as missing_svc
+    missing_svc.invalidate_result_caches()
     return PresenceStatus(**presence_index.status())
 
 
@@ -319,6 +323,8 @@ async def presence_detail(refresh: bool = False):
     unexpected locations or under odd folder names."""
     if refresh:
         await presence_index.rebuild(force=True)
+        from ..services import missing as missing_svc
+        missing_svc.invalidate_result_caches()
     elif presence_index.status().get("built_at") is None:
         await presence_index.get()
     return PresenceDetail(**presence_index.detail())

@@ -141,17 +141,17 @@ export default function TrackedPage() {
       );
       setLastCheck(res);
       load();
-      // Also force-refresh the missing-codes summary so the badge
-      // reflects the post-check PikPak state. The /check endpoint
-      // invalidated the presence index server-side; re-querying with
-      // refresh=true triggers a rebuild.
+      // The /check endpoint already invalidated the missing-summary
+      // cache server-side. A plain (refresh=false) reload will trigger
+      // a fresh rebuild on first access, without forcing a redundant
+      // PikPak walk on the client's behalf.
       // Also clear cached detail for this row so re-opening shows fresh data.
       setDetails((m) => {
         const next = new Map(m);
         next.delete(key);
         return next;
       });
-      loadMissing(true);
+      loadMissing(false);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -224,10 +224,12 @@ export default function TrackedPage() {
     setError(null);
     try {
       await api.post("/api/tracked/status/run-now");
-      // After the batch finishes, force-refresh missing summary so the
-      // badges reflect the new state. Also clear cached row details.
+      // The batch endpoint invalidates the missing-summary cache;
+      // a refresh=false reload will pick up the freshly-built result
+      // without forcing another PikPak walk. Also clear cached row
+      // details so re-opening shows fresh data.
       setDetails(new Map());
-      await loadMissing(true);
+      await loadMissing(false);
       // Re-load the tracked rows themselves (last_seen_code etc. moved).
       load();
     } catch (e: any) {

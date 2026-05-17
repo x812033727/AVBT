@@ -141,6 +141,17 @@ export default function TrackedPage() {
       );
       setLastCheck(res);
       load();
+      // Also force-refresh the missing-codes summary so the badge
+      // reflects the post-check PikPak state. The /check endpoint
+      // invalidated the presence index server-side; re-querying with
+      // refresh=true triggers a rebuild.
+      // Also clear cached detail for this row so re-opening shows fresh data.
+      setDetails((m) => {
+        const next = new Map(m);
+        next.delete(key);
+        return next;
+      });
+      loadMissing(true);
     } catch (e: any) {
       setError(e.message);
     } finally {

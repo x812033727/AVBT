@@ -52,23 +52,84 @@ _DUP_SUFFIX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# BT-site naming conventions wrapped around the actual code. Strip
+# these out of the canonical so e.g. ``[88K.ME]TRE-112-2.mp4`` and
+# ``kfa55.com@TRE-112.mp4`` and ``TRE-112-2.mp4`` group together as the
+# same code.
+_BT_PREFIX_BRACKET_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
+_BT_PREFIX_AT_RE = re.compile(r"^(?:[^@/\s]+@)+")
+_BT_SUFFIX_TILDE_RE = re.compile(r"\s*~\s*[A-Z0-9._\-]+\s*$", re.IGNORECASE)
+
 
 def _canonical_video_name(name: str) -> str:
     """Return ``name`` with extension + resolution / dup / part-index
-    suffixes stripped, upper-cased. Files whose canonical form matches
-    are treated as the same canonical work — they get grouped, large
-    ones become parts, small ones get dropped."""
+    suffixes + BT-site prefixes/suffixes stripped, upper-cased. Files
+    whose canonical form matches are treated as the same canonical
+    work — they get grouped, large ones become parts, small ones get
+    dropped."""
     stem = name
     # Strip extension once.
     m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
     if m:
         stem = stem[: m.start()]
-    # Repeatedly strip dup suffixes (e.g. "name (2) HD" → "name").
+    # Iteratively strip BT-site wrappers + resolution/dup suffixes until
+    # nothing changes. Multiple passes catch combinations like
+    # ``[88K.ME]TRE-112 (2) HD``.
     prev = None
     while prev != stem:
         prev = stem
+        stem = _BT_PREFIX_BRACKET_RE.sub("", stem)
+        stem = _BT_PREFIX_AT_RE.sub("", stem)
+        stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
         stem = _DUP_SUFFIX_RE.sub("", stem).strip()
+    # Try to anchor on the JAV code, then strip any part marker hanging
+    # off the end (CD<n> / -<n> / _<n> / lone variant letter). When the
+    # code itself can't be extracted (e.g. ``CD3`` confuses the lookahead
+    # in extract_jav_code), retry once with the CD<n> suffix removed.
+    code = extract_jav_code(stem)
+    if not code:
+        stripped = re.sub(r"CD\d+\s*$", "", stem, flags=re.IGNORECASE)
+        if stripped != stem:
+            retry = extract_jav_code(stripped)
+            if retry:
+                code = retry
+                stem = stripped
+    if code:
+        tail_re = re.compile(
+            rf"{re.escape(code)}(?:CD\d+|-\d+|_\d+|[A-Z])?\s*$",
+            re.IGNORECASE,
+        )
+        m = tail_re.search(stem)
+        if m:
+            stem = stem[: m.start()] + code
     return stem.upper()
+
+
+def _part_marker_index(name: str, code: str) -> int:
+    """1-based index of the multipart marker tucked next to ``code`` in
+    ``name``: ``CD<n>`` / ``-<n>`` / ``_<n>`` / lone variant letter
+    (``A``=1, ``B``=2 …). Returns 0 when no marker is found, so the
+    bare-name file sorts first and becomes ``_1``."""
+    stem = name
+    m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
+    if m:
+        stem = stem[: m.start()]
+    pattern = re.compile(
+        rf"{re.escape(code)}(?:CD(\d+)|-(\d+)|_(\d+)|([A-Z]))",
+        re.IGNORECASE,
+    )
+    m = pattern.search(stem)
+    if not m:
+        return 0
+    if m.group(1):
+        return int(m.group(1))
+    if m.group(2):
+        return int(m.group(2))
+    if m.group(3):
+        return int(m.group(3))
+    if m.group(4):
+        return ord(m.group(4).upper()) - ord("A") + 1
+    return 0
 
 
 def _dup_sort_index(name: str) -> int:
@@ -142,15 +203,13 @@ def _build_video_rename_plan(
     group_members: set[str] = set()
     for canon, files in groups.items():
         if len(files) == 1:
-            # Singleton: only acts if it has a lonely variant to strip.
+            # Singleton: rename to the canonical name when the current
+            # name carries BT-site noise / lonely variant / case shift.
             c = files[0]
-            effective = file_effective[c.name]
-            full = extract_jav_code_full(c.name) or ""
-            if effective and full and effective.upper() != full.upper():
-                ext = ext_of(c.name)
-                target = f"{effective}{ext}"
-                if target != c.name:
-                    plan[c.name] = target
+            ext = ext_of(c.name)
+            target = f"{canon}{ext}"
+            if target != c.name:
+                plan[c.name] = target
             continue
         # Multi-file group: multipart naming if all substantial.
         if not all((f.size or 0) >= min_size for f in files):
@@ -170,15 +229,26 @@ def _build_video_rename_plan(
                 unnamed.append(f)
         if not unnamed:
             continue  # already fully named
-        unnamed.sort(key=lambda f: (_dup_sort_index(f.name), f.name))
-        n = 1
+        # Sort by part marker (CD<n>/-<n>/letter) so the bare-name file
+        # becomes ``_1`` and ``-2``/``CD2``/``B`` become ``_2`` etc.
+        # Fall back to PikPak ``(N)`` suffix + filename for ties.
+        unnamed.sort(
+            key=lambda f: (
+                _part_marker_index(f.name, canon),
+                _dup_sort_index(f.name),
+                f.name,
+            )
+        )
         for f in unnamed:
+            marker = _part_marker_index(f.name, canon)
+            # Marker-bearing files prefer their own index; bare ones
+            # grab the next free slot. Collisions skip ahead.
+            n = marker if marker > 0 else 1
             while n in used_indices:
                 n += 1
             ext = ext_of(f.name)
             plan[f.name] = f"{canon}_{n}{ext}"
             used_indices.add(n)
-            n += 1
     return plan, group_members
 
 

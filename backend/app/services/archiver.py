@@ -196,6 +196,11 @@ async def _sweep_root_once() -> int:
     # (folder_id, parent_id, code, leaf) tuples — used to phase-2
     # flatten each just-moved wrapper at its new location.
     moved_wrappers: list[tuple[str, str, str, str]] = []
+    # Distinct target folders that received anything this sweep — used
+    # to rerun phase-2 cleanup over their contents (multipart rename,
+    # BT-prefix strip, wrapper flatten retry for items that finished
+    # downloading after their first sweep move).
+    target_parent_ids: set[str] = set()
 
     async def _consume(source_path: str | None) -> None:
         nonlocal moved, sweep_error
@@ -217,8 +222,10 @@ async def _sweep_root_once() -> int:
             if not sid:
                 continue
             moved_ids.append(sid)
+            pid = ev.get("target_parent_id")
+            if pid:
+                target_parent_ids.add(pid)
             if ev.get("kind") == "folder":
-                pid = ev.get("target_parent_id")
                 code = ev.get("code")
                 leaf = ev.get("leaf")
                 if pid and code and leaf:
@@ -260,6 +267,23 @@ async def _sweep_root_once() -> int:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("flatten swept wrappers failed: %s", exc)
+
+    # Rerun phase-2 cleanup on every target folder that received items.
+    # Catches:
+    #   - Wrappers whose main video finished downloading after the
+    #     initial flatten attempt couldn't find one
+    #   - Same-code variants spread across BT prefixes / CD<n> / -<n>
+    #     suffixes — they get unified into ``<code>_<N>.<ext>``
+    #   - Singletons with BT-prefix noise get renamed to bare ``<code>``
+    if target_parent_ids:
+        try:
+            cleaned = await _cleanup_target_parents(target_parent_ids)
+            if cleaned:
+                logger.info(
+                    "root sweep cleaned %d target folder(s)", cleaned
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cleanup target parents failed: %s", exc)
 
     # Stop the DB-driven pass from re-moving what we just moved. Without
     # this, every loop iteration retries the move (PikPak rejects it
@@ -318,6 +342,33 @@ async def _flatten_swept_wrappers(
                 folder_id, code, exc,
             )
     return flattened
+
+
+async def _cleanup_target_parents(parent_ids: set[str]) -> int:
+    """Run phase-2 cleanup on each target folder we moved items into:
+    multipart rename, BT-prefix strip, wrapper flatten retry, dedupe.
+
+    Same logic the user gets when clicking "整理 PikPak 資料夾", but
+    scoped to just the folders this sweep touched — so we don't grind
+    over every series folder every 5 minutes.
+
+    Returns the count of folders we successfully traversed."""
+    from .reorganize import _phase2_cleanup_target
+
+    cleaned = 0
+    for pid in parent_ids:
+        try:
+            children = await pikpak_service.list_files(pid, size=500)
+            if not children:
+                continue
+            async for _ev in _phase2_cleanup_target(
+                pid, pid, children, dry_run=False, idx_start=0
+            ):
+                pass  # silent consume — this is background tidying
+            cleaned += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cleanup target %s failed: %s", pid, exc)
+    return cleaned
 
 
 async def _mark_offline_log_archived(file_ids: list[str]) -> None:

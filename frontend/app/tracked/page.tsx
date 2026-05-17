@@ -433,12 +433,20 @@ export default function TrackedPage() {
                     );
                   }
                   const missingBadge =
-                    m.missing_count > 0 ? (
+                    m.total === 0 ? (
+                      <span
+                        key="no-listing"
+                        className="rounded bg-white/10 px-2 py-0.5 text-xs text-white/40"
+                        title="JavBus 沒回傳列表(可能 slug 失效 / 網路 / 地區封鎖),所以無法判斷缺漏 / 多餘"
+                      >
+                        未取得列表
+                      </span>
+                    ) : m.missing_count > 0 ? (
                       <button
                         key="missing"
                         onClick={() => toggleExpand(it)}
                         className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-400/30"
-                        title={`全集 ${m.total} 部，掃 ${m.pages_scanned} 頁 · 點擊看明細`}
+                        title={`全集 ${m.total} 部,掃 ${m.pages_scanned} 頁 · 點擊看明細`}
                       >
                         {m.missing_count} 個未下載{" "}
                         {expanded.has(keyOf(it)) ? "▾" : "▸"}

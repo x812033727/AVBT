@@ -82,33 +82,68 @@ def _dup_sort_index(name: str) -> int:
 _PART_INDEX_RE = re.compile(r"^(.+)_(\d+)$")
 
 
-def _build_multipart_rename_plan(
+def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
     is_video_fn,
 ) -> dict[str, str]:
-    """For groups of substantial video files sharing a canonical base,
-    return a ``{current_name: target_name}`` map that renames them into
-    the ``<canonical>_N.<ext>`` convention.
+    """Pre-scan video children and return ``{current_name: target_name}``
+    covering two corrections:
 
-    - Files already correctly named ``<canonical>_N.<ext>`` keep their
-      slot (idempotent — re-running cleanup is a no-op).
-    - Unnamed files are sorted by their PikPak ``(N)`` suffix (no suffix
-      counts as 0) and assigned the next free index.
+    1. **Lonely variant** — if a base code has ≤ 1 file with a trailing
+       variant letter (``SDMM-14903A`` alone, no ``B`` companion), the
+       letter is meaningless and gets stripped so the file becomes
+       ``<base>.<ext>``.
+    2. **Multi-part group** — when 2+ video files share a canonical and
+       all of them are ≥ ``min_size``, rename them to
+       ``<canonical>_N.<ext>`` (sorted by PikPak ``(N)`` suffix; bare
+       name = 0 = ``_1``). Files already in this form keep their slot
+       so re-running cleanup is a no-op.
     """
+    # Pass 1: count files-with-variant per base code, so we know which
+    # variants are "lonely" and should be stripped.
+    variant_count: dict[str, int] = {}
+    for c in children:
+        if getattr(c, "kind", "") == "drive#folder" or not is_video_fn(c.name):
+            continue
+        base = extract_jav_code(c.name)
+        if not base:
+            continue
+        full = extract_jav_code_full(c.name) or base
+        if full != base:
+            variant_count[base] = variant_count.get(base, 0) + 1
+
+    # Pass 2: compute each file's effective canonical (variant possibly
+    # stripped) and bucket files by it.
+    file_effective: dict[str, str] = {}  # name → effective_full_code
     groups: dict[str, list] = {}
     for c in children:
-        if getattr(c, "kind", "") == "drive#folder":
+        if getattr(c, "kind", "") == "drive#folder" or not is_video_fn(c.name):
             continue
-        if not is_video_fn(c.name):
-            continue
+        base = extract_jav_code(c.name) or ""
+        full = extract_jav_code_full(c.name) or base
+        is_lonely = bool(base) and full != base and variant_count.get(base, 0) <= 1
+        effective = base if is_lonely else full
+        file_effective[c.name] = effective
         canon = _canonical_video_name(c.name)
+        if is_lonely and full and full.upper() in canon:
+            canon = canon.replace(full.upper(), base.upper(), 1)
         groups.setdefault(canon, []).append(c)
 
     plan: dict[str, str] = {}
     for canon, files in groups.items():
-        if len(files) < 2:
+        if len(files) == 1:
+            # Singleton: only acts if it has a lonely variant to strip.
+            c = files[0]
+            effective = file_effective[c.name]
+            full = extract_jav_code_full(c.name) or ""
+            if effective and full and effective.upper() != full.upper():
+                ext = ext_of(c.name)
+                target = f"{effective}{ext}"
+                if target != c.name:
+                    plan[c.name] = target
             continue
+        # Multi-file group: multipart naming if all substantial.
         if not all((f.size or 0) >= min_size for f in files):
             continue
         used_indices: set[int] = set()
@@ -122,7 +157,7 @@ def _build_multipart_rename_plan(
             else:
                 unnamed.append(f)
         if not unnamed:
-            continue  # already fully named, nothing to do
+            continue  # already fully named
         unnamed.sort(key=lambda f: (_dup_sort_index(f.name), f.name))
         n = 1
         for f in unnamed:
@@ -617,12 +652,14 @@ class PikPakService:
 
         taken: set[str] = {c.name for c in children}
 
-        # Pre-scan flat video files: when multiple substantial videos
-        # share a canonical form (real multi-part episodes), plan
-        # ``<canon>_N.<ext>`` renames so they're consistently numbered
-        # instead of carrying PikPak's ``(2)/(3)`` auto-dedupe suffix.
+        # Pre-scan flat video files for two corrections:
+        # - lonely variant letters (e.g. SDMM-14903A alone) → strip the
+        #   letter so the file becomes SDMM-14903.<ext>
+        # - real multi-part groups (2+ substantial-size files sharing a
+        #   canonical) → number them ``<canon>_N.<ext>`` instead of
+        #   keeping PikPak's "(2)/(3)" auto-dedupe form
         PART_MIN_BYTES = 500 * 1024 * 1024
-        multipart_plan = _build_multipart_rename_plan(
+        multipart_plan = _build_video_rename_plan(
             children, PART_MIN_BYTES, is_video
         )
 

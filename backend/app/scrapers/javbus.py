@@ -16,8 +16,11 @@ in that case use ``HTTP_PROXY`` or change ``JAVBUS_BASE_URL`` to a mirror.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import random
 import re
+import time
 from typing import Any
 from urllib.parse import quote, urljoin
 
@@ -25,6 +28,28 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# Global throttle so multi-call paths (missing-codes walks,
+# auto-send-missing, batch tracker checks) can't accidentally machine-
+# gun JavBus into a 429. Keep this conservative — JavBus rate-limits
+# unauthenticated scrapers pretty aggressively.
+_JAVBUS_MIN_INTERVAL = 1.2  # seconds between any two consecutive fetches
+_javbus_lock = asyncio.Lock()
+_javbus_last_fetch_ts: float = 0.0
+
+
+async def _javbus_throttle() -> None:
+    """Sleep just enough to keep at least ``_JAVBUS_MIN_INTERVAL``
+    between consecutive outbound JavBus requests, across all callers."""
+    global _javbus_last_fetch_ts
+    async with _javbus_lock:
+        wait = _javbus_last_fetch_ts + _JAVBUS_MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _javbus_last_fetch_ts = time.monotonic()
 from ..schemas import (
     ActressRef,
     GenreRef,
@@ -212,10 +237,30 @@ async def _bypass_age_gate(cli: httpx.AsyncClient, target_url: str) -> bool:
 
 async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None) -> str:
     headers = {"Referer": referer} if referer else None
-    resp = await cli.get(url, headers=headers)
-    if resp.status_code == 404:
-        return ""
-    resp.raise_for_status()
+
+    # Up to 3 attempts on 429. Backoff doubles: 4s, 8s, 16s. The
+    # ``_javbus_throttle`` call inside the loop is intentional so each
+    # retry also respects the global min-interval.
+    for attempt in range(4):
+        await _javbus_throttle()
+        resp = await cli.get(url, headers=headers)
+        if resp.status_code == 404:
+            return ""
+        if resp.status_code == 429:
+            if attempt == 3:
+                # Give up — let it propagate so the caller can surface
+                # the error to the user (it's already a clear message).
+                resp.raise_for_status()
+            wait = 4.0 * (2 ** attempt) + random.uniform(0, 1.5)
+            logger.warning(
+                "JavBus 429 on %s (attempt %d) — backing off %.1fs",
+                url, attempt + 1, wait,
+            )
+            await asyncio.sleep(wait)
+            continue
+        resp.raise_for_status()
+        break
+
     if _is_age_gate(resp.text):
         ok = await _bypass_age_gate(cli, url)
         if not ok:
@@ -223,6 +268,7 @@ async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None
                 "JavBus 持續要求年齡驗證 — 此 IP 可能被地區阻擋。"
                 "請在 .env 設定 HTTP_PROXY 或改用鏡像站 (JAVBUS_BASE_URL)。"
             )
+        await _javbus_throttle()
         resp = await cli.get(url, headers=headers)
         resp.raise_for_status()
     return resp.text

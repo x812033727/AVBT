@@ -58,6 +58,11 @@ async def tracker_toggle(enabled: bool = Body(..., embed=True)):
 
 @router.post("/status/run-now")
 async def tracker_run_now():
+    # Batch check explicitly requested by the user — drop any cached
+    # PikPak inventory so auto-send-missing and the post-batch missing-
+    # summary re-fetch see the current state of the cloud.
+    from ..services.pikpak_presence import presence_index
+    presence_index.invalidate()
     results = await tracker.check_all()
     new_total = sum(len(r.get("new_codes") or []) for r in results)
     tracker.state.last_new_total = new_total

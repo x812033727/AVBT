@@ -214,8 +214,26 @@ export default function TrackedPage() {
   }
 
   async function checkAll() {
-    for (const it of filtered) {
-      await checkNow(it);
+    // Use the backend batch endpoint instead of looping checkNow on the
+    // client — the server-side check_all() sleeps 1s between listings
+    // and the JavBus scraper has a global throttle + 429 backoff. Going
+    // sequential per-listing from the browser fires bursts that get
+    // rate-limited (429 Too Many Requests).
+    setCheckingKey("__all__");
+    setLastCheck(null);
+    setError(null);
+    try {
+      await api.post("/api/tracked/status/run-now");
+      // After the batch finishes, force-refresh missing summary so the
+      // badges reflect the new state. Also clear cached row details.
+      setDetails(new Map());
+      await loadMissing(true);
+      // Re-load the tracked rows themselves (last_seen_code etc. moved).
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setCheckingKey(null);
     }
   }
 
@@ -525,8 +543,15 @@ export default function TrackedPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => checkNow(it)}
-                  disabled={checkingKey === keyOf(it)}
+                  disabled={!!checkingKey}
                   className="text-blue-300 hover:underline disabled:opacity-50"
+                  title={
+                    checkingKey === "__all__"
+                      ? "正在全部檢查"
+                      : checkingKey === keyOf(it)
+                      ? "檢查中"
+                      : undefined
+                  }
                 >
                   {checkingKey === keyOf(it) ? "檢查中" : "立即檢查"}
                 </button>

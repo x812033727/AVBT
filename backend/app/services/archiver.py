@@ -23,7 +23,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from ..config import settings
+from ..config import kind_base_path, settings
 from ..database import SessionLocal
 from ..models import OfflineTaskLog, TrackedListing
 from ..scrapers import javbus as scraper
@@ -46,7 +46,7 @@ def _safe_code(code: str) -> str:
 
 # Delegate to the shared helper so missing-code services can compute the
 # same path without importing the archiver (which would cycle).
-from .jav_code import KIND_LABELS_CH, safe_folder_name as _safe_name  # noqa: E402
+from .jav_code import safe_folder_name as _safe_name  # noqa: E402
 
 
 # A small per-pass cache so two completed tasks with the same code don't
@@ -99,11 +99,10 @@ async def _resolve_archive_path(code: str) -> str:
             if row is None:
                 continue
             safe = _safe_name(name, fallback=_safe_name(slug, fallback="unknown"))
-            root = settings.pikpak_download_folder or "AVBT"
-            # Use the Chinese label so the cloud layout reads naturally:
-            # ``AVBT/系列/回胴錄/DAM-066`` instead of ``AVBT/series/...``.
-            kind_dir = KIND_LABELS_CH.get(kind, kind)
-            return f"{root}/{kind_dir}/{safe}/{safe_code}"
+            # kind_base_path() returns AVBT/<chinese kind label> by default
+            # (matching the archiver's natural-language layout) and honours
+            # per-kind env overrides like PIKPAK_SERIES_FOLDER.
+            return f"{kind_base_path(kind)}/{safe}/{safe_code}"
 
     return fallback
 

@@ -33,7 +33,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import select
 
-from ..config import settings
+from ..config import kind_base_path, settings
 from ..database import SessionLocal
 from ..models import TrackedListing
 from .archiver import _resolve_archive_path, _safe_code, _safe_name
@@ -408,15 +408,18 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
             await session.execute(select(TrackedListing))
         ).scalars().all()
 
-    root = settings.pikpak_download_folder or "AVBT"
     cleanup_targets: list[tuple[str, str, list]] = []
     for row in tracked_rows:
         safe = _safe_name(
             row.name, fallback=_safe_name(row.id, fallback="unknown")
         )
-        target_path = f"{root}/{row.kind}/{safe}"
+        target_path = f"{kind_base_path(row.kind)}/{safe}"
         try:
-            target_id = await pikpak_service.folder_id(target_path)
+            # Lookup-only so we don't pollute PikPak with empty folders
+            # for tracked listings that have nothing downloaded yet.
+            target_id = await pikpak_service.lookup_folder_id(target_path)
+            if not target_id:
+                continue
             children = await pikpak_service.list_files(target_id, size=500)
         except Exception as exc:  # noqa: BLE001
             logger.warning("can't list %s: %s", target_path, exc)
@@ -442,6 +445,7 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         "total": total,
         "dry_run": dry_run,
         "source_folder": legacy_path,
+        "cleanup_targets": [p for p, _, _ in cleanup_targets],
     }
 
     idx = 0

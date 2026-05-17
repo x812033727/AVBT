@@ -613,6 +613,11 @@ class PikPakService:
                 # 500MB is junk; 300MB threshold gives a 200MB buffer
                 # for unusual encodes. None size → assume legit.
                 JUNK_BYTES = 300 * 1024 * 1024
+                # When 2+ files share a canonical name, we use this
+                # higher bar to decide whether they're real episodes
+                # (both substantial → keep all) vs a resolution
+                # duplicate or ad clip (one much smaller → drop it).
+                PART_MIN_BYTES = 500 * 1024 * 1024
 
                 # Walk up to two levels deep so flatten still works for
                 # the common BT shape ``300MIUM-1098/Sample/...`` (one
@@ -622,10 +627,10 @@ class PikPakService:
                 )
 
                 if main_videos:
-                    # Group by canonical name. Files whose canonical
-                    # form matches are resolution duplicates (only the
-                    # largest survives). Files with different canonical
-                    # forms are parts (CD1/CD2, A/B, -1/-2) — all kept.
+                    # Group by canonical name. Files in the same group
+                    # share a base identity (PikPak "(N)" or HD/720p
+                    # markers stripped). Different canonical = different
+                    # part (CD1/CD2, A/B, -1/-2) — always kept.
                     groups: dict[str, list[PikPakFile]] = {}
                     for v in main_videos:
                         groups.setdefault(
@@ -635,17 +640,32 @@ class PikPakService:
                     dropped_count = 0
                     for canon, vids in groups.items():
                         vids.sort(key=lambda v: v.size or 0, reverse=True)
-                        keepers.append((canon, vids[0]))
-                        dropped_count += len(vids) - 1
+                        if len(vids) == 1:
+                            keepers.append((canon, vids[0]))
+                            continue
+                        # Same canonical, multiple files: real parts
+                        # if ALL ≥ 500MB; otherwise treat smaller ones
+                        # as resolution dups / leftover ads and drop.
+                        all_substantial = all(
+                            (v.size or 0) >= PART_MIN_BYTES for v in vids
+                        )
+                        if all_substantial:
+                            for v in vids:
+                                keepers.append((canon, v))
+                        else:
+                            keepers.append((canon, vids[0]))
+                            dropped_count += len(vids) - 1
 
+                    # Decide naming: single canonical group → use the
+                    # wrapper's code_full. Multiple canonical groups
+                    # (CD1/CD2 etc.) or multiple keepers within one
+                    # canonical → use canonical, dedupe collisions.
+                    unique_canons = {c for c, _ in keepers}
                     moved: list[str] = []
                     for canon, video in keepers:
-                        if len(keepers) == 1:
-                            # Single keeper — name after the wrapper code.
+                        if len(keepers) == 1 and len(unique_canons) == 1:
                             target = f"{code_full}{ext_of(video.name)}"
                         else:
-                            # Multi-part — keep the canonical form so
-                            # CD1/CD2/etc. distinction survives.
                             target = f"{canon}{ext_of(video.name)}"
                         if target != child.name:
                             target = _uniquify_target(target, taken)
@@ -657,8 +677,8 @@ class PikPakService:
                         moved.append(target)
 
                     if not dry_run:
-                        # Wrapper trash takes leftover junk + the
-                        # smaller resolution duplicates with it.
+                        # Wrapper trash takes leftover junk + any
+                        # dropped lower-resolution duplicates.
                         await self.trash_files([child.id])
                     taken.discard(child.name)
                     summary["flattened"] += 1

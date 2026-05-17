@@ -281,6 +281,11 @@ export type TrackerStatus = {
   last_new_total: number;
 };
 
+export type ExtraCode = {
+  code: string;
+  paths: string[];
+};
+
 export type MissingCodesResult = {
   kind: TrackedKind;
   id: string;
@@ -288,6 +293,7 @@ export type MissingCodesResult = {
   total: number;
   present_codes: string[];
   missing: MovieListItem[];
+  extras: ExtraCode[];
   pages_scanned: number;
   expected_root: string;
   built_at: string;
@@ -299,6 +305,7 @@ export type MissingSummaryItem = {
   name: string;
   total: number;
   missing_count: number;
+  extras_count: number;
   pages_scanned: number;
   expected_root: string;
   error: string;

@@ -432,9 +432,10 @@ export default function TrackedPage() {
                       </span>
                     );
                   }
-                  if (m.missing_count > 0) {
-                    return (
+                  const missingBadge =
+                    m.missing_count > 0 ? (
                       <button
+                        key="missing"
                         onClick={() => toggleExpand(it)}
                         className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-300 hover:bg-amber-400/30"
                         title={`全集 ${m.total} 部，掃 ${m.pages_scanned} 頁 · 點擊看明細`}
@@ -442,15 +443,32 @@ export default function TrackedPage() {
                         {m.missing_count} 個未下載{" "}
                         {expanded.has(keyOf(it)) ? "▾" : "▸"}
                       </button>
+                    ) : (
+                      <span
+                        key="all-here"
+                        className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300"
+                        title={`全集 ${m.total} 部都已下載`}
+                      >
+                        全收齊
+                      </span>
                     );
-                  }
+                  const extrasBadge =
+                    m.extras_count > 0 ? (
+                      <button
+                        key="extras"
+                        onClick={() => toggleExpand(it)}
+                        className="rounded bg-purple-500/20 px-2 py-0.5 text-xs text-purple-300 hover:bg-purple-500/30"
+                        title="此資料夾裡有 JavBus 列表沒有的番號 · 點擊看明細"
+                      >
+                        {m.extras_count} 多餘{" "}
+                        {expanded.has(keyOf(it)) ? "▾" : "▸"}
+                      </button>
+                    ) : null;
                   return (
-                    <span
-                      className="rounded bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300"
-                      title={`全集 ${m.total} 部都已下載`}
-                    >
-                      全收齊
-                    </span>
+                    <>
+                      {missingBadge}
+                      {extrasBadge}
+                    </>
                   );
                 })()}
                 {it.uncensored && <span className="tag">無碼</span>}
@@ -545,10 +563,10 @@ function MissingDetailPanel({
     );
   }
   if (!detail) return null;
-  if (!detail.missing.length) {
+  if (!detail.missing.length && !detail.extras.length) {
     return (
       <div className="border-t border-white/10 px-4 py-3 text-xs text-emerald-300/80">
-        ✓ 已無缺漏
+        ✓ 已無缺漏、也沒有多餘番號
       </div>
     );
   }
@@ -564,6 +582,14 @@ function MissingDetailPanel({
           <span className="font-mono text-amber-300">
             {detail.missing.length}
           </span>
+          {detail.extras.length > 0 && (
+            <>
+              ・多餘{" "}
+              <span className="font-mono text-purple-300">
+                {detail.extras.length}
+              </span>
+            </>
+          )}
           <span className="ml-2 text-white/40">
             (掃 {detail.pages_scanned} 頁)
           </span>
@@ -638,6 +664,38 @@ function MissingDetailPanel({
           );
         })}
       </ul>
+      {detail.extras.length > 0 && (
+        <div className="mt-3 border-t border-white/5 pt-2">
+          <div className="mb-1 text-white/60">
+            多餘番號 ({detail.extras.length})
+            <span className="ml-1 text-white/40">
+              · 此資料夾裡有,但不在 JavBus 列表內
+            </span>
+          </div>
+          <ul className="divide-y divide-white/5">
+            {detail.extras.map((e) => (
+              <li key={e.code} className="py-1.5">
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/movie/${encodeURIComponent(e.code)}`}
+                    className="font-mono text-purple-300 hover:underline"
+                  >
+                    {e.code}
+                  </Link>
+                </div>
+                {e.paths.map((p) => (
+                  <div
+                    key={p}
+                    className="pl-2 font-mono text-[11px] text-white/50"
+                  >
+                    ・{p}
+                  </div>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

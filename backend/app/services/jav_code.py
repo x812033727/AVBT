@@ -15,8 +15,13 @@ from __future__ import annotations
 import re
 
 
+# Video extensions that BT release tools often append directly into the
+# folder name itself (``SACE022MP4`` rather than ``SACE-022/SACE022.mp4``).
+# Treated as part of the noise so the code extractor can see past it.
+_FAKE_EXT_RE = r"(?:MP4|M4V|AVI|WMV|MKV|MOV|WEBM|FLV|TS)"
+
 _CODE_RE = re.compile(
-    r"(?:^|[^A-Z0-9])(\d{0,4}[A-Z]{2,8}-?\d{2,6})[A-Z]?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -113,7 +118,7 @@ def is_video(name: str) -> bool:
 # instead of consumed by [A-Z]?. Used by extract_jav_code_full so file
 # / folder names keep their variant suffix (SDMM-14903C, ABP-123A).
 _CODE_RE_FULL = re.compile(
-    r"(?:^|[^A-Z0-9])(\d{0,4}[A-Z]{2,8}-?\d{2,6}[A-Z]?)(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 

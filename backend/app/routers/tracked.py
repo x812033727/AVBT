@@ -220,6 +220,13 @@ async def untrack(
 
 @router.post("/{kind}/{slug:path}/check", response_model=CheckListingResult)
 async def check_now(kind: str, slug: str):
+    # User explicitly asked for a fresh check. Drop any cached PikPak
+    # presence so the auto_send-missing path (and the missing-codes
+    # badge re-fetch the UI does afterwards) sees the current state
+    # of the cloud, not a stale snapshot from before the user deleted
+    # files / moved things around.
+    from ..services.pikpak_presence import presence_index
+    presence_index.invalidate()
     return CheckListingResult(**await tracker.check_listing(kind, slug))
 
 

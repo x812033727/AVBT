@@ -23,6 +23,7 @@ from ..models import TrackedListing
 from ..schemas import (
     AggregatedMissing,
     AggregatedMissingItem,
+    ExtraCode,
     MissingCodesResult,
     MissingSummary,
     MissingSummaryItem,
@@ -33,14 +34,41 @@ from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
 from .pikpak_presence import presence_index
 
 
-def _expected_root(kind: str, slug: str, name: str) -> str:
-    """Mirror the archiver: ``<download_folder>/<中文 kind>/<safe_name>``.
-    Uses the display name when present, falling back to the slug so the
-    user always sees a path (not an empty segment)."""
+def _expected_roots(kind: str, slug: str, name: str) -> list[str]:
+    """All folder paths the archiver might have used for this listing.
+    Returns the canonical Chinese-kind path first, then the legacy
+    English-kind path so files archived before the rename still count
+    as belonging here (and don't get flagged as "extras")."""
     root = settings.pikpak_download_folder or "AVBT"
     safe = safe_folder_name(name, fallback=safe_folder_name(slug, fallback=slug))
-    kind_dir = KIND_LABELS_CH.get(kind, kind)
-    return f"{root}/{kind_dir}/{safe}"
+    out: list[str] = []
+    ch = KIND_LABELS_CH.get(kind, "")
+    if ch:
+        out.append(f"{root}/{ch}/{safe}")
+    out.append(f"{root}/{kind}/{safe}")
+    return out
+
+
+def _expected_root(kind: str, slug: str, name: str) -> str:
+    """Canonical (Chinese-kind) folder path for UI display."""
+    return _expected_roots(kind, slug, name)[0]
+
+
+def _compute_extras(
+    kind: str, slug: str, name: str, expected_codes: set[str]
+) -> list[ExtraCode]:
+    """Codes physically under this listing's folder that are NOT in the
+    JavBus catalog for it. ``expected_codes`` must already be normalised
+    (same form the presence index uses)."""
+    roots = _expected_roots(kind, slug, name)
+    found = presence_index.codes_under(*roots)  # {code: [paths]}
+    out = [
+        ExtraCode(code=c, paths=paths)
+        for c, paths in found.items()
+        if c not in expected_codes
+    ]
+    out.sort(key=lambda e: e.code)
+    return out
 
 
 logger = logging.getLogger(__name__)
@@ -108,16 +136,21 @@ async def fetch_all_listing_codes(
 
 def _split_present_missing(
     items: list[MovieListItem], present: set[str]
-) -> tuple[list[str], list[MovieListItem]]:
+) -> tuple[list[str], list[MovieListItem], set[str]]:
+    """Returns (present_codes, missing_items, normalised_expected_set).
+    The normalised set is the union of every item's canonical code —
+    callers reuse it to compute "extras" without re-walking ``items``."""
     present_codes: list[str] = []
     missing: list[MovieListItem] = []
+    expected: set[str] = set()
     for it in items:
         c = normalize_code(it.code) or it.code
+        expected.add(c)
         if c in present:
             present_codes.append(it.code)
         else:
             missing.append(it)
-    return present_codes, missing
+    return present_codes, missing, expected
 
 
 async def missing_for_listing(
@@ -131,7 +164,7 @@ async def missing_for_listing(
         kind, slug, uncensored=uncensored, refresh=refresh
     )
     presence = await presence_index.get(force=refresh)
-    present_codes, missing = _split_present_missing(items, presence)
+    present_codes, missing, expected = _split_present_missing(items, presence)
 
     # Pull display name from DB if available.
     name = ""
@@ -140,6 +173,8 @@ async def missing_for_listing(
         if row:
             name = row.name or ""
 
+    extras = _compute_extras(kind, slug, name, expected)
+
     return MissingCodesResult(
         kind=kind,
         id=slug,
@@ -147,6 +182,7 @@ async def missing_for_listing(
         total=len(items),
         present_codes=present_codes,
         missing=missing,
+        extras=extras,
         pages_scanned=pages,
         expected_root=_expected_root(kind, slug, name),
         built_at=datetime.utcnow(),
@@ -164,16 +200,18 @@ async def _summary_item(
     except Exception as exc:  # noqa: BLE001
         return MissingSummaryItem(
             kind=row.kind, id=row.id, name=row.name or "",
-            total=0, missing_count=0, pages_scanned=0,
+            total=0, missing_count=0, extras_count=0, pages_scanned=0,
             expected_root=expected_root, error=str(exc),
         )
-    _, missing = _split_present_missing(items, presence)
+    _, missing, expected = _split_present_missing(items, presence)
+    extras = _compute_extras(row.kind, row.id, row.name or "", expected)
     return MissingSummaryItem(
         kind=row.kind,
         id=row.id,
         name=row.name or row.id,
         total=len(items),
         missing_count=len(missing),
+        extras_count=len(extras),
         pages_scanned=pages,
         expected_root=expected_root,
     )
@@ -228,7 +266,7 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
         except Exception as exc:  # noqa: BLE001
             logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
             continue
-        _, missing = _split_present_missing(listing, presence)
+        _, missing, _expected = _split_present_missing(listing, presence)
         if missing:
             items.append(
                 AggregatedMissingItem(

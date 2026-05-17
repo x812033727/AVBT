@@ -34,6 +34,7 @@ export default function ListingPage({
   const [presenceMeta, setPresenceMeta] = useState<{
     total: number;
     missing: number;
+    extras: number;
     expected_root: string;
   } | null>(null);
   const [presenceBusy, setPresenceBusy] = useState(false);
@@ -99,6 +100,7 @@ export default function ListingPage({
         setPresenceMeta({
           total: r.total,
           missing: r.missing.length,
+          extras: r.extras.length,
           expected_root: r.expected_root,
         });
       } catch {
@@ -234,6 +236,17 @@ export default function ListingPage({
                   <span className="text-amber-300">
                     缺漏 {presenceMeta.missing}
                   </span>
+                  {presenceMeta.extras > 0 && (
+                    <>
+                      {" "}・{" "}
+                      <span
+                        className="text-purple-300"
+                        title="此資料夾有,但不在 JavBus 列表內的番號"
+                      >
+                        多餘 {presenceMeta.extras}
+                      </span>
+                    </>
+                  )}
                 </span>
                 <button
                   onClick={() => loadPresence(true)}

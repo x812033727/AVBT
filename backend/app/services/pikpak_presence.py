@@ -74,6 +74,23 @@ class PikPakPresenceIndex:
         c = normalize_code(code) or (code or "").upper()
         return list(self._paths.get(c, []))
 
+    def codes_under(self, *prefixes: str) -> dict[str, list[str]]:
+        """Return ``{code: [matching_paths]}`` for every indexed code
+        whose recorded path starts with one of the given folder
+        prefixes. Drives the "extras" detection: codes physically
+        located under a tracked listing's folder."""
+        if not self._paths:
+            return {}
+        needles = tuple(p.rstrip("/") + "/" for p in prefixes if p)
+        if not needles:
+            return {}
+        out: dict[str, list[str]] = {}
+        for code, paths in self._paths.items():
+            matched = [p for p in paths if any(p.startswith(n) for n in needles)]
+            if matched:
+                out[code] = matched
+        return out
+
     def invalidate(self) -> None:
         self._built_at = None  # next get() will rebuild
 

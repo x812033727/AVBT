@@ -215,6 +215,15 @@ class PikPakQuota(BaseModel):
 
 # ---------- Missing-codes / presence index ----------
 
+class ExtraCode(BaseModel):
+    """A code physically present in a tracked listing's folder that is
+    NOT in the JavBus catalog for that listing — i.e. likely misplaced
+    or no longer listed upstream."""
+
+    code: str
+    paths: list[str] = Field(default_factory=list)
+
+
 class MissingCodesResult(BaseModel):
     kind: str
     id: str
@@ -222,9 +231,10 @@ class MissingCodesResult(BaseModel):
     total: int = 0
     present_codes: list[str] = Field(default_factory=list)
     missing: list[MovieListItem] = Field(default_factory=list)
+    extras: list[ExtraCode] = Field(default_factory=list)
     pages_scanned: int = 0
     # The folder the archiver would put a newly-completed code under
-    # for this tracked listing, e.g. "AVBT/series/回胴錄 - 系列 - 影片".
+    # for this tracked listing, e.g. "AVBT/系列/回胴錄".
     # Lets the UI display the exact path it's looking for.
     expected_root: str = ""
     built_at: datetime
@@ -236,6 +246,7 @@ class MissingSummaryItem(BaseModel):
     name: str = ""
     total: int = 0
     missing_count: int = 0
+    extras_count: int = 0
     pages_scanned: int = 0
     expected_root: str = ""
     error: str = ""

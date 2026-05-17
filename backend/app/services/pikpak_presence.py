@@ -35,6 +35,9 @@ _LIST_PAGE_SIZE = 500
 class PikPakPresenceIndex:
     def __init__(self) -> None:
         self._codes: set[str] | None = None
+        self._paths: dict[str, list[str]] = {}
+        self._roots: list[dict[str, Any]] = []
+        self._unrecognized: list[dict[str, str]] = []
         self._built_at: datetime | None = None
         self._last_error: str = ""
         self._lock = asyncio.Lock()
@@ -50,6 +53,21 @@ class PikPakPresenceIndex:
             "ttl_seconds": settings.presence_ttl_seconds,
             "ready": self._codes is not None,
         }
+
+    def detail(self) -> dict[str, Any]:
+        """Status + roots scanned + sample of leaf folders we couldn't
+        normalise into a code. Lets the user see *what* the index actually
+        looked at, so they can spot files stored under unexpected paths."""
+        return {
+            **self.status(),
+            "roots": list(self._roots),
+            "unrecognized": list(self._unrecognized[:50]),
+            "unrecognized_total": len(self._unrecognized),
+        }
+
+    def paths_for(self, code: str) -> list[str]:
+        c = normalize_code(code) or (code or "").upper()
+        return list(self._paths.get(c, []))
 
     def invalidate(self) -> None:
         self._built_at = None  # next get() will rebuild
@@ -108,6 +126,11 @@ class PikPakPresenceIndex:
         # propagating it up so the caller records last_error.
         root_path = settings.pikpak_download_folder or "AVBT"
         root_id = await pikpak_service.folder_id(root_path)
+        # Reset path/root tracking on every build so stale diagnostics
+        # don't survive a failed rebuild.
+        self._paths = {}
+        self._roots = []
+        self._unrecognized = []
         if not root_id:
             return set()
 
@@ -126,9 +149,11 @@ class PikPakPresenceIndex:
                 continue
             name = child.name or ""
             if name in _KIND_DIRS:
-                kind_jobs.append(self._collect_kind(child.id))
+                kind_jobs.append(self._collect_kind(f"{root_path}/{name}", child.id))
             elif name == legacy_name:
-                legacy_jobs.append(self._collect_legacy(child.id))
+                legacy_jobs.append(
+                    self._collect_legacy(f"{root_path}/{name}", child.id)
+                )
 
         results = await asyncio.gather(
             *kind_jobs, *legacy_jobs, return_exceptions=True
@@ -139,7 +164,12 @@ class PikPakPresenceIndex:
 
         return codes
 
-    async def _collect_kind(self, kind_dir_id: str) -> set[str]:
+    def _record(self, code: str, path: str) -> None:
+        bucket = self._paths.setdefault(code, [])
+        if path not in bucket:
+            bucket.append(path)
+
+    async def _collect_kind(self, root_path: str, kind_dir_id: str) -> set[str]:
         """For an ``AVBT/<kind>`` dir: list name dirs, then list each
         name dir's children — leaves may be code-named folders
         (``DAM-043/``) OR bare video files (``DAM-044.mp4``); both
@@ -147,30 +177,72 @@ class PikPakPresenceIndex:
         name_dirs = await self._list(kind_dir_id)
         targets = [n for n in name_dirs if n.kind == "drive#folder"]
         if not targets:
+            self._roots.append(
+                {"path": root_path, "leaves": 0, "codes": 0, "unrecognized": 0}
+            )
             return set()
 
         leaf_lists = await asyncio.gather(
             *[self._list(n.id) for n in targets], return_exceptions=True
         )
         codes: set[str] = set()
-        for leaves in leaf_lists:
+        leaves_total = 0
+        unrecognized_count = 0
+        for name_dir, leaves in zip(targets, leaf_lists):
             if isinstance(leaves, Exception):
                 continue
+            parent = f"{root_path}/{name_dir.name}"
             for leaf in leaves:
+                # Leaves may be code-named folders (``DAM-043/``) OR bare
+                # video files (``DAM-044.mp4``); both count as present.
+                leaves_total += 1
                 c = normalize_code(leaf.name)
                 if c:
                     codes.add(c)
+                    self._record(c, f"{parent}/{leaf.name}")
+                else:
+                    unrecognized_count += 1
+                    self._unrecognized.append(
+                        {"parent": parent, "name": leaf.name}
+                    )
+        self._roots.append(
+            {
+                "path": root_path,
+                "leaves": leaves_total,
+                "codes": len(codes),
+                "unrecognized": unrecognized_count,
+            }
+        )
         return codes
 
-    async def _collect_legacy(self, legacy_dir_id: str) -> set[str]:
+    async def _collect_legacy(
+        self, root_path: str, legacy_dir_id: str
+    ) -> set[str]:
         """``AVBT/已完成/<leaf>`` — depth 1. Leaves may be code-named
         folders or bare video files; both count."""
         leaves = await self._list(legacy_dir_id)
         codes: set[str] = set()
+        unrecognized_count = 0
+        leaves_total = 0
         for leaf in leaves:
+            leaves_total += 1
             c = normalize_code(leaf.name)
             if c:
                 codes.add(c)
+                self._record(c, f"{root_path}/{leaf.name}")
+            else:
+                unrecognized_count += 1
+                self._unrecognized.append(
+                    {"parent": root_path, "name": leaf.name}
+                )
+        self._roots.append(
+            {
+                "path": root_path,
+                "leaves": leaves_total,
+                "codes": len(codes),
+                "unrecognized": unrecognized_count,
+            }
+        )
         return codes
 
 

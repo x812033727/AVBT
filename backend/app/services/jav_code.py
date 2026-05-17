@@ -77,6 +77,20 @@ def is_video(name: str) -> bool:
     return ext_of(name) in VIDEO_EXTS
 
 
+# Mirrored from archiver._safe_name so missing-code services can compute
+# the archive path without importing the archiver (would cause a cycle).
+_PATH_UNSAFE = re.compile(r'[/\\:<>*?|"\x00-\x1f]+')
+
+
+def safe_folder_name(name: str, *, fallback: str = "") -> str:
+    """Strip path-unsafe chars from a display name. Returns ``fallback``
+    (or empty string) when the cleaned result is empty. Matches the
+    archiver's sanitisation so frontends and missing-code services see
+    the same path the archiver writes to."""
+    cleaned = _PATH_UNSAFE.sub("", (name or "").strip()).strip()
+    return cleaned[:64] or fallback
+
+
 def normalize_code(s: str) -> str:
     """Canonicalise an already-clean JAV code (e.g. PikPak folder name or
     a JavBus code) to ``LABEL-NNN`` form.

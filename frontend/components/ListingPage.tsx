@@ -34,6 +34,7 @@ export default function ListingPage({
   const [presenceMeta, setPresenceMeta] = useState<{
     total: number;
     missing: number;
+    expected_root: string;
   } | null>(null);
   const [presenceBusy, setPresenceBusy] = useState(false);
   const trackable = kind !== "genre";  // 類別變動太頻繁，不適合做追蹤
@@ -95,7 +96,11 @@ export default function ListingPage({
           `/api/tracked/${kind}/${encodeURIComponent(id)}/missing-codes?${params}`
         );
         setPresence(new Set(r.present_codes));
-        setPresenceMeta({ total: r.total, missing: r.missing.length });
+        setPresenceMeta({
+          total: r.total,
+          missing: r.missing.length,
+          expected_root: r.expected_root,
+        });
       } catch {
         setPresence(null);
         setPresenceMeta(null);
@@ -145,7 +150,18 @@ export default function ListingPage({
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <div className="text-xs text-white/40">{label}</div>
-          <h1 className="font-mono text-lg text-accent">{id}</h1>
+          {tracked?.name ? (
+            <>
+              <h1 className="text-lg font-semibold text-white/90">
+                {tracked.name}
+              </h1>
+              <div className="font-mono text-xs text-white/40">
+                slug: {id}
+              </div>
+            </>
+          ) : (
+            <h1 className="font-mono text-lg text-accent">{id}</h1>
+          )}
         </div>
         <label className="flex items-center gap-2 text-sm text-white/70">
           <input
@@ -203,28 +219,38 @@ export default function ListingPage({
             )}
           </div>
           {tracked && presenceMeta && (
-            <div className="flex flex-wrap items-center gap-3 rounded-md border border-white/10 bg-panel/40 px-3 py-2 text-xs text-white/70">
-              <span>
-                追蹤全集共{" "}
-                <span className="font-semibold text-white/90">
-                  {presenceMeta.total}
-                </span>{" "}
-                部 ・{" "}
-                <span className="text-emerald-300">
-                  已下載 {presenceMeta.total - presenceMeta.missing}
-                </span>{" "}
-                ／{" "}
-                <span className="text-amber-300">
-                  缺漏 {presenceMeta.missing}
+            <div className="space-y-1 rounded-md border border-white/10 bg-panel/40 px-3 py-2 text-xs text-white/70">
+              <div className="flex flex-wrap items-center gap-3">
+                <span>
+                  追蹤全集共{" "}
+                  <span className="font-semibold text-white/90">
+                    {presenceMeta.total}
+                  </span>{" "}
+                  部 ・{" "}
+                  <span className="text-emerald-300">
+                    已下載 {presenceMeta.total - presenceMeta.missing}
+                  </span>{" "}
+                  ／{" "}
+                  <span className="text-amber-300">
+                    缺漏 {presenceMeta.missing}
+                  </span>
                 </span>
-              </span>
-              <button
-                onClick={() => loadPresence(true)}
-                disabled={presenceBusy}
-                className="ml-auto rounded border border-white/15 px-2 py-0.5 hover:bg-white/5 disabled:opacity-40"
-              >
-                {presenceBusy ? "重建中…" : "重新整理 PikPak 索引"}
-              </button>
+                <button
+                  onClick={() => loadPresence(true)}
+                  disabled={presenceBusy}
+                  className="ml-auto rounded border border-white/15 px-2 py-0.5 hover:bg-white/5 disabled:opacity-40"
+                >
+                  {presenceBusy ? "重建中…" : "重新整理 PikPak 索引"}
+                </button>
+              </div>
+              {presenceMeta.expected_root && (
+                <div className="text-white/40">
+                  判斷路徑:
+                  <span className="ml-1 font-mono text-white/70">
+                    {presenceMeta.expected_root}/&lt;番號&gt;
+                  </span>
+                </div>
+              )}
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">

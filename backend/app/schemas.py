@@ -223,6 +223,10 @@ class MissingCodesResult(BaseModel):
     present_codes: list[str] = Field(default_factory=list)
     missing: list[MovieListItem] = Field(default_factory=list)
     pages_scanned: int = 0
+    # The folder the archiver would put a newly-completed code under
+    # for this tracked listing, e.g. "AVBT/series/回胴錄 - 系列 - 影片".
+    # Lets the UI display the exact path it's looking for.
+    expected_root: str = ""
     built_at: datetime
 
 
@@ -233,6 +237,7 @@ class MissingSummaryItem(BaseModel):
     total: int = 0
     missing_count: int = 0
     pages_scanned: int = 0
+    expected_root: str = ""
     error: str = ""
 
 
@@ -261,6 +266,29 @@ class PresenceStatus(BaseModel):
     last_error: str = ""
     ttl_seconds: int = 0
     ready: bool = False
+
+
+class PresenceRoot(BaseModel):
+    path: str
+    leaves: int = 0
+    codes: int = 0
+    unrecognized: int = 0
+
+
+class PresenceUnrecognized(BaseModel):
+    parent: str
+    name: str
+
+
+class PresenceDetail(PresenceStatus):
+    roots: list[PresenceRoot] = Field(default_factory=list)
+    unrecognized: list[PresenceUnrecognized] = Field(default_factory=list)
+    unrecognized_total: int = 0
+
+
+class PresenceCodeLookup(BaseModel):
+    code: str
+    paths: list[str] = Field(default_factory=list)
 
 
 class ReorganizeOptions(BaseModel):

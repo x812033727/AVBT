@@ -289,6 +289,7 @@ export type MissingCodesResult = {
   present_codes: string[];
   missing: MovieListItem[];
   pages_scanned: number;
+  expected_root: string;
   built_at: string;
 };
 
@@ -299,6 +300,7 @@ export type MissingSummaryItem = {
   total: number;
   missing_count: number;
   pages_scanned: number;
+  expected_root: string;
   error: string;
 };
 
@@ -327,4 +329,27 @@ export type PresenceStatus = {
   last_error: string;
   ttl_seconds: number;
   ready: boolean;
+};
+
+export type PresenceRoot = {
+  path: string;
+  leaves: number;
+  codes: number;
+  unrecognized: number;
+};
+
+export type PresenceUnrecognized = {
+  parent: string;
+  name: string;
+};
+
+export type PresenceDetail = PresenceStatus & {
+  roots: PresenceRoot[];
+  unrecognized: PresenceUnrecognized[];
+  unrecognized_total: number;
+};
+
+export type PresenceCodeLookup = {
+  code: string;
+  paths: string[];
 };

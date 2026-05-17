@@ -109,6 +109,51 @@ def is_video(name: str) -> bool:
     return ext_of(name) in VIDEO_EXTS
 
 
+# Same shape as _CODE_RE but the trailing variant letter is captured
+# instead of consumed by [A-Z]?. Used by extract_jav_code_full so file
+# / folder names keep their variant suffix (SDMM-14903C, ABP-123A).
+_CODE_RE_FULL = re.compile(
+    r"(?:^|[^A-Z0-9])(\d{0,4}[A-Z]{2,8}-?\d{2,6}[A-Z]?)(?=$|[^A-Z0-9])",
+    re.IGNORECASE,
+)
+
+
+def extract_jav_code_full(name: str) -> str | None:
+    """Like :func:`extract_jav_code` but keeps the trailing variant
+    letter when present (``SDMM-14903C`` stays as ``SDMM-14903C``).
+
+    Use this when naming a folder or file on PikPak so multiple
+    variants of the same base code (A/B/C…) can coexist as distinct
+    files instead of colliding on the same target.
+    """
+    if not name:
+        return None
+    stem = _EXT_RE.sub("", name)
+    matches = _CODE_RE_FULL.findall(stem)
+    if not matches:
+        return None
+    raw = matches[-1].upper()
+    # Split off any trailing variant letter so the existing
+    # prefix/split helpers (which expect LABEL-NNN, no tail) still work.
+    tail = ""
+    if raw and raw[-1].isalpha() and "-" in raw:
+        tail = raw[-1]
+        raw = raw[:-1]
+    if "-" not in raw:
+        # Squished form: 483DAM043 (no hyphen) → re-split.
+        if raw and raw[-1].isalpha():
+            tail = raw[-1]
+            raw = raw[:-1]
+        m = _SPLIT_RE.match(raw)
+        if not m:
+            return None
+        raw = f"{m.group(1)}-{m.group(2)}"
+    m = _PREFIX_RE.match(raw)
+    if m and m.group(1) not in KNOWN_NUMERIC_PREFIXES:
+        return m.group(2) + tail
+    return raw + tail
+
+
 # Mirrored from archiver._safe_name so missing-code services can compute
 # the archive path without importing the archiver (would cause a cycle).
 _PATH_UNSAFE = re.compile(r'[/\\:<>*?|"\x00-\x1f]+')

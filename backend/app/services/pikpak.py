@@ -342,17 +342,39 @@ class PikPakService:
         client = await self._ensure()
         return await client.file_rename(file_id, new_name)
 
-    async def download_url(self, file_id: str) -> str:
+    async def file_links(self, file_id: str) -> dict:
+        """Return ``{download_url, play_url, mime_type}`` for a single file.
+
+        - ``download_url`` is the progressive download link (good for non-video
+          files and as a fallback when ``<video>`` can't decode the format).
+        - ``play_url`` is the high-speed streaming link from ``medias[0].link``
+          (falls back to ``download_url`` if PikPak didn't surface one).
+        """
         client = await self._ensure()
         resp = await client.get_download_url(file_id)
-        if isinstance(resp, dict):
-            return (
-                resp.get("web_content_link")
-                or resp.get("download_url")
-                or resp.get("link")
-                or ""
-            )
-        return str(resp or "")
+        if not isinstance(resp, dict):
+            url = str(resp or "")
+            return {"download_url": url, "play_url": url, "mime_type": ""}
+        download_url = (
+            resp.get("web_content_link")
+            or resp.get("download_url")
+            or resp.get("link")
+            or ""
+        )
+        play_url = ""
+        medias = resp.get("medias") or []
+        if isinstance(medias, list) and medias:
+            link = (medias[0] or {}).get("link") or {}
+            if isinstance(link, dict):
+                play_url = link.get("url", "") or ""
+        return {
+            "download_url": download_url,
+            "play_url": play_url or download_url,
+            "mime_type": resp.get("mime_type", "") or "",
+        }
+
+    async def download_url(self, file_id: str) -> str:
+        return (await self.file_links(file_id))["download_url"]
 
     async def search_files(self, keyword: str, parent_id: str = "") -> list[PikPakFile]:
         client = await self._ensure()

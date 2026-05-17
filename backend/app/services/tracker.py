@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -19,8 +19,8 @@ from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
 from . import missing as missing_svc
 from .download_queue import Job, download_queue
-from .notify import send_webhook
 from .pikpak_presence import presence_index
+from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,12 @@ _KIND_LABELS = {
     "series": "系列",
     "director": "導演",
 }
+
+# Bounds the number of listings checked simultaneously. JavBus outbound
+# HTTP is already serialised by the 1.2 s global throttle in
+# ``scrapers/javbus.py`` — this only caps DB sessions and CPU-side
+# parsing so a large tracked set doesn't slam SQLite with N=78 writers.
+_CHECK_SEMAPHORE = asyncio.Semaphore(max(1, settings.tracker_check_concurrency))
 
 
 class TrackerState:
@@ -63,11 +69,17 @@ def _tracker_options() -> SendAllOptions:
 
 
 async def _enqueue_auto_send(
-    kind: str, slug: str, new_codes: list[str]
+    kind: str, slug: str, new_codes: list[str], *, do_full_scan: bool = True
 ) -> int:
     """Combine ``new_codes`` (just-detected on page 1) with the listing's
-    missing-from-PikPak codes (when the presence index is ready), dedupe,
-    and push everything into the global download queue.
+    missing-from-PikPak codes (when the presence index is ready and
+    ``do_full_scan`` is True), dedupe, and push everything into the
+    global download queue.
+
+    ``do_full_scan=False`` skips the JavBus catalog walk — caller uses
+    this when the listing has been quiet long enough that re-walking
+    every page is wasted work; only the freshly-detected ``new_codes``
+    get enqueued.
 
     Returns the number of codes enqueued. The queue itself coalesces
     duplicates that are already pending or in-flight, so calling this
@@ -76,32 +88,50 @@ async def _enqueue_auto_send(
     combined: list[str] = list(new_codes)
     seen: set[str] = {c for c in combined if c}
 
-    status = presence_index.status()
-    # Only walk the JavBus catalog for the missing list when we have
-    # trustworthy PikPak inventory data. Otherwise we'd mistake "no data"
-    # for "nothing downloaded" and try to send the entire catalog.
-    if status.get("ready") and not status.get("last_error"):
-        try:
-            result = await missing_svc.missing_for_listing(kind, slug)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "auto-send-missing %s/%s failed: %s", kind, slug, exc
-            )
-            result = None
-        if result and result.total:
-            for m in result.missing:
-                if m.code and m.code not in seen:
-                    seen.add(m.code)
-                    combined.append(m.code)
+    if do_full_scan:
+        status = presence_index.status()
+        # Only walk the JavBus catalog for the missing list when we have
+        # trustworthy PikPak inventory data. Otherwise we'd mistake "no
+        # data" for "nothing downloaded" and try to send the entire
+        # catalog.
+        if status.get("ready") and not status.get("last_error"):
+            try:
+                result = await missing_svc.missing_for_listing(kind, slug)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "auto-send-missing %s/%s failed: %s", kind, slug, exc
+                )
+                result = None
+            if result and result.total:
+                for m in result.missing:
+                    if m.code and m.code not in seen:
+                        seen.add(m.code)
+                        combined.append(m.code)
 
     if not combined:
         return 0
+
+    # Pull the tracked-listing snapshot once so every job we enqueue
+    # carries the kind/slug/name the archiver needs to route the file
+    # without a JavBus fetch_detail at archive time.
+    tracked_name = ""
+    async with SessionLocal() as session:
+        row = await session.get(TrackedListing, (kind, slug))
+        if row:
+            tracked_name = row.name or ""
 
     options = _tracker_options()
     source = f"tracker:{kind}:{slug}"
     for code in combined:
         await download_queue.enqueue(
-            Job(code=code, options=options, source=source)
+            Job(
+                code=code,
+                options=options,
+                source=source,
+                tracked_kind=kind,
+                tracked_slug=slug,
+                tracked_name=tracked_name,
+            )
         )
     return len(combined)
 
@@ -122,6 +152,24 @@ async def _detect_new(
                 break
             new_codes.append(code)
     return new_codes, top[0]
+
+
+def _full_scan_due(row: TrackedListing) -> bool:
+    """Adaptive scan policy: a quiet listing skips the JavBus walk, but
+    we force one every ``tracker_quiet_skip_every`` ticks regardless so
+    a backfilled-earlier code can't slip past forever."""
+    threshold = max(0, settings.tracker_quiet_skip_threshold)
+    quiet = int(row.quiet_ticks or 0)
+    if quiet < threshold:
+        return True
+    last_full = row.last_full_scan_at
+    if last_full is None:
+        return True
+    every = max(1, settings.tracker_quiet_skip_every)
+    interval = max(60, settings.tracker_interval_seconds)
+    if datetime.utcnow() - last_full >= timedelta(seconds=every * interval):
+        return True
+    return False
 
 
 async def check_listing(kind: str, listing_id: str) -> dict:
@@ -160,6 +208,13 @@ async def check_listing(kind: str, listing_id: str) -> dict:
         row.last_checked_at = datetime.utcnow()
         if had_baseline and new_codes:
             row.new_count = (row.new_count or 0) + len(new_codes)
+            row.quiet_ticks = 0
+        else:
+            row.quiet_ticks = int(row.quiet_ticks or 0) + 1
+
+        do_full_scan = _full_scan_due(row) if auto_send else False
+        if do_full_scan:
+            row.last_full_scan_at = datetime.utcnow()
         await session.commit()
 
     if had_baseline and new_codes:
@@ -168,21 +223,23 @@ async def check_listing(kind: str, listing_id: str) -> dict:
             f"🆕 {label} {name} 有 {len(new_codes)} 部新作品: "
             f"{', '.join(new_codes)}"
         )
-        asyncio.create_task(send_webhook(msg))
+        webhook_queue.enqueue_nowait(msg)
 
     if auto_send:
         # One-pass enqueue:
         #   freshly-seen new_codes (cheap — just page 1)
         #   ∪ JavBus catalog codes still missing from PikPak (walks all
         #     listing pages, cached for 1h; only when presence index is
-        #     ready)
+        #     ready AND adaptive policy says to scan this tick)
         # Both sets go to the global download queue, which dedupes
         # in-flight, so the worker pool serialises submissions across
         # every listing rather than each listing firing its own burst.
         # We don't await — tracker stays responsive even when the
         # listing's backlog is hundreds of codes.
         fresh = new_codes if had_baseline else []
-        asyncio.create_task(_enqueue_auto_send(actual_kind, slug, fresh))
+        asyncio.create_task(
+            _enqueue_auto_send(actual_kind, slug, fresh, do_full_scan=do_full_scan)
+        )
 
     return {
         "kind": kind,
@@ -192,23 +249,31 @@ async def check_listing(kind: str, listing_id: str) -> dict:
     }
 
 
+async def _guarded_check(kind: str, listing_id: str) -> dict:
+    """Semaphore-bounded wrapper around ``check_listing`` so a large
+    tracked set doesn't open N concurrent SQLite sessions. JavBus
+    outbound HTTP is already serialised globally — this is a CPU + DB
+    concurrency cap, not a network one. Per-listing exceptions are
+    flattened into the same shape ``check_listing`` returns on error so
+    callers don't need a try/except around each one."""
+    async with _CHECK_SEMAPHORE:
+        try:
+            return await check_listing(kind, listing_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("check_listing %s/%s crashed: %s", kind, listing_id, exc)
+            return {"kind": kind, "id": listing_id, "error": str(exc), "new_codes": []}
+
+
 async def check_all() -> list[dict]:
     async with SessionLocal() as session:
         pairs = (
             await session.execute(select(TrackedListing.kind, TrackedListing.id))
         ).all()
-
-    results: list[dict] = []
-    for kind, listing_id in pairs:
-        try:
-            results.append(await check_listing(kind, listing_id))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("check_listing %s/%s crashed: %s", kind, listing_id, exc)
-            results.append(
-                {"kind": kind, "id": listing_id, "error": str(exc), "new_codes": []}
-            )
-        await asyncio.sleep(1.0)
-    return results
+    if not pairs:
+        return []
+    return await asyncio.gather(
+        *(_guarded_check(kind, listing_id) for kind, listing_id in pairs)
+    )
 
 
 # Backwards-compat alias (services/archiver imports check_actress nowhere,
@@ -228,7 +293,7 @@ async def run_loop() -> None:
                 # last_seen_code and may have enqueued downloads —
                 # drop the cached missing-summary so the next /tracked
                 # page load reflects the new state.
-                missing_svc.invalidate_result_caches()
+                missing_svc.invalidate_all_caches()
             consecutive_errors = 0
         except asyncio.CancelledError:
             raise

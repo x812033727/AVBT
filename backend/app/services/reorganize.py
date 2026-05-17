@@ -49,7 +49,6 @@ from .pikpak import (
     _uniquify_target,
     pikpak_service,
 )
-from .pikpak_presence import presence_index
 
 
 logger = logging.getLogger(__name__)
@@ -876,10 +875,9 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         ) > 0
     )
     if mutated:
-        presence_index.invalidate()
         try:
             from . import missing as missing_svc  # avoid cycle
-            missing_svc.invalidate_result_caches()
+            await missing_svc.invalidate_all_caches_async(presence=True)
         except Exception:  # noqa: BLE001
             pass
         pikpak_service._folder_cache.clear()

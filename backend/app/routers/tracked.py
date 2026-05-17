@@ -61,9 +61,7 @@ async def tracker_run_now():
     # Batch check explicitly requested by the user — drop any cached
     # PikPak inventory so auto-send-missing and the post-batch missing-
     # summary re-fetch see the current state of the cloud.
-    from ..services.pikpak_presence import presence_index
-    presence_index.invalidate()
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches(presence=True)
     results = await tracker.check_all()
     new_total = sum(len(r.get("new_codes") or []) for r in results)
     tracker.state.last_new_total = new_total
@@ -71,7 +69,7 @@ async def tracker_run_now():
     # The batch may have queued downloads / shifted last_seen — drop
     # the result cache one more time so the post-batch reload from
     # the UI sees fresh data.
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches()
     return {
         "results": results,
         "new_total": new_total,
@@ -180,7 +178,7 @@ async def upsert_tracked(
 
     # The tracked-listing set changed (or its display name did); drop
     # the cached aggregate so the next /missing-summary rebuilds.
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches()
     return _to_out(row)
 
 
@@ -236,7 +234,7 @@ async def untrack(
         raise HTTPException(status_code=404, detail="not tracked")
     await session.delete(row)
     await session.commit()
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches()
     return {"ok": True}
 
 
@@ -247,9 +245,7 @@ async def check_now(kind: str, slug: str):
     # badge re-fetch the UI does afterwards) sees the current state
     # of the cloud, not a stale snapshot from before the user deleted
     # files / moved things around.
-    from ..services.pikpak_presence import presence_index
-    presence_index.invalidate()
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches(presence=True)
     return CheckListingResult(**await tracker.check_listing(kind, slug))
 
 

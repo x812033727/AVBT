@@ -76,6 +76,25 @@ class Settings(BaseSettings):
     # backlog catch-up.
     download_queue_concurrency: int = 5
 
+    # Tracker per-tick concurrency. JavBus outbound HTTP is already
+    # serialised by the 1.2 s global throttle in scrapers/javbus.py, so
+    # this only bounds DB sessions + CPU-side parsing — tune up to keep
+    # SQLite from contention, down if you see lock-busy spam.
+    tracker_check_concurrency: int = 8
+
+    # Adaptive full-catalog scan: skip the per-listing JavBus walk in
+    # _enqueue_auto_send when the listing has been quiet for this many
+    # consecutive tracker ticks. Forces a full scan every
+    # ``tracker_quiet_skip_every`` ticks regardless so a backfilled
+    # earlier code can't slip past forever.
+    tracker_quiet_skip_threshold: int = 6
+    tracker_quiet_skip_every: int = 12
+
+    # Auto-prune offline_task_log: rows where archived=True and
+    # archived_at < cutoff get deleted by services/log_cleanup.run_loop.
+    # 0 disables pruning entirely.
+    offline_log_retention_days: int = 90
+
     http_proxy: str = ""
 
     # Optional webhook fired after each successful auto-archive. Body is

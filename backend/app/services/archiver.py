@@ -21,14 +21,14 @@ import re
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..config import kind_base_path, settings, task_folder_path
 from ..database import SessionLocal
 from ..models import OfflineTaskLog, TrackedListing
 from ..scrapers import javbus as scraper
-from .notify import send_webhook
 from .pikpak import PikPakError, pikpak_service
+from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +69,31 @@ def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
     return out
 
 
-async def _resolve_archive_path(code: str) -> str:
-    """Pick the destination folder for ``code`` based on TrackedListing
-    membership. Falls back to ``pikpak_archive_folder/<code>`` when no
-    tracked listing matches (or detail lookup fails)."""
+async def _resolve_archive_path(row: OfflineTaskLog) -> str:
+    """Pick the destination folder for ``row.code`` based on the
+    tracked-listing snapshot we captured at enqueue time, falling back
+    to a JavBus fetch_detail when that snapshot is empty (manual
+    submits, rows that predate the tracked_* columns).
+
+    The snapshot path is the fast majority case — tracker auto-send,
+    bulk send-all, anything originating from a TrackedListing — and
+    skips an external HTTP call per archive. Manual ``/api/pikpak/
+    offline`` submissions still hit JavBus to discover the right kind/
+    name pair."""
+    code = row.code
     safe_code = _safe_code(code)
     fallback = f"{settings.pikpak_archive_folder}/{safe_code}"
+
+    # Fast path: enqueue-time snapshot wins. Skips JavBus entirely.
+    snap_kind = (row.tracked_kind or "").strip()
+    snap_slug = (row.tracked_slug or "").strip()
+    snap_name = (row.tracked_name or "").strip()
+    if snap_kind and snap_slug and snap_name:
+        safe = _safe_name(
+            snap_name,
+            fallback=_safe_name(snap_slug, fallback="unknown"),
+        )
+        return f"{kind_base_path(snap_kind)}/{safe}/{safe_code}"
 
     detail = _detail_cache.get(code)
     if detail is None:
@@ -95,8 +114,8 @@ async def _resolve_archive_path(code: str) -> str:
             if not ref:
                 continue
             slug, name = ref
-            row = await session.get(TrackedListing, (kind, slug))
-            if row is None:
+            tracked_row = await session.get(TrackedListing, (kind, slug))
+            if tracked_row is None:
                 continue
             # Prefer the tracked-listing row's stored name over whatever
             # JavBus returned on this fetch — JavBus markup / template /
@@ -105,7 +124,7 @@ async def _resolve_archive_path(code: str) -> str:
             # for the same listing on consecutive runs. The row.name was
             # user-confirmed at tracking time and is the stable choice.
             safe = _safe_name(
-                row.name or name,
+                tracked_row.name or name,
                 fallback=_safe_name(name, fallback=_safe_name(slug, fallback="unknown")),
             )
             # kind_base_path() returns AVBT/<chinese kind label> by default
@@ -315,10 +334,8 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
     if moved:
         logger.info("root sweep moved %d orphan(s) to kind/name", moved)
         try:
-            from .pikpak_presence import presence_index  # avoid cycle
             from . import missing as missing_svc  # avoid cycle
-            presence_index.invalidate()
-            missing_svc.invalidate_result_caches()
+            await missing_svc.invalidate_all_caches_async(presence=True)
         except Exception:  # noqa: BLE001
             pass
         # Folder cache may now point at trashed/renamed wrappers; drop
@@ -458,6 +475,24 @@ async def archive_once() -> int:
             state.last_error = f"sweep_root failed: {exc}"
             logger.warning("sweep_root failed: %s", exc)
 
+    # Cheap DB peek: if nothing has been submitted-but-not-archived
+    # since the last pass, skip the PikPak list_tasks round-trip
+    # entirely. The sweep above is independent — orphans in the TASK
+    # folder still get tidied on their own cooldown even when no row
+    # is pending.
+    async with SessionLocal() as session:
+        pending = (
+            await session.execute(
+                select(func.count(OfflineTaskLog.id)).where(
+                    OfflineTaskLog.archived.is_(False),
+                    OfflineTaskLog.file_id != "",
+                    OfflineTaskLog.code != "",
+                )
+            )
+        ).scalar() or 0
+    if pending == 0:
+        return 0
+
     try:
         tasks = await pikpak_service.list_tasks(size=200)
     except PikPakError as exc:
@@ -494,7 +529,7 @@ async def archive_once() -> int:
             if not _safe_code(row.code):
                 continue
             try:
-                target_path = await _resolve_archive_path(row.code)
+                target_path = await _resolve_archive_path(row)
                 target_id = await pikpak_service.folder_id(target_path)
                 if not target_id:
                     continue
@@ -514,14 +549,12 @@ async def archive_once() -> int:
             await session.commit()
             # Newly-archived codes change which codes count as "present".
             try:
-                from .pikpak_presence import presence_index  # avoid cycle
                 from . import missing as missing_svc  # avoid cycle
-                presence_index.invalidate()
-                missing_svc.invalidate_result_caches()
+                await missing_svc.invalidate_all_caches_async(presence=True)
             except Exception:  # noqa: BLE001
                 pass
             for msg in notifications:
-                asyncio.create_task(send_webhook(msg))
+                webhook_queue.enqueue_nowait(msg)
 
     state.archived_total += moved
     return moved

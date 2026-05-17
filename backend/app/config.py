@@ -11,6 +11,20 @@ class Settings(BaseSettings):
     pikpak_password: str = ""
     pikpak_download_folder: str = "AVBT"
 
+    # Where the backend tells PikPak to drop newly-submitted offline
+    # tasks. Defaults to ``<pikpak_download_folder>/TASK`` so finished
+    # BT noise (kfa55.com@..., 第一會所新片@... wrappers) is corralled
+    # in a parking area instead of polluting the AVBT root. Sweep walks
+    # just this folder, so it doesn't need a kind-dir skip list. Set
+    # blank to revert to legacy behaviour (downloads land in AVBT root).
+    pikpak_task_folder: str = "AVBT/TASK"
+    # When True, sweep also walks the AVBT root once per cycle so
+    # magnets submitted via the PikPak App/web (which bypass the
+    # backend and ignore pikpak_task_folder) still get tidied. Off by
+    # default — leave off if you only ever submit downloads from this
+    # site.
+    pikpak_sweep_fallback_root: bool = False
+
     # Auto-archiver: every N seconds, scan PikPak completed offline tasks
     # and move their files to <archive_folder>/<code>/.
     archive_enabled: bool = True
@@ -19,6 +33,14 @@ class Settings(BaseSettings):
     # tracked match still land here.
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
+
+    # Auto-sweep: in addition to the OfflineTaskLog-driven archive pass,
+    # periodically scan the AVBT root for orphans dropped there outside
+    # the backend (PikPak App / web manual adds, magnets handed straight
+    # to PikPak, leftovers from past tools) and route them into the
+    # kind/name hierarchy too. Reuses the reorganize phase-1 logic.
+    archive_sweep_root_enabled: bool = True
+    archive_sweep_interval_seconds: int = 300
 
     # PikPak presence index + missing-codes feature
     presence_ttl_seconds: int = 300            # cache lifetime
@@ -85,3 +107,13 @@ def kind_base_path(kind: str) -> str:
 def all_kind_paths() -> list[tuple[str, str]]:
     """[(kind, path), ...] for every tracked kind."""
     return [(k, kind_base_path(k)) for k in _TRACKED_KINDS]
+
+
+def task_folder_path() -> str:
+    """Where new offline-download tasks land. Falls back to the legacy
+    download folder when ``pikpak_task_folder`` is blank (back-compat
+    for installs that downloaded directly into AVBT root)."""
+    explicit = (settings.pikpak_task_folder or "").strip().strip("/")
+    if explicit:
+        return explicit
+    return (settings.pikpak_download_folder or "AVBT").strip().strip("/")

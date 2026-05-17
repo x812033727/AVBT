@@ -205,6 +205,15 @@ export type ArchiverStatus = {
   last_run: string | null;
   archived_total: number;
   last_error: string;
+  // Root-sweep tidy-up (orphans not in OfflineTaskLog).
+  sweep_enabled: boolean;
+  sweep_interval_seconds: number;
+  last_sweep_at: string | null;
+  last_sweep_moved: number;
+  last_sweep_error: string;
+  sweep_swept_total: number;
+  task_folder: string;
+  sweep_fallback_root: boolean;
 };
 
 export type HistoryItem = {

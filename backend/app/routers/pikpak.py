@@ -370,6 +370,15 @@ async def archiver_run_now():
     return {"moved": moved, **archiver.state.to_dict()}
 
 
+@router.post("/archiver/sweep")
+async def archiver_sweep_now():
+    """Force an AVBT-root sweep regardless of the cooldown — picks up
+    files that were dropped into the root outside the OfflineTaskLog
+    flow (PikPak App / web manual adds) and routes them to kind/name."""
+    moved = await archiver._sweep_root_once()
+    return {"moved": moved, **archiver.state.to_dict()}
+
+
 @router.post("/archiver/toggle")
 async def archiver_toggle(enabled: bool = Body(..., embed=True)):
     archiver.state.enabled = enabled

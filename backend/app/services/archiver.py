@@ -98,7 +98,16 @@ async def _resolve_archive_path(code: str) -> str:
             row = await session.get(TrackedListing, (kind, slug))
             if row is None:
                 continue
-            safe = _safe_name(name, fallback=_safe_name(slug, fallback="unknown"))
+            # Prefer the tracked-listing row's stored name over whatever
+            # JavBus returned on this fetch — JavBus markup / template /
+            # language can shift slightly (spacing, half/full-width
+            # punctuation) and yields differently-spelled folder names
+            # for the same listing on consecutive runs. The row.name was
+            # user-confirmed at tracking time and is the stable choice.
+            safe = _safe_name(
+                row.name or name,
+                fallback=_safe_name(name, fallback=_safe_name(slug, fallback="unknown")),
+            )
             # kind_base_path() returns AVBT/<chinese kind label> by default
             # (matching the archiver's natural-language layout) and honours
             # per-kind env overrides like PIKPAK_SERIES_FOLDER.

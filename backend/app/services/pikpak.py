@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -36,6 +37,33 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
         if candidate not in taken:
             return candidate
         n += 1
+
+
+# Strip suffixes that mark a file as a re-download of the SAME content
+# (PikPak's "(2)/(3)" disambiguator, or quality tags). CD1/CD2/A/B/-1/-2
+# survive untouched because they mark *different* content (parts).
+_DUP_SUFFIX_RE = re.compile(
+    r"\s*(?:\(\d+\)|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P|高清|超清)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _canonical_video_name(name: str) -> str:
+    """Return ``name`` with extension + resolution / dup suffixes stripped,
+    upper-cased. Files whose canonical form matches are treated as the
+    same content (only the largest survives a flatten); files whose
+    canonical form differs are treated as parts (all survive)."""
+    stem = name
+    # Strip extension once.
+    m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
+    if m:
+        stem = stem[: m.start()]
+    # Repeatedly strip dup suffixes (e.g. "name (2) HD" → "name").
+    prev = None
+    while prev != stem:
+        prev = stem
+        stem = _DUP_SUFFIX_RE.sub("", stem).strip()
+    return stem.upper()
 
 
 logger = logging.getLogger(__name__)
@@ -589,27 +617,62 @@ class PikPakService:
                 # Walk up to two levels deep so flatten still works for
                 # the common BT shape ``300MIUM-1098/Sample/...`` (one
                 # main video at the top, junk subfolder beside it).
-                main_videos, total_main_count = await self._collect_main_videos(
+                main_videos, _total_main_count = await self._collect_main_videos(
                     child.id, JUNK_BYTES, max_depth=2
                 )
 
-                if total_main_count == 1:
-                    # Flatten: pull the one real video out, trash
-                    # everything else inside the wrapper (junk subfolders
-                    # included — PikPak's trash is recoverable).
-                    video = main_videos[0]
-                    target = f"{code_full}{ext_of(video.name)}"
-                    if target != child.name:
-                        target = _uniquify_target(target, taken)
+                if main_videos:
+                    # Group by canonical name. Files whose canonical
+                    # form matches are resolution duplicates (only the
+                    # largest survives). Files with different canonical
+                    # forms are parts (CD1/CD2, A/B, -1/-2) — all kept.
+                    groups: dict[str, list[PikPakFile]] = {}
+                    for v in main_videos:
+                        groups.setdefault(
+                            _canonical_video_name(v.name), []
+                        ).append(v)
+                    keepers: list[tuple[str, PikPakFile]] = []
+                    dropped_count = 0
+                    for canon, vids in groups.items():
+                        vids.sort(key=lambda v: v.size or 0, reverse=True)
+                        keepers.append((canon, vids[0]))
+                        dropped_count += len(vids) - 1
+
+                    moved: list[str] = []
+                    for canon, video in keepers:
+                        if len(keepers) == 1:
+                            # Single keeper — name after the wrapper code.
+                            target = f"{code_full}{ext_of(video.name)}"
+                        else:
+                            # Multi-part — keep the canonical form so
+                            # CD1/CD2/etc. distinction survives.
+                            target = f"{canon}{ext_of(video.name)}"
+                        if target != child.name:
+                            target = _uniquify_target(target, taken)
+                        if not dry_run:
+                            if video.name != target:
+                                await self.rename_file(video.id, target)
+                            await self.move_files([video.id], folder_id)
+                        taken.add(target)
+                        moved.append(target)
+
                     if not dry_run:
-                        if video.name != target:
-                            await self.rename_file(video.id, target)
-                        await self.move_files([video.id], folder_id)
+                        # Wrapper trash takes leftover junk + the
+                        # smaller resolution duplicates with it.
                         await self.trash_files([child.id])
                     taken.discard(child.name)
-                    taken.add(target)
                     summary["flattened"] += 1
-                    yield {**base_event, "action": "flatten", "target": target, "reason": None}
+                    reason_bits: list[str] = []
+                    if len(keepers) > 1:
+                        reason_bits.append(f"分集 {len(keepers)} 部")
+                    if dropped_count:
+                        reason_bits.append(f"丟掉 {dropped_count} 個低解析重複")
+                    yield {
+                        **base_event,
+                        "action": "flatten",
+                        "target": " / ".join(moved),
+                        "reason": "・".join(reason_bits) or None,
+                    }
                     continue
 
                 # Mixed / weird contents: rename the wrapper, then

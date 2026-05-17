@@ -349,7 +349,9 @@ def _parse_listing_title(html: str) -> str:
 
 
 async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) -> str:
-    """Return the page title (e.g. 'SODクリエイト') for /{kind}/{slug}."""
+    """Return the page title (e.g. 'SODクリエイト') for /{kind}/{slug}.
+    Strips JavBus' '- <kind> - 影片' template suffix so the result is
+    suitable for use as a folder name."""
     if kind not in LISTING_KINDS:
         return ""
     slug = slug.strip()
@@ -361,7 +363,8 @@ async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) ->
             html = await _fetch(cli, url)
             if not html:
                 return ""
-        return _parse_listing_title(html)
+        from ..services.jav_code import clean_listing_name  # avoid cycle
+        return clean_listing_name(_parse_listing_title(html))
     except Exception:
         return ""
 

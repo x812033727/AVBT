@@ -84,6 +84,29 @@ async def init_db() -> None:
     except Exception:
         pass
 
+    # Strip JavBus' "- <kind> - 影片" suffix from any tracked listing
+    # names that were captured before clean_listing_name existed.
+    try:
+        from .services.jav_code import clean_listing_name  # local: avoid cycles
+
+        async with engine.begin() as conn:
+            rows = (
+                await conn.exec_driver_sql(
+                    "SELECT kind, id, name FROM tracked_listing "
+                    "WHERE name IS NOT NULL AND name != ''"
+                )
+            ).all()
+            for kind, slug, name in rows:
+                cleaned = clean_listing_name(name)
+                if cleaned and cleaned != name:
+                    await conn.exec_driver_sql(
+                        "UPDATE tracked_listing SET name = ? "
+                        "WHERE kind = ? AND id = ?",
+                        (cleaned, kind, slug),
+                    )
+    except Exception:
+        pass
+
 
 async def get_session() -> AsyncSession:
     async with SessionLocal() as session:

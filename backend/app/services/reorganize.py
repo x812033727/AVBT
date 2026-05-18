@@ -42,14 +42,13 @@ from ..config import (
 )
 from ..database import SessionLocal
 from ..models import TrackedListing
-from .archiver import _resolve_archive_path, _safe_code, _safe_name
+from .archiver import _resolve_archive_path_by_code, _safe_code, _safe_name
 from .jav_code import KIND_LABELS_CH, ext_of, extract_jav_code, is_video
 from .pikpak import (
     _build_video_rename_plan,
     _uniquify_target,
     pikpak_service,
 )
-from .pikpak_presence import presence_index
 
 
 logger = logging.getLogger(__name__)
@@ -176,7 +175,7 @@ async def _phase1_migrate_from(
             continue
 
         try:
-            target_path = await _resolve_archive_path(code)
+            target_path = await _resolve_archive_path_by_code(code)
         except Exception as exc:  # noqa: BLE001
             yield {**base, "action": "error", "target": None,
                    "reason": f"resolve_failed: {exc}"}
@@ -876,10 +875,9 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
         ) > 0
     )
     if mutated:
-        presence_index.invalidate()
         try:
             from . import missing as missing_svc  # avoid cycle
-            missing_svc.invalidate_result_caches()
+            await missing_svc.invalidate_all_caches_async(presence=True)
         except Exception:  # noqa: BLE001
             pass
         pikpak_service._folder_cache.clear()

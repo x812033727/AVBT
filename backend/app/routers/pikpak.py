@@ -311,8 +311,9 @@ async def presence_refresh():
     await presence_index.rebuild(force=True)
     # The presence set changed (or may have); drop the cached
     # missing-summary so the /tracked badges reflect the rebuild.
+    # presence=False because rebuild() already replaced the index.
     from ..services import missing as missing_svc
-    missing_svc.invalidate_result_caches()
+    missing_svc.invalidate_all_caches()
     return PresenceStatus(**presence_index.status())
 
 
@@ -324,7 +325,7 @@ async def presence_detail(refresh: bool = False):
     if refresh:
         await presence_index.rebuild(force=True)
         from ..services import missing as missing_svc
-        missing_svc.invalidate_result_caches()
+        missing_svc.invalidate_all_caches()
     elif presence_index.status().get("built_at") is None:
         await presence_index.get()
     return PresenceDetail(**presence_index.detail())

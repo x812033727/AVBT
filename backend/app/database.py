@@ -36,6 +36,20 @@ async def init_db() -> None:
             "ALTER TABLE offline_task_log ADD COLUMN archived_at DATETIME",
             "ALTER TABLE offline_task_log ADD COLUMN btih VARCHAR(64) DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS ix_offline_task_log_btih ON offline_task_log(btih)",
+            # Speeds up the archive_once "pending unarchived" lookup +
+            # the new idle-skip count peek.
+            "CREATE INDEX IF NOT EXISTS ix_offline_task_log_archived ON offline_task_log(archived, file_id)",
+            # Supports the periodic prune-old-archived sweep.
+            "CREATE INDEX IF NOT EXISTS ix_offline_task_log_archived_at ON offline_task_log(archived, archived_at)",
+            # Snapshot of the tracked listing at enqueue time so the
+            # archiver can skip a JavBus fetch_detail for codes that
+            # originated from the tracker.
+            "ALTER TABLE offline_task_log ADD COLUMN tracked_kind VARCHAR(16) DEFAULT ''",
+            "ALTER TABLE offline_task_log ADD COLUMN tracked_slug VARCHAR(64) DEFAULT ''",
+            "ALTER TABLE offline_task_log ADD COLUMN tracked_name VARCHAR(128) DEFAULT ''",
+            # Adaptive full-catalog scan counters for tracker auto-send.
+            "ALTER TABLE tracked_listing ADD COLUMN quiet_ticks INTEGER DEFAULT 0",
+            "ALTER TABLE tracked_listing ADD COLUMN last_full_scan_at DATETIME",
         ):
             try:
                 await conn.exec_driver_sql(ddl)

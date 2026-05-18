@@ -40,6 +40,8 @@ class TrackedListing(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     new_count: Mapped[int] = mapped_column(Integer, default=0)
+    quiet_ticks: Mapped[int] = mapped_column(Integer, default=0)
+    last_full_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -74,4 +76,11 @@ class OfflineTaskLog(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Snapshot of the tracked listing this code belonged to at enqueue
+    # time. Lets the archiver pick the right kind/name folder without
+    # re-fetching JavBus. Empty for manual submits — those fall back to
+    # the JavBus-driven path in _resolve_archive_path.
+    tracked_kind: Mapped[str] = mapped_column(String(16), default="")
+    tracked_slug: Mapped[str] = mapped_column(String(64), default="")
+    tracked_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -95,6 +95,12 @@ class Job:
     direct_magnet: str = ""
     force: bool = False
     folder: Optional[str] = None
+    # Snapshot of the tracked listing context at enqueue time. When all
+    # three are populated, the archiver can route this code to the
+    # right kind/name folder without a JavBus fetch_detail call.
+    tracked_kind: str = ""
+    tracked_slug: str = ""
+    tracked_name: str = ""
     on_sent: Optional[Callable[[str], Awaitable[None]]] = None
     enqueued_at: datetime = field(default_factory=datetime.utcnow)
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
@@ -339,6 +345,9 @@ class DownloadQueue:
             name=task.name,
             phase=task.phase,
             message=task.message or "",
+            tracked_kind=job.tracked_kind,
+            tracked_slug=job.tracked_slug,
+            tracked_name=job.tracked_name,
         )
 
         if job.on_sent is not None:
@@ -399,6 +408,9 @@ class DownloadQueue:
             name=task.name,
             phase=task.phase,
             message=task.message or "",
+            tracked_kind=job.tracked_kind,
+            tracked_slug=job.tracked_slug,
+            tracked_name=job.tracked_name,
         )
 
         if job.on_sent is not None:
@@ -438,6 +450,9 @@ async def _log_offline_task(
     name: str,
     phase: str,
     message: str,
+    tracked_kind: str = "",
+    tracked_slug: str = "",
+    tracked_name: str = "",
 ) -> None:
     async with SessionLocal() as session:
         await session.execute(
@@ -450,6 +465,9 @@ async def _log_offline_task(
                 name=name,
                 phase=phase,
                 message=message,
+                tracked_kind=tracked_kind,
+                tracked_slug=tracked_slug,
+                tracked_name=tracked_name,
             )
         )
         await session.commit()

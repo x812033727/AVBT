@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     archive_sweep_root_enabled: bool = True
     archive_sweep_interval_seconds: int = 300
 
+    # Auto-promote parked codes: walk ``pikpak_archive_folder`` (the
+    # fallback bucket; default ``AVBT/已完成``) and migrate codes that
+    # *now* match a tracked listing into the kind/name structure. Lets
+    # the user add a star/series to tracking after the file already
+    # landed in the fallback bucket, and have it reclassified
+    # automatically instead of needing to click "整理 PikPak 資料夾".
+    archive_sweep_legacy_enabled: bool = True
+
     # PikPak presence index + missing-codes feature
     presence_ttl_seconds: int = 300            # cache lifetime
     missing_listing_cache_seconds: int = 3600  # JavBus listing cache
@@ -75,6 +83,25 @@ class Settings(BaseSettings):
     # PikPak's rate limits. 5 is a safe default; bump to 8 for bursty
     # backlog catch-up.
     download_queue_concurrency: int = 5
+
+    # Tracker per-tick concurrency. JavBus outbound HTTP is already
+    # serialised by the 1.2 s global throttle in scrapers/javbus.py, so
+    # this only bounds DB sessions + CPU-side parsing — tune up to keep
+    # SQLite from contention, down if you see lock-busy spam.
+    tracker_check_concurrency: int = 8
+
+    # Adaptive full-catalog scan: skip the per-listing JavBus walk in
+    # _enqueue_auto_send when the listing has been quiet for this many
+    # consecutive tracker ticks. Forces a full scan every
+    # ``tracker_quiet_skip_every`` ticks regardless so a backfilled
+    # earlier code can't slip past forever.
+    tracker_quiet_skip_threshold: int = 6
+    tracker_quiet_skip_every: int = 12
+
+    # Auto-prune offline_task_log: rows where archived=True and
+    # archived_at < cutoff get deleted by services/log_cleanup.run_loop.
+    # 0 disables pruning entirely.
+    offline_log_retention_days: int = 90
 
     http_proxy: str = ""
 

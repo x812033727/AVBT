@@ -100,6 +100,27 @@ def invalidate_result_caches() -> None:
     _all_result = None
 
 
+def invalidate_all_caches(*, presence: bool = False) -> None:
+    """One-stop invalidation for callers that touched both PikPak state
+    and the aggregate views. Always drops the missing aggregate caches;
+    pass ``presence=True`` when the PikPak file set has materially
+    changed (e.g. archiver moved files, sweep migrated orphans)."""
+    invalidate_result_caches()
+    if presence:
+        presence_index.invalidate()
+
+
+async def invalidate_all_caches_async(*, presence: bool = False) -> None:
+    """Lock-coordinated variant used by background tasks. Takes the
+    summary lock so an in-flight ``missing_summary`` rebuild cannot see
+    half-invalidated state — it either reads the pre-invalidation cache
+    or rebuilds against the post-invalidation snapshot."""
+    async with _summary_lock:
+        invalidate_result_caches()
+        if presence:
+            presence_index.invalidate()
+
+
 async def _ownership_map(
     rows: list[TrackedListing],
 ) -> dict[str, tuple[str, str]]:

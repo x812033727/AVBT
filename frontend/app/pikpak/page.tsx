@@ -112,6 +112,23 @@ export default function PikpakPage() {
     }
   }
 
+  async function sweepLegacyNow() {
+    try {
+      const a = await api.post<ArchiverStatus & { moved: number }>(
+        "/api/pikpak/archiver/sweep-legacy"
+      );
+      setArchiver(a);
+      if (a.moved) {
+        toast.success(`已重新分類 ${a.moved} 個`);
+        loadTasks();
+      } else {
+        toast.info(`${archiver?.archive_folder ?? "已完成"} 沒有可重新分類的項目`);
+      }
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
   const failedCount = useMemo(
     () =>
       tasks.filter(
@@ -356,6 +373,13 @@ export default function PikpakPage() {
             title={`掃描 ${archiver.task_folder}/ 把已下載完的搬到對應的 系列/女優/... 資料夾`}
           >
             掃描 TASK 並搬移
+          </button>
+          <button
+            className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-amber-200 hover:bg-amber-500/20"
+            onClick={sweepLegacyNow}
+            title={`重新評估 ${archiver.archive_folder}/ 內的番號,把新追蹤到的搬到對應分類資料夾`}
+          >
+            重新評估 已完成
           </button>
           <button className="text-blue-300 hover:underline" onClick={runArchiverNow}>
             立即歸檔

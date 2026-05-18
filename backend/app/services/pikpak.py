@@ -262,6 +262,30 @@ class PikPakError(RuntimeError):
 TOKEN_FILE = Path("data/pikpak_token.txt")
 
 
+# Substrings that mark "your refresh token got rotated by another session"
+# in PikPak's server response. The exact message has shifted over time so
+# we match on stable fragments: the literal "refresh" + "redis" pair only
+# appears on this specific class of error.
+_INVALID_TOKEN_MARKERS = (
+    "invalid refresh token",
+    "refreshed by other process",
+    "invalid_grant",
+    "captcha_invalid",
+    "token has been disabled",
+)
+
+
+def _is_invalid_token_error(exc: BaseException) -> bool:
+    """True when PikPak's server told us our refresh token is no longer
+    valid — usually because the same account refreshed elsewhere (phone
+    app, another container, manual login). Recovery is to drop the
+    cached client + stored token and re-login from env credentials."""
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(m in msg for m in _INVALID_TOKEN_MARKERS)
+
+
 class PikPakService:
     def __init__(self) -> None:
         self._client: Optional[PikPakApi] = None
@@ -389,6 +413,38 @@ class PikPakService:
             self._folder_cache.clear()
             return self._client
 
+    async def _drop_for_relogin(self, current: Optional[PikPakApi]) -> None:
+        """Forget the cached client + stored token so the next ``_ensure``
+        forces a fresh login from env credentials. Only acts when the
+        passed-in client is still the one we have cached — protects
+        against double-recovery when several callers race on the same
+        invalidation."""
+        async with self._lock:
+            if current is None or self._client is current:
+                self._client = None
+                self._clear_token()
+                self._folder_cache.clear()
+
+    async def _call(self, op):
+        """Run ``await op(client)`` with one auto-retry when PikPak's
+        server says our refresh token has been invalidated by another
+        session. Concurrent callers all converge on a single re-login
+        through ``_ensure``'s lock, so the retry doesn't fan out into
+        N parallel logins."""
+        client = await self._ensure()
+        try:
+            return await op(client)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_invalid_token_error(exc):
+                raise
+            logger.warning(
+                "PikPak refresh token invalidated by another session "
+                "(%s); re-logging in", exc,
+            )
+            await self._drop_for_relogin(client)
+            client = await self._ensure()
+            return await op(client)
+
     async def login(
         self, username: Optional[str] = None, password: Optional[str] = None
     ) -> dict:
@@ -434,8 +490,7 @@ class PikPakService:
         return self._load_token() or ""
 
     async def quota(self) -> PikPakQuota:
-        client = await self._ensure()
-        data = await client.get_quota_info()
+        data = await self._call(lambda c: c.get_quota_info())
         quota = data.get("quota", data) if isinstance(data, dict) else {}
         return PikPakQuota(
             used=int(quota.get("usage") or quota.get("used") or 0),
@@ -448,9 +503,8 @@ class PikPakService:
             return ""
         if name in self._folder_cache:
             return self._folder_cache[name]
-        client = await self._ensure()
         path = name if name.startswith("/") else f"/{name}"
-        folder_id = await client.path_to_id(path, create=True)
+        folder_id = await self._call(lambda c: c.path_to_id(path, create=True))
         # path_to_id returns a list of path-segments in newer versions
         if isinstance(folder_id, list) and folder_id:
             folder_id = folder_id[-1].get("id", "")
@@ -464,10 +518,9 @@ class PikPakService:
             return ""
         if name in self._folder_cache:
             return self._folder_cache[name]
-        client = await self._ensure()
         path = name if name.startswith("/") else f"/{name}"
         try:
-            result = await client.path_to_id(path, create=False)
+            result = await self._call(lambda c: c.path_to_id(path, create=False))
         except Exception:  # noqa: BLE001
             return ""
         if isinstance(result, list):
@@ -479,12 +532,13 @@ class PikPakService:
         return folder_id or ""
 
     async def offline_download(self, payload: OfflineSubmit) -> PikPakTask:
-        client = await self._ensure()
         # Default to the dedicated task folder (AVBT/TASK) instead of the
         # download root — keeps BT-noise wrappers from polluting AVBT/.
         folder = payload.folder or task_folder_path()
         parent_id = await self.folder_id(folder)
-        resp = await client.offline_download(payload.magnet, parent_id=parent_id or None)
+        resp = await self._call(
+            lambda c: c.offline_download(payload.magnet, parent_id=parent_id or None)
+        )
         task = resp.get("task") if isinstance(resp, dict) else None
         task = task or (resp if isinstance(resp, dict) else {})
         return PikPakTask(
@@ -499,8 +553,7 @@ class PikPakService:
         )
 
     async def list_tasks(self, size: int = 100) -> list[PikPakTask]:
-        client = await self._ensure()
-        resp = await client.offline_list(size=size)
+        resp = await self._call(lambda c: c.offline_list(size=size))
         tasks_raw = resp.get("tasks", []) if isinstance(resp, dict) else []
         tasks: list[PikPakTask] = []
         for t in tasks_raw:
@@ -519,16 +572,17 @@ class PikPakService:
         return tasks
 
     async def retry_task(self, task_id: str) -> dict:
-        client = await self._ensure()
-        return await client.offline_task_retry(task_id)
+        return await self._call(lambda c: c.offline_task_retry(task_id))
 
     async def delete_tasks(self, task_ids: list[str], delete_files: bool = False) -> dict:
-        client = await self._ensure()
-        return await client.delete_tasks(task_ids, delete_files=delete_files)
+        return await self._call(
+            lambda c: c.delete_tasks(task_ids, delete_files=delete_files)
+        )
 
     async def list_files(self, parent_id: str = "", size: int = 100) -> list[PikPakFile]:
-        client = await self._ensure()
-        resp = await client.file_list(parent_id=parent_id, size=size)
+        resp = await self._call(
+            lambda c: c.file_list(parent_id=parent_id, size=size)
+        )
         files_raw = resp.get("files", []) if isinstance(resp, dict) else []
         return [self._file_from_raw(f) for f in files_raw]
 
@@ -554,15 +608,16 @@ class PikPakService:
         - the installed pikpakapi doesn't expose ``next_page_token`` so we
           fell back to a single page.
         """
-        client = await self._ensure()
         files: list[PikPakFile] = []
         token = ""
         size = 500
 
         try:
             while True:
-                resp = await client.file_list(
-                    parent_id=parent_id, size=size, next_page_token=token
+                resp = await self._call(
+                    lambda c, t=token: c.file_list(
+                        parent_id=parent_id, size=size, next_page_token=t
+                    )
                 )
                 if not isinstance(resp, dict):
                     break
@@ -576,7 +631,9 @@ class PikPakService:
                     break
         except TypeError:
             # Older pikpakapi: file_list doesn't accept next_page_token.
-            resp = await client.file_list(parent_id=parent_id, size=size)
+            resp = await self._call(
+                lambda c: c.file_list(parent_id=parent_id, size=size)
+            )
             if isinstance(resp, dict):
                 for f in resp.get("files", []) or []:
                     files.append(self._file_from_raw(f))
@@ -586,16 +643,13 @@ class PikPakService:
         return files, False
 
     async def trash_files(self, ids: list[str]) -> dict:
-        client = await self._ensure()
-        return await client.delete_to_trash(ids)
+        return await self._call(lambda c: c.delete_to_trash(ids))
 
     async def move_files(self, ids: list[str], to_parent_id: str) -> dict:
-        client = await self._ensure()
-        return await client.file_batch_move(ids, to_parent_id)
+        return await self._call(lambda c: c.file_batch_move(ids, to_parent_id))
 
     async def rename_file(self, file_id: str, new_name: str) -> dict:
-        client = await self._ensure()
-        return await client.file_rename(file_id, new_name)
+        return await self._call(lambda c: c.file_rename(file_id, new_name))
 
     async def file_links(self, file_id: str) -> dict:
         """Return ``{download_url, play_url, mime_type}`` for a single file.
@@ -605,8 +659,7 @@ class PikPakService:
         - ``play_url`` is the high-speed streaming link from ``medias[0].link``
           (falls back to ``download_url`` if PikPak didn't surface one).
         """
-        client = await self._ensure()
-        resp = await client.get_download_url(file_id)
+        resp = await self._call(lambda c: c.get_download_url(file_id))
         if not isinstance(resp, dict):
             url = str(resp or "")
             return {"download_url": url, "play_url": url, "mime_type": ""}
@@ -632,14 +685,19 @@ class PikPakService:
         return (await self.file_links(file_id))["download_url"]
 
     async def search_files(self, keyword: str, parent_id: str = "") -> list[PikPakFile]:
-        client = await self._ensure()
         # PikPakAPI exposes file_list_search or similar; fall back to a
         # client-side filter if not available in the installed version.
-        if hasattr(client, "file_search"):
-            resp = await client.file_search(keyword, parent_id=parent_id)
+        client = await self._ensure()
+        has_search = hasattr(client, "file_search")
+        if has_search:
+            resp = await self._call(
+                lambda c: c.file_search(keyword, parent_id=parent_id)
+            )
             files_raw = resp.get("files", []) if isinstance(resp, dict) else []
         else:
-            resp = await client.file_list(parent_id=parent_id, size=500)
+            resp = await self._call(
+                lambda c: c.file_list(parent_id=parent_id, size=500)
+            )
             all_files = resp.get("files", []) if isinstance(resp, dict) else []
             kw = keyword.lower()
             files_raw = [f for f in all_files if kw in (f.get("name") or "").lower()]
@@ -666,10 +724,12 @@ class PikPakService:
         client = await self._ensure()
         if not hasattr(client, "file_batch_share"):
             raise PikPakError("此版本 PikPakAPI 不支援建立分享連結")
-        resp = await client.file_batch_share(
-            file_ids,
-            need_password=need_password,
-            expiration_days=expiration_days,
+        resp = await self._call(
+            lambda c: c.file_batch_share(
+                file_ids,
+                need_password=need_password,
+                expiration_days=expiration_days,
+            )
         )
         if not isinstance(resp, dict):
             resp = {"raw": resp}

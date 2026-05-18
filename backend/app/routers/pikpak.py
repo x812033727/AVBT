@@ -376,6 +376,20 @@ async def archiver_sweep_now(cleanup_all: bool = True):
     return {"moved": moved, **archiver.state.to_dict()}
 
 
+@router.post("/archiver/sweep-legacy")
+async def archiver_sweep_legacy_now():
+    """Force a re-evaluation of every code parked in ``pikpak_archive_
+    folder`` (default ``AVBT/已完成``). Items whose series / star /
+    director / label / studio is now tracked get promoted into the
+    proper kind/name folder; everything else stays put.
+
+    Bypasses the ``archive_sweep_interval_seconds`` cooldown so the
+    user can trigger it immediately after adding new tracked listings
+    without waiting for the background loop's next cycle."""
+    moved = await archiver._sweep_legacy_archive_once()
+    return {"moved": moved, **archiver.state.to_dict()}
+
+
 @router.post("/archiver/toggle")
 async def archiver_toggle(enabled: bool = Body(..., embed=True)):
     archiver.state.enabled = enabled

@@ -42,7 +42,7 @@ from ..config import (
 )
 from ..database import SessionLocal
 from ..models import TrackedListing
-from .archiver import _resolve_archive_path, _safe_code, _safe_name
+from .archiver import _resolve_archive_path_by_code, _safe_code, _safe_name
 from .jav_code import KIND_LABELS_CH, ext_of, extract_jav_code, is_video
 from .pikpak import (
     _build_video_rename_plan,
@@ -175,7 +175,7 @@ async def _phase1_migrate_from(
             continue
 
         try:
-            target_path = await _resolve_archive_path(code)
+            target_path = await _resolve_archive_path_by_code(code)
         except Exception as exc:  # noqa: BLE001
             yield {**base, "action": "error", "target": None,
                    "reason": f"resolve_failed: {exc}"}

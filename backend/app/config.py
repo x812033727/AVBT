@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     archive_sweep_root_enabled: bool = True
     archive_sweep_interval_seconds: int = 300
 
+    # Auto-promote parked codes: walk ``pikpak_archive_folder`` (the
+    # fallback bucket; default ``AVBT/已完成``) and migrate codes that
+    # *now* match a tracked listing into the kind/name structure. Lets
+    # the user add a star/series to tracking after the file already
+    # landed in the fallback bucket, and have it reclassified
+    # automatically instead of needing to click "整理 PikPak 資料夾".
+    archive_sweep_legacy_enabled: bool = True
+
     # PikPak presence index + missing-codes feature
     presence_ttl_seconds: int = 300            # cache lifetime
     missing_listing_cache_seconds: int = 3600  # JavBus listing cache

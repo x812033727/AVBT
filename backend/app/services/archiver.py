@@ -69,31 +69,16 @@ def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
     return out
 
 
-async def _resolve_archive_path(row: OfflineTaskLog) -> str:
-    """Pick the destination folder for ``row.code`` based on the
-    tracked-listing snapshot we captured at enqueue time, falling back
-    to a JavBus fetch_detail when that snapshot is empty (manual
-    submits, rows that predate the tracked_* columns).
+async def _resolve_archive_path_by_code(code: str) -> str:
+    """JavBus-driven path resolution. Walks fetch_detail → TrackedListing
+    membership in ``_KIND_PRIORITY`` order. Returns the fallback path
+    when JavBus fails or no kind matches a tracked listing.
 
-    The snapshot path is the fast majority case — tracker auto-send,
-    bulk send-all, anything originating from a TrackedListing — and
-    skips an external HTTP call per archive. Manual ``/api/pikpak/
-    offline`` submissions still hit JavBus to discover the right kind/
-    name pair."""
-    code = row.code
+    Used by reorganize (no OfflineTaskLog row context at all) and by
+    ``_resolve_archive_path`` when the row's tracked_* snapshot is empty
+    (manual submits, rows that predate the snapshot columns)."""
     safe_code = _safe_code(code)
     fallback = f"{settings.pikpak_archive_folder}/{safe_code}"
-
-    # Fast path: enqueue-time snapshot wins. Skips JavBus entirely.
-    snap_kind = (row.tracked_kind or "").strip()
-    snap_slug = (row.tracked_slug or "").strip()
-    snap_name = (row.tracked_name or "").strip()
-    if snap_kind and snap_slug and snap_name:
-        safe = _safe_name(
-            snap_name,
-            fallback=_safe_name(snap_slug, fallback="unknown"),
-        )
-        return f"{kind_base_path(snap_kind)}/{safe}/{safe_code}"
 
     detail = _detail_cache.get(code)
     if detail is None:
@@ -135,6 +120,27 @@ async def _resolve_archive_path(row: OfflineTaskLog) -> str:
     return fallback
 
 
+async def _resolve_archive_path(row: OfflineTaskLog) -> str:
+    """Pick the destination folder for ``row.code``. Fast path: when
+    enqueue captured the tracked listing context, build the path
+    directly without an external HTTP call. Slow path: delegate to
+    ``_resolve_archive_path_by_code`` which hits JavBus."""
+    code = row.code
+    safe_code = _safe_code(code)
+
+    snap_kind = (row.tracked_kind or "").strip()
+    snap_slug = (row.tracked_slug or "").strip()
+    snap_name = (row.tracked_name or "").strip()
+    if snap_kind and snap_slug and snap_name:
+        safe = _safe_name(
+            snap_name,
+            fallback=_safe_name(snap_slug, fallback="unknown"),
+        )
+        return f"{kind_base_path(snap_kind)}/{safe}/{safe_code}"
+
+    return await _resolve_archive_path_by_code(code)
+
+
 class ArchiverState:
     def __init__(self) -> None:
         self.enabled: bool = settings.archive_enabled
@@ -160,6 +166,13 @@ class ArchiverState:
             "sweep_swept_total": _swept_total,
             "task_folder": task_folder_path(),
             "sweep_fallback_root": settings.pikpak_sweep_fallback_root,
+            "legacy_sweep_enabled": settings.archive_sweep_legacy_enabled,
+            "last_legacy_sweep_at": (
+                _last_legacy_sweep_at.isoformat() if _last_legacy_sweep_at else None
+            ),
+            "last_legacy_sweep_moved": _last_legacy_sweep_moved,
+            "last_legacy_sweep_error": _last_legacy_sweep_error,
+            "legacy_sweep_swept_total": _legacy_swept_total,
         }
 
 
@@ -174,6 +187,13 @@ _last_sweep_moved: int = 0
 _last_sweep_error: str = ""
 _swept_total: int = 0
 
+# Same idea, but for the legacy-archive (``AVBT/已完成``) sweep that
+# re-evaluates parked codes against the current TrackedListing set.
+_last_legacy_sweep_at: datetime | None = None
+_last_legacy_sweep_moved: int = 0
+_last_legacy_sweep_error: str = ""
+_legacy_swept_total: int = 0
+
 
 def _sweep_due() -> bool:
     """True when the AVBT-root sweep should run now (interval elapsed
@@ -184,6 +204,87 @@ def _sweep_due() -> bool:
         return True
     interval = max(60, settings.archive_sweep_interval_seconds)
     return (datetime.utcnow() - _last_sweep_at).total_seconds() >= interval
+
+
+def _legacy_sweep_due() -> bool:
+    """True when the legacy-archive sweep should run now. Shares the
+    root-sweep cadence so the user can think of both as "background
+    tidy" with one knob, but is independently disable-able."""
+    if not settings.archive_sweep_legacy_enabled:
+        return False
+    if _last_legacy_sweep_at is None:
+        return True
+    interval = max(60, settings.archive_sweep_interval_seconds)
+    return (datetime.utcnow() - _last_legacy_sweep_at).total_seconds() >= interval
+
+
+async def _sweep_legacy_archive_once() -> int:
+    """Walk ``AVBT/已完成`` and migrate codes that *now* match a tracked
+    listing. Reuses ``reorganize._phase1_migrate_from`` — same logic the
+    manual "整理 PikPak 資料夾" button uses for its Phase 1b, just gated
+    on a background cooldown so it runs automatically.
+
+    Returns the number of folders/files actually moved out. Items
+    without a tracked match stay parked (``_phase1_migrate_from`` skips
+    them with ``reason=no_tracked_match``).
+
+    Safe to call repeatedly: once a code is moved out, subsequent
+    sweeps won't see it again. New entries entering ``AVBT/已完成``
+    (from manual submits the user hasn't tracked yet) get picked up
+    automatically next time a matching listing is added."""
+    global _last_legacy_sweep_at, _last_legacy_sweep_moved
+    global _last_legacy_sweep_error, _legacy_swept_total
+
+    # Local import: reorganize already imports archiver at module load,
+    # so a top-level import here would cycle.
+    from .reorganize import _phase1_migrate_from
+
+    legacy_path = (
+        settings.pikpak_archive_folder or "AVBT/已完成"
+    ).strip().strip("/")
+    if not legacy_path:
+        return 0
+
+    moved = 0
+    sweep_error = ""
+
+    try:
+        async for ev in _phase1_migrate_from(
+            legacy_path, dry_run=False, idx_start=0
+        ):
+            ev_type = ev.get("type")
+            if ev_type == "_phase1_error":
+                sweep_error = sweep_error or ev.get("message", "")
+                continue
+            if ev_type != "progress":
+                continue
+            if ev.get("action") == "move":
+                moved += 1
+    except Exception as exc:  # noqa: BLE001
+        sweep_error = str(exc)
+        logger.warning("legacy sweep failed: %s", exc)
+    finally:
+        _last_legacy_sweep_at = datetime.utcnow()
+        _last_legacy_sweep_moved = moved
+        _last_legacy_sweep_error = sweep_error
+        _legacy_swept_total += moved
+
+    if moved:
+        logger.info(
+            "legacy sweep promoted %d code(s) from %s to kind/name",
+            moved, legacy_path,
+        )
+        try:
+            from . import missing as missing_svc  # avoid cycle
+            await missing_svc.invalidate_all_caches_async(presence=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pikpak_service._folder_cache.clear()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return moved
 
 
 async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
@@ -474,6 +575,16 @@ async def archive_once() -> int:
         except Exception as exc:  # noqa: BLE001
             state.last_error = f"sweep_root failed: {exc}"
             logger.warning("sweep_root failed: %s", exc)
+
+    # Re-evaluate parked codes in AVBT/已完成: if the user just started
+    # tracking the relevant series/star, promote them out of the fallback
+    # bucket into the proper kind/name folder. No-op when nothing matches.
+    if _legacy_sweep_due():
+        try:
+            await _sweep_legacy_archive_once()
+        except Exception as exc:  # noqa: BLE001
+            state.last_error = f"sweep_legacy failed: {exc}"
+            logger.warning("sweep_legacy failed: %s", exc)
 
     # Cheap DB peek: if nothing has been submitted-but-not-archived
     # since the last pass, skip the PikPak list_tasks round-trip

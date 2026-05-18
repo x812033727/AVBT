@@ -224,14 +224,23 @@ async def _sweep_legacy_archive_once() -> int:
     manual "整理 PikPak 資料夾" button uses for its Phase 1b, just gated
     on a background cooldown so it runs automatically.
 
+    After Phase 1, runs ``_cleanup_target_parents`` on the destination
+    folders so multipart files written in non-canonical form
+    (``ABC-001-1.mp4`` / ``ABC-001CD1.mp4`` etc.) get renamed to
+    ``ABC-001_1.mp4`` instead of colliding into ``ABC-001 (2).mp4``.
+
+    Deliberately does **not** call ``_flatten_swept_wrappers``: legacy
+    items often live inside wrapper folders the user has kept on
+    purpose, and the flattener picks one "winner" video and trashes
+    the rest — which would destroy real multipart episodes that
+    happen to share a wrapper.
+
     Returns the number of folders/files actually moved out. Items
     without a tracked match stay parked (``_phase1_migrate_from`` skips
     them with ``reason=no_tracked_match``).
 
     Safe to call repeatedly: once a code is moved out, subsequent
-    sweeps won't see it again. New entries entering ``AVBT/已完成``
-    (from manual submits the user hasn't tracked yet) get picked up
-    automatically next time a matching listing is added."""
+    sweeps won't see it again."""
     global _last_legacy_sweep_at, _last_legacy_sweep_moved
     global _last_legacy_sweep_error, _legacy_swept_total
 
@@ -247,6 +256,9 @@ async def _sweep_legacy_archive_once() -> int:
 
     moved = 0
     sweep_error = ""
+    # Distinct destination folders we touched — used to rerun multipart
+    # rename / lonely-variant strip via phase-2 cleanup.
+    target_parent_ids: set[str] = set()
 
     try:
         async for ev in _phase1_migrate_from(
@@ -260,6 +272,9 @@ async def _sweep_legacy_archive_once() -> int:
                 continue
             if ev.get("action") == "move":
                 moved += 1
+                pid = ev.get("target_parent_id")
+                if pid:
+                    target_parent_ids.add(pid)
     except Exception as exc:  # noqa: BLE001
         sweep_error = str(exc)
         logger.warning("legacy sweep failed: %s", exc)
@@ -268,6 +283,19 @@ async def _sweep_legacy_archive_once() -> int:
         _last_legacy_sweep_moved = moved
         _last_legacy_sweep_error = sweep_error
         _legacy_swept_total += moved
+
+    # Phase-2 cleanup: catches `ABC-001-1.mp4` / `ABC-001CD1.mp4` style
+    # multipart so they get unified into `ABC-001_1.mp4` form. Skips
+    # _flatten_swept_wrappers on purpose (see docstring).
+    if target_parent_ids:
+        try:
+            cleaned = await _cleanup_target_parents(target_parent_ids)
+            if cleaned:
+                logger.info(
+                    "legacy sweep cleaned %d target folder(s)", cleaned
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("legacy sweep cleanup failed: %s", exc)
 
     if moved:
         logger.info(

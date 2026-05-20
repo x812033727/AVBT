@@ -390,6 +390,22 @@ async def archiver_sweep_legacy_now():
     return {"moved": moved, **archiver.state.to_dict()}
 
 
+@router.post("/archiver/sweep-legacy/stream")
+async def archiver_sweep_legacy_stream():
+    """Streaming variant of ``/archiver/sweep-legacy``. Yields NDJSON
+    events (``start`` / ``progress`` / ``error`` / ``done``) so the UI
+    can show which file is being processed and surface API errors
+    instead of just stalling on a single hanging call."""
+    async def gen():
+        try:
+            async for event in archiver._sweep_legacy_archive_stream():
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
 @router.post("/archiver/toggle")
 async def archiver_toggle(enabled: bool = Body(..., embed=True)):
     archiver.state.enabled = enabled

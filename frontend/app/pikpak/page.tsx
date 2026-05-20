@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CleanupButton from "@/components/CleanupButton";
 import DownloadQueuePanel from "@/components/DownloadQueuePanel";
 import FolderStatsBar from "@/components/FolderStatsBar";
+import LegacySweepButton from "@/components/LegacySweepButton";
 import MoveModal from "@/components/MoveModal";
 import { confirmDialog, toast } from "@/components/Toast";
 import VideoPlayerModal from "@/components/VideoPlayerModal";
@@ -106,23 +107,6 @@ export default function PikpakPage() {
         loadTasks();
       } else {
         toast.info("TASK 沒有待搬移的項目");
-      }
-    } catch (e: any) {
-      toast.error(e.message);
-    }
-  }
-
-  async function sweepLegacyNow() {
-    try {
-      const a = await api.post<ArchiverStatus & { moved: number }>(
-        "/api/pikpak/archiver/sweep-legacy"
-      );
-      setArchiver(a);
-      if (a.moved) {
-        toast.success(`已重新分類 ${a.moved} 個`);
-        loadTasks();
-      } else {
-        toast.info(`${archiver?.archive_folder ?? "已完成"} 沒有可重新分類的項目`);
       }
     } catch (e: any) {
       toast.error(e.message);
@@ -374,13 +358,10 @@ export default function PikpakPage() {
           >
             掃描 TASK 並搬移
           </button>
-          <button
-            className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-amber-200 hover:bg-amber-500/20"
-            onClick={sweepLegacyNow}
-            title={`重新評估 ${archiver.archive_folder}/ 內的番號,把新追蹤到的搬到對應分類資料夾`}
-          >
-            重新評估 已完成
-          </button>
+          <LegacySweepButton
+            archiveFolder={archiver.archive_folder}
+            onDone={loadTasks}
+          />
           <button className="text-blue-300 hover:underline" onClick={runArchiverNow}>
             立即歸檔
           </button>

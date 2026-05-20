@@ -430,10 +430,28 @@ class PikPakService:
         server says our refresh token has been invalidated by another
         session. Concurrent callers all converge on a single re-login
         through ``_ensure``'s lock, so the retry doesn't fan out into
-        N parallel logins."""
+        N parallel logins.
+
+        Each round-trip is wrapped in ``asyncio.wait_for`` with
+        ``settings.pikpak_api_timeout_seconds`` so a hung connection
+        surfaces as a ``PikPakError`` instead of stalling the whole
+        sweep / archive loop. A timeout of 0 disables the cap (legacy
+        behaviour)."""
+        timeout = float(settings.pikpak_api_timeout_seconds or 0)
+
+        async def _run(c):
+            if timeout > 0:
+                try:
+                    return await asyncio.wait_for(op(c), timeout=timeout)
+                except asyncio.TimeoutError as exc:
+                    raise PikPakError(
+                        f"PikPak API 逾時 ({timeout:.0f}s)"
+                    ) from exc
+            return await op(c)
+
         client = await self._ensure()
         try:
-            return await op(client)
+            return await _run(client)
         except Exception as exc:  # noqa: BLE001
             if not _is_invalid_token_error(exc):
                 raise
@@ -443,7 +461,7 @@ class PikPakService:
             )
             await self._drop_for_relogin(client)
             client = await self._ensure()
-            return await op(client)
+            return await _run(client)
 
     async def login(
         self, username: Optional[str] = None, password: Optional[str] = None

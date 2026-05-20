@@ -19,7 +19,7 @@ import logging
 import random
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, AsyncIterator
 
 from sqlalchemy import func, select
 
@@ -218,16 +218,18 @@ def _legacy_sweep_due() -> bool:
     return (datetime.utcnow() - _last_legacy_sweep_at).total_seconds() >= interval
 
 
-async def _sweep_legacy_archive_once() -> int:
-    """Walk ``AVBT/已完成`` and migrate codes that *now* match a tracked
-    listing. Reuses ``reorganize._phase1_migrate_from`` — same logic the
-    manual "整理 PikPak 資料夾" button uses for its Phase 1b, just gated
-    on a background cooldown so it runs automatically.
+async def _sweep_legacy_archive_stream() -> AsyncIterator[dict]:
+    """Streaming variant of ``_sweep_legacy_archive_once``: yields
+    ``start`` / ``progress`` / ``error`` / ``done`` events so the UI can
+    show which file is being processed and where it's stuck.
 
-    After Phase 1, runs ``_cleanup_target_parents`` on the destination
-    folders so multipart files written in non-canonical form
-    (``ABC-001-1.mp4`` / ``ABC-001CD1.mp4`` etc.) get renamed to
-    ``ABC-001_1.mp4`` instead of colliding into ``ABC-001 (2).mp4``.
+    Walks ``AVBT/已完成`` and migrates codes that *now* match a tracked
+    listing. Reuses ``reorganize._phase1_migrate_from`` — same logic the
+    manual "整理 PikPak 資料夾" button uses for its Phase 1b. After
+    Phase 1, runs ``_cleanup_target_parents`` on the destination folders
+    so multipart files (``ABC-001-1.mp4`` / ``ABC-001CD1.mp4`` etc.)
+    get renamed to ``ABC-001_1.mp4`` instead of colliding into
+    ``ABC-001 (2).mp4``.
 
     Deliberately does **not** call ``_flatten_swept_wrappers``: legacy
     items often live inside wrapper folders the user has kept on
@@ -235,29 +237,57 @@ async def _sweep_legacy_archive_once() -> int:
     the rest — which would destroy real multipart episodes that
     happen to share a wrapper.
 
-    Returns the number of folders/files actually moved out. Items
-    without a tracked match stay parked (``_phase1_migrate_from`` skips
-    them with ``reason=no_tracked_match``).
-
-    Safe to call repeatedly: once a code is moved out, subsequent
-    sweeps won't see it again."""
+    Updates the module-level ``_last_legacy_sweep_*`` state at the end
+    so ``/archiver`` status reflects this run."""
     global _last_legacy_sweep_at, _last_legacy_sweep_moved
     global _last_legacy_sweep_error, _legacy_swept_total
 
     # Local import: reorganize already imports archiver at module load,
     # so a top-level import here would cycle.
-    from .reorganize import _phase1_migrate_from
+    from .reorganize import _phase1_migrate_from, _phase2_cleanup_target
 
     legacy_path = (
         settings.pikpak_archive_folder or "AVBT/已完成"
     ).strip().strip("/")
     if not legacy_path:
-        return 0
+        yield {
+            "type": "done",
+            "result": {
+                "total": 0, "moved": 0, "skipped": 0, "errors": 0,
+                "source": "",
+            },
+        }
+        return
+
+    # Pre-flight: count children so the progress bar has a denominator.
+    total = 0
+    try:
+        source_id = await pikpak_service.folder_id(legacy_path)
+        if source_id:
+            children = await pikpak_service.list_files(source_id, size=500)
+            total = len(children)
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "error", "message": f"無法列出 {legacy_path}: {exc}"}
+        yield {
+            "type": "done",
+            "result": {
+                "total": 0, "moved": 0, "skipped": 0, "errors": 1,
+                "source": legacy_path,
+            },
+        }
+        return
+
+    yield {
+        "type": "start",
+        "total": total,
+        "source": legacy_path,
+    }
 
     moved = 0
+    skipped = 0
+    errors = 0
     sweep_error = ""
-    # Distinct destination folders we touched — used to rerun multipart
-    # rename / lonely-variant strip via phase-2 cleanup.
+    idx = 0
     target_parent_ids: set[str] = set()
 
     try:
@@ -266,18 +296,36 @@ async def _sweep_legacy_archive_once() -> int:
         ):
             ev_type = ev.get("type")
             if ev_type == "_phase1_error":
-                sweep_error = sweep_error or ev.get("message", "")
+                msg = ev.get("message", "")
+                sweep_error = sweep_error or msg
+                errors += 1
+                yield {"type": "error", "message": msg}
+                continue
+            if ev_type == "_phase1_total":
                 continue
             if ev_type != "progress":
                 continue
-            if ev.get("action") == "move":
+            action = ev.get("action")
+            if action == "move":
                 moved += 1
                 pid = ev.get("target_parent_id")
                 if pid:
                     target_parent_ids.add(pid)
+            elif action == "skip":
+                skipped += 1
+            elif action == "error":
+                errors += 1
+                logger.warning(
+                    "legacy sweep file %s failed: %s",
+                    ev.get("source"), ev.get("reason"),
+                )
+            idx = ev.get("current", idx)
+            yield ev
     except Exception as exc:  # noqa: BLE001
         sweep_error = str(exc)
+        errors += 1
         logger.warning("legacy sweep failed: %s", exc)
+        yield {"type": "error", "message": str(exc)}
     finally:
         _last_legacy_sweep_at = datetime.utcnow()
         _last_legacy_sweep_moved = moved
@@ -287,15 +335,32 @@ async def _sweep_legacy_archive_once() -> int:
     # Phase-2 cleanup: catches `ABC-001-1.mp4` / `ABC-001CD1.mp4` style
     # multipart so they get unified into `ABC-001_1.mp4` form. Skips
     # _flatten_swept_wrappers on purpose (see docstring).
-    if target_parent_ids:
+    cleanup_count = 0
+    for pid in target_parent_ids:
         try:
-            cleaned = await _cleanup_target_parents(target_parent_ids)
-            if cleaned:
-                logger.info(
-                    "legacy sweep cleaned %d target folder(s)", cleaned
-                )
+            children = await pikpak_service.list_files(pid, size=500)
+            if not children:
+                continue
+            async for ev in _phase2_cleanup_target(
+                pid, pid, children, dry_run=False, idx_start=idx
+            ):
+                ev_type = ev.get("type")
+                if ev_type == "progress":
+                    idx = ev.get("current", idx)
+                    if ev.get("action") == "error":
+                        errors += 1
+                yield ev
+            cleanup_count += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning("legacy sweep cleanup failed: %s", exc)
+            logger.warning("cleanup target %s failed: %s", pid, exc)
+            yield {
+                "type": "error",
+                "message": f"cleanup {pid}: {exc}",
+            }
+    if cleanup_count:
+        logger.info(
+            "legacy sweep cleaned %d target folder(s)", cleanup_count
+        )
 
     if moved:
         logger.info(
@@ -312,6 +377,33 @@ async def _sweep_legacy_archive_once() -> int:
         except Exception:  # noqa: BLE001
             pass
 
+    yield {
+        "type": "done",
+        "result": {
+            "total": total,
+            "moved": moved,
+            "skipped": skipped,
+            "errors": errors,
+            "source": legacy_path,
+        },
+    }
+
+
+async def _sweep_legacy_archive_once() -> int:
+    """Background-loop friendly wrapper around
+    ``_sweep_legacy_archive_stream``: silently consumes events and
+    returns the count moved.
+
+    Items without a tracked match stay parked (``_phase1_migrate_from``
+    skips them with ``reason=no_tracked_match``). Safe to call repeatedly:
+    once a code is moved out, subsequent sweeps won't see it again."""
+    moved = 0
+    async for ev in _sweep_legacy_archive_stream():
+        if (
+            ev.get("type") == "progress"
+            and ev.get("action") == "move"
+        ):
+            moved += 1
     return moved
 
 

@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     pikpak_password: str = ""
     pikpak_download_folder: str = "AVBT"
 
+    # Cap per-call PikPak API latency so a stuck connection can't freeze
+    # the legacy-sweep / archive loop indefinitely. Each PikPak round-trip
+    # (folder lookup, list, move, rename, trash) is wrapped in
+    # ``asyncio.wait_for``; on timeout the caller sees a ``PikPakError`` it
+    # can log and move past. 60s is generous — normal calls finish in <2s.
+    pikpak_api_timeout_seconds: float = 60.0
+
     # Where the backend tells PikPak to drop newly-submitted offline
     # tasks. Defaults to ``<pikpak_download_folder>/TASK`` so finished
     # BT noise (kfa55.com@..., 第一會所新片@... wrappers) is corralled

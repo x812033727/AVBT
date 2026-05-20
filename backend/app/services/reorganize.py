@@ -108,8 +108,12 @@ def _phase1_file_leaf(original_name: str, code_leaf: str, ext: str) -> str:
     )
     # Anchor on the code (with optional variant letter) so prefixed
     # forms like ``hhd800.com@SOE-462_1`` still get their ``_N`` kept.
+    # ``\d{0,4}`` absorbs the BT numeric prefix that ``extract_jav_code``
+    # strips from the code itself (``200GANA-3119_2`` → code ``GANA-3119``;
+    # without the digit gap the boundary check would fail on ``0`` and the
+    # ``_2`` marker would be lost).
     tail_re = re.compile(
-        rf"(?:^|[^A-Z0-9]){re.escape(code_leaf)}[A-Z]?_(\d+)$",
+        rf"(?:^|[^A-Z0-9])\d{{0,4}}{re.escape(code_leaf)}[A-Z]?_(\d+)$",
         re.IGNORECASE,
     )
     m = tail_re.search(stem)

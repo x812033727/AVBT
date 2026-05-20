@@ -46,6 +46,16 @@ class TrackerState:
         self.last_run: datetime | None = None
         self.last_error: str = ""
         self.last_new_total: int = 0
+        # Live progress of the current ``check_all`` pass (background or
+        # via the non-streaming ``/run-now`` endpoint). The frontend polls
+        # ``/api/tracked/status`` so the user can see "background scan
+        # X/Y: <listing>" even when no modal is open. The streaming
+        # ``/run-now/stream`` path bypasses these fields — its own modal
+        # surfaces progress directly.
+        self.scan_in_progress: bool = False
+        self.scan_current: int = 0
+        self.scan_total: int = 0
+        self.scan_name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +64,10 @@ class TrackerState:
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_error": self.last_error,
             "last_new_total": self.last_new_total,
+            "scan_in_progress": self.scan_in_progress,
+            "scan_current": self.scan_current,
+            "scan_total": self.scan_total,
+            "scan_name": self.scan_name,
         }
 
 
@@ -477,30 +491,38 @@ async def check_all(*, force: bool = False) -> list[dict]:
 
     ``force=False`` (the background loop): listings whose last full scan
     found zero missing get skipped until 24h have elapsed since that
-    scan. ``force=True`` (the manual "全部立即檢查" button): no skipping;
-    every listing is checked and gets a fresh missing-count scan."""
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(select(TrackedListing))
-        ).scalars().all()
-    if not rows:
-        return []
-    pairs: list[tuple[str, str]] = []
-    for r in rows:
-        if force or _scan_due(r):
-            pairs.append((r.kind, r.id))
-    skipped = len(rows) - len(pairs)
-    if skipped:
-        logger.info(
-            "tracker skipped %d complete listing(s); checking %d",
-            skipped, len(pairs),
-        )
-    if not pairs:
-        return []
-    return await asyncio.gather(
-        *(_guarded_check(kind, listing_id, force=force)
-          for kind, listing_id in pairs)
-    )
+    scan. ``force=True`` (the manual non-streaming "全部立即檢查"): no
+    skipping; every listing is checked and gets a fresh missing-count
+    scan.
+
+    Consumes ``check_all_stream`` so the same per-listing concurrency +
+    cancellation logic runs in both code paths and the state fields
+    (``scan_in_progress`` etc.) get updated as each listing completes.
+    The streaming endpoint surfaces these events directly to the UI;
+    the background loop relies on this status update for the inline
+    progress banner."""
+    state.scan_in_progress = True
+    state.scan_current = 0
+    state.scan_total = 0
+    state.scan_name = ""
+    results: list[dict] = []
+    try:
+        async for ev in check_all_stream(force=force):
+            ev_type = ev.get("type")
+            if ev_type == "start":
+                state.scan_total = int(ev.get("total", 0) or 0)
+                state.scan_current = 0
+                state.scan_name = ""
+            elif ev_type == "progress":
+                state.scan_current = int(ev.get("current", 0) or 0)
+                state.scan_name = ev.get("name") or ""
+                results.append({k: v for k, v in ev.items() if k != "type"})
+    finally:
+        state.scan_in_progress = False
+        state.scan_current = 0
+        state.scan_total = 0
+        state.scan_name = ""
+    return results
 
 
 async def _guarded_check_complete(

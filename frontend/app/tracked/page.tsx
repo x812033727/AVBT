@@ -17,6 +17,7 @@ import {
   type PresenceCodeLookup,
   type TrackedKind,
   type TrackedListing,
+  type TrackerStatus,
 } from "@/lib/api";
 
 function fmt(d: string | null): string {
@@ -66,6 +67,13 @@ export default function TrackedPage() {
   const [batchModalMode, setBatchModalMode] = useState<
     "check-all" | "missing-summary" | null
   >(null);
+  // Live tracker status (polled while the page is mounted) — used to
+  // show an inline banner "背景掃描中 X/Y: <listing>" when the periodic
+  // run_loop is running. The streaming buttons have their own modal so
+  // this banner is purely for background-tick visibility.
+  const [trackerStatus, setTrackerStatus] = useState<TrackerStatus | null>(
+    null,
+  );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Map<string, MissingCodesResult>>(
     new Map()
@@ -116,6 +124,34 @@ export default function TrackedPage() {
   useEffect(() => {
     loadMissing(false);
   }, [loadMissing]);
+
+  // Poll tracker status so the inline progress banner can show the
+  // background loop's progress (`scan_in_progress` flips on/off and
+  // `scan_current` / `scan_total` advance). Polls more frequently while
+  // a scan is in flight so the X/Y counter feels live.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    async function poll() {
+      try {
+        const res = await api.get<TrackerStatus>("/api/tracked/status");
+        if (cancelled) return;
+        setTrackerStatus(res);
+        // 2s while scanning so the X/Y counter looks live, otherwise 15s
+        // so we're not hammering the backend with idle polls.
+        const next = res.scan_in_progress ? 2000 : 15000;
+        timer = window.setTimeout(poll, next);
+      } catch {
+        if (cancelled) return;
+        timer = window.setTimeout(poll, 15000);
+      }
+    }
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
 
   function keyOf(it: TrackedListing) {
     return `${it.kind}:${it.id}`;
@@ -176,6 +212,19 @@ export default function TrackedPage() {
               setCheckingPhase("失敗");
             } else if (typeof missingCount === "number") {
               setCheckingPhase(`完成 (${missingCount} 缺漏)`);
+              // Patch the local Map entry so the badge updates
+              // immediately without a slow /missing-summary rebuild —
+              // the server-side cache was invalidated by /check/stream
+              // and re-fetching it would walk every listing's JavBus
+              // catalog again (minutes).
+              setMissing((prev) => {
+                const next = new Map(prev ?? []);
+                const existing = next.get(key);
+                if (existing) {
+                  next.set(key, { ...existing, missing_count: missingCount });
+                }
+                return next;
+              });
             } else {
               setCheckingPhase("完成");
             }
@@ -187,13 +236,16 @@ export default function TrackedPage() {
       );
       if (finalResult) setLastCheck(finalResult);
       load();
-      // Also clear cached detail for this row so re-opening shows fresh data.
+      // Clear cached detail for this row so re-opening shows fresh data
+      // (the row's missing-codes detail panel re-fetches on expand).
       setDetails((m) => {
         const next = new Map(m);
         next.delete(key);
         return next;
       });
-      loadMissing(false);
+      // No loadMissing here: the local Map was patched above from the
+      // done event. /missing-summary would trigger a full N-listing
+      // JavBus rebuild which the user doesn't want for a per-row check.
     } catch (e: any) {
       if (e.name !== "AbortError") setError(e.message);
       setCheckingPhase("失敗");
@@ -361,6 +413,47 @@ export default function TrackedPage() {
       {error && (
         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
+        </div>
+      )}
+
+      {trackerStatus?.scan_in_progress && (
+        <div className="space-y-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm text-blue-200">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              背景掃描中…{" "}
+              {trackerStatus.scan_total > 0 && (
+                <span className="font-mono">
+                  {trackerStatus.scan_current} / {trackerStatus.scan_total}
+                  {" "}
+                  ({Math.round(
+                    (trackerStatus.scan_current /
+                      Math.max(trackerStatus.scan_total, 1)) *
+                      100,
+                  )}
+                  %)
+                </span>
+              )}
+            </span>
+            {trackerStatus.scan_name && (
+              <span className="truncate font-mono text-blue-300/80">
+                {trackerStatus.scan_name}
+              </span>
+            )}
+          </div>
+          {trackerStatus.scan_total > 0 && (
+            <div className="h-1.5 overflow-hidden rounded bg-blue-500/20">
+              <div
+                className="h-full bg-blue-400 transition-[width]"
+                style={{
+                  width: `${Math.round(
+                    (trackerStatus.scan_current /
+                      Math.max(trackerStatus.scan_total, 1)) *
+                      100,
+                  )}%`,
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
 

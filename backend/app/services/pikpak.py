@@ -97,8 +97,12 @@ def _canonical_video_name(name: str) -> str:
                 code = retry
                 stem = stripped
     if code:
+        # ``\d{0,4}`` absorbs the BT numeric prefix that ``extract_jav_code``
+        # strips from the canonical (``200GANA-3119`` → ``GANA-3119``).
+        # Without it, the canonical for ``200GANA-3119_2.mp4`` would stay
+        # as ``200GANA-3119`` and fail to group with ``GANA-3119.mp4``.
         tail_re = re.compile(
-            rf"{re.escape(code)}(?:CD\d+|-\d+|_\d+|[A-Z])?\s*$",
+            rf"\d{{0,4}}{re.escape(code)}(?:CD\d+|-\d+|_\d+|[A-Z])?\s*$",
             re.IGNORECASE,
         )
         m = tail_re.search(stem)

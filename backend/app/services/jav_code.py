@@ -20,8 +20,15 @@ import re
 # Treated as part of the noise so the code extractor can see past it.
 _FAKE_EXT_RE = r"(?:MP4|M4V|AVI|WMV|MKV|MOV|WEBM|FLV|TS)"
 
+# Chinese-subtitle scene tag: ``SNOS-015ch.mp4`` / ``SNOS-015-CH.mkv`` /
+# ``SNOS-015_Ch.mp4`` all denote "same product, with Chinese subs glued
+# on". JavBus indexes the base code only, so we strip the marker for
+# both extraction and grouping — Chinese-subbed and raw versions collapse
+# to the same canonical, just like resolution / dup variants do.
+_CH_SUFFIX_RE = r"(?:[-_]?CH)?"
+
 _CODE_RE = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -117,8 +124,10 @@ def is_video(name: str) -> bool:
 # Same shape as _CODE_RE but the trailing variant letter is captured
 # instead of consumed by [A-Z]?. Used by extract_jav_code_full so file
 # / folder names keep their variant suffix (SDMM-14903C, ABP-123A).
+# The Chinese-sub marker (``ch``/``-ch``/``_ch``) is consumed but NOT
+# captured — different sub languages aren't different products.
 _CODE_RE_FULL = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 

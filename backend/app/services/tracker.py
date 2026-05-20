@@ -322,12 +322,29 @@ def _maybe_fire_new_codes_webhook(
     webhook_queue.enqueue_nowait(msg)
 
 
-async def _read_last_missing_count(kind: str, slug: str) -> int | None:
+async def _read_row_snapshot(kind: str, slug: str) -> dict:
+    """Return the post-scan row state needed by the frontend to patch
+    its local ``items`` / ``missing`` Maps without re-fetching
+    ``/api/tracked``. Empty dict when the row no longer exists.
+
+    All four "scan-side-effect" columns plus the missing count are read
+    in a single SELECT, after whichever phase committed them (page-1
+    write inside ``_check_listing_phase1`` or the missing-scan write
+    inside ``_enqueue_auto_send`` / ``_record_scan_result``)."""
     async with SessionLocal() as session:
         row = await session.get(TrackedListing, (kind, slug))
-        if row:
-            return int(row.last_missing_count or 0)
-    return None
+        if row is None:
+            return {}
+        return {
+            "last_checked_at": (
+                row.last_checked_at.isoformat() + "Z"
+                if row.last_checked_at else None
+            ),
+            "last_seen_code": row.last_seen_code or "",
+            "new_count": int(row.new_count or 0),
+            "last_error": row.last_error or "",
+            "missing_count": int(row.last_missing_count or 0),
+        }
 
 
 async def check_listing(
@@ -404,20 +421,22 @@ async def check_listing_stream(
     p = await _check_listing_phase1(kind, listing_id, force=force)
 
     if p.not_found:
+        # No row to read — empty snapshot, frontend skips patch.
         yield {"type": "done", "kind": kind, "id": listing_id,
                "name": listing_id, "new_codes": [],
-               "missing_count": None, "error": "not found"}
+               "error": "not found"}
         return
     if p.error:
+        # Phase-1 committed last_error / last_checked_at; surface the
+        # snapshot so the row shows the failure inline.
+        snapshot = await _read_row_snapshot(kind, listing_id)
         yield {"type": "done", "kind": kind, "id": listing_id,
                "name": p.name, "new_codes": [],
-               "missing_count": None, "error": p.error}
+               "error": p.error, **snapshot}
         return
 
     if p.had_baseline and p.new_codes:
         _maybe_fire_new_codes_webhook(kind, p.name, p.new_codes)
-
-    missing_count: int | None = None
 
     if p.auto_send:
         fresh = p.new_codes if p.had_baseline else []
@@ -429,23 +448,23 @@ async def check_listing_stream(
                 kind, listing_id, fresh, do_full_scan=p.do_full_scan
             )
         except Exception as exc:  # noqa: BLE001
+            snapshot = await _read_row_snapshot(kind, listing_id)
             yield {"type": "done", "kind": kind, "id": listing_id,
                    "name": p.name, "new_codes": fresh,
-                   "missing_count": None, "error": str(exc)}
+                   "error": str(exc), **snapshot}
             return
-        missing_count = await _read_last_missing_count(kind, listing_id)
         yield {"type": "progress", "phase": "enqueue", "queued": queued,
                "message": f"已送 {queued} 個進下載佇列"}
     elif force:
         yield {"type": "progress", "phase": "missing_scan",
                "message": "重算缺漏…"}
         await _record_missing_count(kind, listing_id)
-        missing_count = await _read_last_missing_count(kind, listing_id)
 
+    snapshot = await _read_row_snapshot(kind, listing_id)
     yield {"type": "done", "kind": kind, "id": listing_id,
            "name": p.name,
            "new_codes": p.new_codes if p.had_baseline else [],
-           "missing_count": missing_count, "error": None}
+           "error": None, **snapshot}
 
 
 async def _check_listing_complete(

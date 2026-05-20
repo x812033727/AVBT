@@ -35,11 +35,16 @@ export default function BatchScanModal({
   mode,
   onClose,
   onDone,
+  onProgress,
 }: {
   open: boolean;
   mode: Mode;
   onClose: () => void;
   onDone?: () => void;
+  // Fires for every per-listing ``progress`` event from the stream.
+  // Lets the parent patch its row state (items / missing Map) live as
+  // each listing completes, instead of waiting for the whole batch.
+  onProgress?: (event: any) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [total, setTotal] = useState(0);
@@ -81,6 +86,7 @@ export default function BatchScanModal({
               setSkipped(event.skipped ?? 0);
             } else if (event.type === "progress") {
               setProgress((prev) => [...prev, event]);
+              onProgress?.(event);
             } else if (event.type === "done") {
               setDone(true);
             } else if (event.type === "error") {

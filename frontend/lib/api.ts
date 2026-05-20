@@ -288,6 +288,13 @@ export type TrackerStatus = {
   last_run: string | null;
   last_error: string;
   last_new_total: number;
+  // Live progress of the current background / non-streaming check_all
+  // pass, surfaced for the inline banner on /tracked. Streaming buttons
+  // bypass these — their own modal shows progress.
+  scan_in_progress: boolean;
+  scan_current: number;
+  scan_total: number;
+  scan_name: string;
 };
 
 export type ExtraCode = {

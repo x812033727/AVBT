@@ -81,6 +81,10 @@ async def _enqueue_auto_send(
     every page is wasted work; only the freshly-detected ``new_codes``
     get enqueued.
 
+    On a successful full scan, writes the resulting missing count to
+    ``TrackedListing.last_missing_count`` + ``last_full_scan_at`` so the
+    next ``_scan_due`` decision can skip listings that are now complete.
+
     Returns the number of codes enqueued. The queue itself coalesces
     duplicates that are already pending or in-flight, so calling this
     every tracker tick is safe — codes already being processed won't
@@ -107,6 +111,8 @@ async def _enqueue_auto_send(
                     if m.code and m.code not in seen:
                         seen.add(m.code)
                         combined.append(m.code)
+            if result is not None:
+                await _record_scan_result(kind, slug, len(result.missing))
 
     if not combined:
         return 0
@@ -154,6 +160,48 @@ async def _detect_new(
     return new_codes, top[0]
 
 
+# Daily cadence for listings that have nothing missing — no point
+# walking JavBus every hour when there's nothing to enqueue and the
+# page-1 check would just bump last_seen_code with no actionable result.
+_DAILY_SECONDS = 86400
+
+
+def _scan_due(row: TrackedListing) -> bool:
+    """Tracker-tick skip rule: a listing whose last full scan found zero
+    missing codes only needs revisiting once a day. Listings with a
+    backlog (>=1 missing) run every tick as before. Listings that have
+    never been scanned (no ``last_full_scan_at``) also run — we need at
+    least one baseline before we can claim they're complete."""
+    if row.last_missing_count == 0 and row.last_full_scan_at:
+        if (datetime.utcnow() - row.last_full_scan_at).total_seconds() < _DAILY_SECONDS:
+            return False
+    return True
+
+
+async def _record_scan_result(kind: str, slug: str, missing_count: int) -> None:
+    """Persist the outcome of a completed full missing-scan so the next
+    ``_scan_due`` check can short-circuit when nothing's missing."""
+    async with SessionLocal() as session:
+        row = await session.get(TrackedListing, (kind, slug))
+        if row:
+            row.last_missing_count = int(missing_count)
+            row.last_full_scan_at = datetime.utcnow()
+            await session.commit()
+
+
+async def _record_missing_count(kind: str, slug: str) -> None:
+    """Standalone missing-scan used by the manual ``force=True`` path on
+    listings without ``auto_send``: walks the JavBus catalog, writes
+    ``last_missing_count``, but does NOT enqueue anything to PikPak.
+    Lets the user trigger a fresh count without flipping auto-send on."""
+    try:
+        result = await missing_svc.missing_for_listing(kind, slug, refresh=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("missing-count record %s/%s failed: %s", kind, slug, exc)
+        return
+    await _record_scan_result(kind, slug, len(result.missing))
+
+
 def _full_scan_due(row: TrackedListing) -> bool:
     """Adaptive scan policy: a quiet listing skips the JavBus walk, but
     we force one every ``tracker_quiet_skip_every`` ticks regardless so
@@ -172,8 +220,16 @@ def _full_scan_due(row: TrackedListing) -> bool:
     return False
 
 
-async def check_listing(kind: str, listing_id: str) -> dict:
-    """Check one tracked listing, update DB, notify and (optionally) auto-send."""
+async def check_listing(
+    kind: str, listing_id: str, *, force: bool = False
+) -> dict:
+    """Check one tracked listing, update DB, notify and (optionally) auto-send.
+
+    ``force=True`` bypasses ``_full_scan_due``'s adaptive skip so a manual
+    "立即檢查" always walks the JavBus catalog for the missing list. For
+    non-auto_send listings, that walk still happens (via
+    ``_record_missing_count``) so the user gets a refreshed missing
+    count even when the listing isn't auto-downloading."""
     async with SessionLocal() as session:
         row: TrackedListing | None = await session.get(TrackedListing, (kind, listing_id))
         if not row:
@@ -212,7 +268,7 @@ async def check_listing(kind: str, listing_id: str) -> dict:
         else:
             row.quiet_ticks = int(row.quiet_ticks or 0) + 1
 
-        do_full_scan = _full_scan_due(row) if auto_send else False
+        do_full_scan = force or (_full_scan_due(row) if auto_send else False)
         if do_full_scan:
             row.last_full_scan_at = datetime.utcnow()
         await session.commit()
@@ -240,6 +296,11 @@ async def check_listing(kind: str, listing_id: str) -> dict:
         asyncio.create_task(
             _enqueue_auto_send(actual_kind, slug, fresh, do_full_scan=do_full_scan)
         )
+    elif force:
+        # Non-auto_send + manual force: still refresh the missing count
+        # so the next _scan_due decision sees an accurate baseline,
+        # without sending anything to PikPak.
+        asyncio.create_task(_record_missing_count(actual_kind, slug))
 
     return {
         "kind": kind,
@@ -249,7 +310,9 @@ async def check_listing(kind: str, listing_id: str) -> dict:
     }
 
 
-async def _guarded_check(kind: str, listing_id: str) -> dict:
+async def _guarded_check(
+    kind: str, listing_id: str, *, force: bool = False
+) -> dict:
     """Semaphore-bounded wrapper around ``check_listing`` so a large
     tracked set doesn't open N concurrent SQLite sessions. JavBus
     outbound HTTP is already serialised globally — this is a CPU + DB
@@ -258,21 +321,40 @@ async def _guarded_check(kind: str, listing_id: str) -> dict:
     callers don't need a try/except around each one."""
     async with _CHECK_SEMAPHORE:
         try:
-            return await check_listing(kind, listing_id)
+            return await check_listing(kind, listing_id, force=force)
         except Exception as exc:  # noqa: BLE001
             logger.warning("check_listing %s/%s crashed: %s", kind, listing_id, exc)
             return {"kind": kind, "id": listing_id, "error": str(exc), "new_codes": []}
 
 
-async def check_all() -> list[dict]:
+async def check_all(*, force: bool = False) -> list[dict]:
+    """Run a tracker pass over every TrackedListing row.
+
+    ``force=False`` (the background loop): listings whose last full scan
+    found zero missing get skipped until 24h have elapsed since that
+    scan. ``force=True`` (the manual "全部立即檢查" button): no skipping;
+    every listing is checked and gets a fresh missing-count scan."""
     async with SessionLocal() as session:
-        pairs = (
-            await session.execute(select(TrackedListing.kind, TrackedListing.id))
-        ).all()
+        rows = (
+            await session.execute(select(TrackedListing))
+        ).scalars().all()
+    if not rows:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for r in rows:
+        if force or _scan_due(r):
+            pairs.append((r.kind, r.id))
+    skipped = len(rows) - len(pairs)
+    if skipped:
+        logger.info(
+            "tracker skipped %d complete listing(s); checking %d",
+            skipped, len(pairs),
+        )
     if not pairs:
         return []
     return await asyncio.gather(
-        *(_guarded_check(kind, listing_id) for kind, listing_id in pairs)
+        *(_guarded_check(kind, listing_id, force=force)
+          for kind, listing_id in pairs)
     )
 
 

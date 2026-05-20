@@ -60,9 +60,11 @@ async def tracker_toggle(enabled: bool = Body(..., embed=True)):
 async def tracker_run_now():
     # Batch check explicitly requested by the user — drop any cached
     # PikPak inventory so auto-send-missing and the post-batch missing-
-    # summary re-fetch see the current state of the cloud.
+    # summary re-fetch see the current state of the cloud. ``force=True``
+    # bypasses the "complete listing skipped for 24h" rule so the user's
+    # manual request actually re-checks every listing.
     missing_svc.invalidate_all_caches(presence=True)
-    results = await tracker.check_all()
+    results = await tracker.check_all(force=True)
     new_total = sum(len(r.get("new_codes") or []) for r in results)
     tracker.state.last_new_total = new_total
     tracker.state.last_run = datetime.utcnow()
@@ -244,9 +246,14 @@ async def check_now(kind: str, slug: str):
     # presence so the auto_send-missing path (and the missing-codes
     # badge re-fetch the UI does afterwards) sees the current state
     # of the cloud, not a stale snapshot from before the user deleted
-    # files / moved things around.
+    # files / moved things around. ``force=True`` so a manual check
+    # always walks the JavBus catalog (refreshing the missing-count) and
+    # is never silently skipped by the daily-cadence rule for complete
+    # listings.
     missing_svc.invalidate_all_caches(presence=True)
-    return CheckListingResult(**await tracker.check_listing(kind, slug))
+    return CheckListingResult(
+        **await tracker.check_listing(kind, slug, force=True)
+    )
 
 
 @router.post("/{kind}/{slug:path}/reset-new-count")

@@ -50,6 +50,9 @@ async def init_db() -> None:
             # Adaptive full-catalog scan counters for tracker auto-send.
             "ALTER TABLE tracked_listing ADD COLUMN quiet_ticks INTEGER DEFAULT 0",
             "ALTER TABLE tracked_listing ADD COLUMN last_full_scan_at DATETIME",
+            # Records the missing-count from the last full scan so the
+            # tracker can skip ticks on listings that are already complete.
+            "ALTER TABLE tracked_listing ADD COLUMN last_missing_count INTEGER DEFAULT 0",
         ):
             try:
                 await conn.exec_driver_sql(ddl)

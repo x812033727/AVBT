@@ -42,6 +42,7 @@ class TrackedListing(Base):
     new_count: Mapped[int] = mapped_column(Integer, default=0)
     quiet_ticks: Mapped[int] = mapped_column(Integer, default=0)
     last_full_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_missing_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

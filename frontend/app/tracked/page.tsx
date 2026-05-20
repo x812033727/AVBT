@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import BatchScanModal from "@/components/BatchScanModal";
 import { confirmDialog, toast } from "@/components/Toast";
 import {
@@ -121,6 +121,45 @@ export default function TrackedPage() {
     }
   }, []);
 
+  // Shared row-patch helper: every per-listing ``done`` / ``progress``
+  // event from the streaming endpoints carries enough state
+  // (last_checked_at, last_seen_code, new_count, last_error,
+  // missing_count) to update the row inline without re-fetching
+  // /api/tracked. Used by the single 立即檢查 done callback AND by the
+  // batch modal's onProgress, so rows feel live across all three
+  // streaming flows.
+  const patchRowFromEvent = useCallback((event: any) => {
+    if (!event?.kind || !event?.id) return;
+    const key = `${event.kind}:${event.id}`;
+
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.kind !== event.kind || it.id !== event.id) return it;
+        const next = { ...it };
+        if (event.last_checked_at !== undefined)
+          next.last_checked_at = event.last_checked_at;
+        if (event.last_seen_code !== undefined)
+          next.last_seen_code = event.last_seen_code;
+        if (event.new_count !== undefined)
+          next.new_count = event.new_count;
+        if (event.last_error !== undefined)
+          next.last_error = event.last_error;
+        return next;
+      }),
+    );
+
+    if (typeof event.missing_count === "number") {
+      setMissing((prev) => {
+        const next = new Map(prev ?? []);
+        const existing = next.get(key);
+        if (existing) {
+          next.set(key, { ...existing, missing_count: event.missing_count });
+        }
+        return next;
+      });
+    }
+  }, []);
+
   useEffect(() => {
     loadMissing(false);
   }, [loadMissing]);
@@ -152,6 +191,29 @@ export default function TrackedPage() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
+
+  // Background tick has no streaming pipe to the UI, so during it we
+  // poll the rows list every 4s. As each listing's check_listing_stream
+  // commits last_checked_at / new_count / last_missing_count, the next
+  // poll picks it up and the row refreshes inline alongside the banner.
+  useEffect(() => {
+    if (!trackerStatus?.scan_in_progress) return;
+    const id = window.setInterval(load, 4000);
+    return () => window.clearInterval(id);
+  }, [trackerStatus?.scan_in_progress, load]);
+
+  // When scan_in_progress flips true → false, the background loop just
+  // invalidated _summary_result and presence — kick a single missing
+  // summary fetch so the deduped badges catch up to whatever changed.
+  // Skips on initial mount (prevScanRef starts false).
+  const prevScanRef = useRef(false);
+  useEffect(() => {
+    const cur = trackerStatus?.scan_in_progress ?? false;
+    if (prevScanRef.current && !cur) {
+      loadMissing(false);
+    }
+    prevScanRef.current = cur;
+  }, [trackerStatus?.scan_in_progress, loadMissing]);
 
   function keyOf(it: TrackedListing) {
     return `${it.kind}:${it.id}`;
@@ -212,22 +274,17 @@ export default function TrackedPage() {
               setCheckingPhase("失敗");
             } else if (typeof missingCount === "number") {
               setCheckingPhase(`完成 (${missingCount} 缺漏)`);
-              // Patch the local Map entry so the badge updates
-              // immediately without a slow /missing-summary rebuild —
-              // the server-side cache was invalidated by /check/stream
-              // and re-fetching it would walk every listing's JavBus
-              // catalog again (minutes).
-              setMissing((prev) => {
-                const next = new Map(prev ?? []);
-                const existing = next.get(key);
-                if (existing) {
-                  next.set(key, { ...existing, missing_count: missingCount });
-                }
-                return next;
-              });
             } else {
               setCheckingPhase("完成");
             }
+            // Patch the row inline from the done event's snapshot
+            // (last_checked_at / last_seen_code / new_count / last_error
+            // / missing_count) — no /api/tracked round-trip needed.
+            // /missing-summary is intentionally NOT re-fetched because
+            // the server-side cache was invalidated by /check/stream and
+            // a fresh fetch would walk every listing's JavBus catalog
+            // again (minutes).
+            patchRowFromEvent(event);
           } else if (event.type === "error") {
             setCheckingPhase("失敗");
             setError(event.message ?? "未知錯誤");
@@ -235,7 +292,6 @@ export default function TrackedPage() {
         },
       );
       if (finalResult) setLastCheck(finalResult);
-      load();
       // Clear cached detail for this row so re-opening shows fresh data
       // (the row's missing-codes detail panel re-fetches on expand).
       setDetails((m) => {
@@ -243,9 +299,6 @@ export default function TrackedPage() {
         next.delete(key);
         return next;
       });
-      // No loadMissing here: the local Map was patched above from the
-      // done event. /missing-summary would trigger a full N-listing
-      // JavBus rebuild which the user doesn't want for a per-row check.
     } catch (e: any) {
       if (e.name !== "AbortError") setError(e.message);
       setCheckingPhase("失敗");
@@ -723,6 +776,7 @@ export default function TrackedPage() {
         mode={batchModalMode ?? "check-all"}
         onClose={() => setBatchModalMode(null)}
         onDone={onBatchModalDone}
+        onProgress={patchRowFromEvent}
       />
     </div>
   );

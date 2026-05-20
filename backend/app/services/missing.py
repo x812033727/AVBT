@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, AsyncIterator
 
 from sqlalchemy import select
 
@@ -361,29 +361,104 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
         # while we were waiting.
         if not refresh and _summary_result is not None:
             return _summary_result
-        presence = await presence_index.get(force=refresh)
-        async with SessionLocal() as session:
-            rows = (
-                await session.execute(
-                    select(TrackedListing).order_by(TrackedListing.kind, TrackedListing.id)
-                )
-            ).scalars().all()
+        result = await _missing_summary_locked(refresh=refresh)
+        _summary_result = result
+        return result
 
-        owner = await _ownership_map(rows)
-        # Bucket the ownership map once so per-row lookups are O(1).
+
+async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
+    """Core rebuild logic, called with ``_summary_lock`` held. Shared by
+    ``missing_summary`` and ``missing_summary_stream`` so both write
+    identical results into ``_summary_result``."""
+    presence = await presence_index.get(force=refresh)
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(TrackedListing).order_by(TrackedListing.kind, TrackedListing.id)
+            )
+        ).scalars().all()
+
+    owner = await _ownership_map(rows)
+    owned_by_row: dict[tuple[str, str], set[str]] = {}
+    for code, key in owner.items():
+        owned_by_row.setdefault(key, set()).add(code)
+
+    items: list[MissingSummaryItem] = []
+    for row in rows:
+        items.append(
+            await _summary_item(
+                row,
+                presence,
+                owned=owned_by_row.get((row.kind, row.id), set()),
+            )
+        )
+
+    return MissingSummary(
+        built_at=datetime.utcnow(),
+        presence_built_at=presence_index._built_at,  # type: ignore[attr-defined]
+        items=items,
+    )
+
+
+async def missing_summary_stream(
+    *, refresh: bool = True
+) -> AsyncIterator[dict]:
+    """Streaming variant of ``missing_summary`` for the "重算缺漏" button.
+
+    Yields:
+      ``start``    { total }
+      ``progress`` { current, total, kind, id, name, missing_count,
+                     pages_scanned, error }   — one per listing
+      ``done``     { result: MissingSummary.model_dump() }
+      ``error``    { message }                — fatal pre-flight failure
+
+    Writes the final result into ``_summary_result`` so any concurrent
+    non-streaming ``missing_summary`` caller gets the freshly-built cache."""
+    global _summary_result
+    async with _summary_lock:
+        # Same pre-flight as the non-streaming path. Errors during
+        # presence rebuild / DB read are fatal — surface as a single
+        # ``error`` event then bail.
+        try:
+            presence = await presence_index.get(force=refresh)
+            async with SessionLocal() as session:
+                rows = (
+                    await session.execute(
+                        select(TrackedListing).order_by(
+                            TrackedListing.kind, TrackedListing.id
+                        )
+                    )
+                ).scalars().all()
+            owner = await _ownership_map(rows)
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": str(exc)}
+            return
+
         owned_by_row: dict[tuple[str, str], set[str]] = {}
         for code, key in owner.items():
             owned_by_row.setdefault(key, set()).add(code)
 
+        yield {"type": "start", "total": len(rows)}
+
         items: list[MissingSummaryItem] = []
-        for row in rows:
-            items.append(
-                await _summary_item(
-                    row,
-                    presence,
-                    owned=owned_by_row.get((row.kind, row.id), set()),
-                )
+        for idx, row in enumerate(rows, 1):
+            item = await _summary_item(
+                row,
+                presence,
+                owned=owned_by_row.get((row.kind, row.id), set()),
             )
+            items.append(item)
+            yield {
+                "type": "progress",
+                "current": idx,
+                "total": len(rows),
+                "kind": row.kind,
+                "id": row.id,
+                "name": row.name or "",
+                "missing_count": item.missing_count,
+                "pages_scanned": item.pages_scanned,
+                "error": item.error or "",
+            }
 
         result = MissingSummary(
             built_at=datetime.utcnow(),
@@ -391,7 +466,8 @@ async def missing_summary(*, refresh: bool = False) -> MissingSummary:
             items=items,
         )
         _summary_result = result
-        return result
+
+    yield {"type": "done", "result": result.model_dump(mode="json")}
 
 
 async def missing_all(*, refresh: bool = False) -> AggregatedMissing:

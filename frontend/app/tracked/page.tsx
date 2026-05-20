@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import BatchScanModal from "@/components/BatchScanModal";
 import { confirmDialog, toast } from "@/components/Toast";
 import {
   TRACKED_LABELS,
   api,
   imgProxy,
+  streamNdjson,
   type CheckListingResult,
   type MissingCodesResult,
   type MissingSummary,
@@ -51,12 +53,19 @@ export default function TrackedPage() {
   const [items, setItems] = useState<TrackedListing[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
+  // Per-row phase label shown next to "立即檢查" while streaming (e.g.
+  // "page 1…" → "掃描缺漏…" → "完成"). Keyed by `${kind}:${id}`.
+  const [checkingPhase, setCheckingPhase] = useState<string>("");
   const [lastCheck, setLastCheck] = useState<CheckListingResult | null>(null);
   const [filter, setFilter] = useState<TrackedKind | "">("");
   const [missing, setMissing] = useState<Map<string, MissingSummaryItem> | null>(
     null
   );
   const [missingLoading, setMissingLoading] = useState(false);
+  // Batch-scan modal: either "check-all" or "missing-summary".
+  const [batchModalMode, setBatchModalMode] = useState<
+    "check-all" | "missing-summary" | null
+  >(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Map<string, MissingCodesResult>>(
     new Map()
@@ -134,17 +143,50 @@ export default function TrackedPage() {
   async function checkNow(it: TrackedListing) {
     const key = keyOf(it);
     setCheckingKey(key);
+    setCheckingPhase("page 1…");
     setLastCheck(null);
+    let finalResult: CheckListingResult | null = null;
     try {
-      const res = await api.post<CheckListingResult>(
-        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/check`
+      // Stream the per-phase events so the button label can update from
+      // "page 1…" → "掃描缺漏…" → "完成" instead of just showing a static
+      // "檢查中" while the catalog walk runs in the background.
+      await streamNdjson(
+        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/check/stream`,
+        {},
+        (event) => {
+          if (event.type === "progress") {
+            const phase = event.phase as string | undefined;
+            if (phase === "page1") setCheckingPhase("page 1…");
+            else if (phase === "missing_scan") setCheckingPhase("掃描缺漏…");
+            else if (phase === "enqueue") {
+              const queued = Number(event.queued ?? 0);
+              setCheckingPhase(queued > 0 ? `已送 ${queued}…` : "完成中…");
+            }
+          } else if (event.type === "done") {
+            finalResult = {
+              kind: event.kind,
+              id: event.id,
+              name: event.name ?? "",
+              new_codes: event.new_codes ?? [],
+              error: event.error ?? "",
+            };
+            const missingCount = event.missing_count;
+            const errMsg = event.error;
+            if (errMsg) {
+              setCheckingPhase("失敗");
+            } else if (typeof missingCount === "number") {
+              setCheckingPhase(`完成 (${missingCount} 缺漏)`);
+            } else {
+              setCheckingPhase("完成");
+            }
+          } else if (event.type === "error") {
+            setCheckingPhase("失敗");
+            setError(event.message ?? "未知錯誤");
+          }
+        },
       );
-      setLastCheck(res);
+      if (finalResult) setLastCheck(finalResult);
       load();
-      // The /check endpoint already invalidated the missing-summary
-      // cache server-side. A plain (refresh=false) reload will trigger
-      // a fresh rebuild on first access, without forcing a redundant
-      // PikPak walk on the client's behalf.
       // Also clear cached detail for this row so re-opening shows fresh data.
       setDetails((m) => {
         const next = new Map(m);
@@ -153,9 +195,15 @@ export default function TrackedPage() {
       });
       loadMissing(false);
     } catch (e: any) {
-      setError(e.message);
+      if (e.name !== "AbortError") setError(e.message);
+      setCheckingPhase("失敗");
     } finally {
-      setCheckingKey(null);
+      // Hold the final phase label briefly so the user can read it,
+      // then clear so the button text returns to "立即檢查".
+      setTimeout(() => {
+        setCheckingKey(null);
+        setCheckingPhase("");
+      }, 1500);
     }
   }
 
@@ -213,30 +261,24 @@ export default function TrackedPage() {
     }
   }
 
-  async function checkAll() {
-    // Use the backend batch endpoint instead of looping checkNow on the
-    // client — the server-side check_all() sleeps 1s between listings
-    // and the JavBus scraper has a global throttle + 429 backoff. Going
-    // sequential per-listing from the browser fires bursts that get
-    // rate-limited (429 Too Many Requests).
-    setCheckingKey("__all__");
+  function openBatchCheckAll() {
+    // The actual streaming + UI happens in <BatchScanModal mode="check-all" />.
+    // On done, we refresh local state (loadMissing + load).
     setLastCheck(null);
     setError(null);
-    try {
-      await api.post("/api/tracked/status/run-now");
-      // The batch endpoint invalidates the missing-summary cache;
-      // a refresh=false reload will pick up the freshly-built result
-      // without forcing another PikPak walk. Also clear cached row
-      // details so re-opening shows fresh data.
-      setDetails(new Map());
-      await loadMissing(false);
-      // Re-load the tracked rows themselves (last_seen_code etc. moved).
-      load();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setCheckingKey(null);
-    }
+    setBatchModalMode("check-all");
+  }
+
+  function openBatchMissingSummary() {
+    setBatchModalMode("missing-summary");
+  }
+
+  function onBatchModalDone() {
+    // Streamed work just finished — pull fresh aggregate data + rows so
+    // the badges and last_seen / last_checked_at reflect the new state.
+    setDetails(new Map());
+    loadMissing(false);
+    load();
   }
 
   async function manualAdd(e: React.FormEvent) {
@@ -299,18 +341,18 @@ export default function TrackedPage() {
           <div className="ml-auto flex gap-2">
             <button
               className="btn-ghost"
-              onClick={() => loadMissing(true)}
-              disabled={missingLoading}
+              onClick={openBatchMissingSummary}
+              disabled={missingLoading || batchModalMode !== null}
               title="重新掃 PikPak 資料夾並重算缺漏"
             >
-              {missingLoading ? "重算缺漏…" : "重算缺漏"}
+              重算缺漏
             </button>
             <button
               className="btn-ghost"
-              onClick={checkAll}
-              disabled={!!checkingKey}
+              onClick={openBatchCheckAll}
+              disabled={!!checkingKey || batchModalMode !== null}
             >
-              {checkingKey ? "檢查中…" : "全部立即檢查"}
+              全部立即檢查
             </button>
           </div>
         )}
@@ -545,17 +587,19 @@ export default function TrackedPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => checkNow(it)}
-                  disabled={!!checkingKey}
+                  disabled={!!checkingKey || batchModalMode !== null}
                   className="text-blue-300 hover:underline disabled:opacity-50"
                   title={
-                    checkingKey === "__all__"
-                      ? "正在全部檢查"
+                    batchModalMode
+                      ? "批次掃描中"
                       : checkingKey === keyOf(it)
-                      ? "檢查中"
+                      ? checkingPhase || "檢查中"
                       : undefined
                   }
                 >
-                  {checkingKey === keyOf(it) ? "檢查中" : "立即檢查"}
+                  {checkingKey === keyOf(it)
+                    ? checkingPhase || "檢查中"
+                    : "立即檢查"}
                 </button>
                 <button
                   onClick={() => remove(it)}
@@ -580,6 +624,13 @@ export default function TrackedPage() {
           </div>
         ))}
       </div>
+
+      <BatchScanModal
+        open={batchModalMode !== null}
+        mode={batchModalMode ?? "check-all"}
+        onClose={() => setBatchModalMode(null)}
+        onDone={onBatchModalDone}
+      />
     </div>
   );
 }

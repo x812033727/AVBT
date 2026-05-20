@@ -1,6 +1,8 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +58,33 @@ async def tracker_toggle(enabled: bool = Body(..., embed=True)):
     return tracker.state.to_dict()
 
 
+@router.post("/status/run-now/stream")
+async def tracker_run_now_stream():
+    """Streaming variant of ``/status/run-now`` — yields NDJSON events
+    so the UI can show "X / Y" progress as each listing completes
+    instead of staring at a spinner for the whole batch."""
+    missing_svc.invalidate_all_caches(presence=True)
+
+    async def gen():
+        new_total = 0
+        try:
+            async for event in tracker.check_all_stream(force=True):
+                if event.get("type") == "progress":
+                    new_total += len(event.get("new_codes") or [])
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+        finally:
+            tracker.state.last_new_total = new_total
+            tracker.state.last_run = datetime.utcnow()
+            # The batch shifted last_seen / queued downloads — drop the
+            # result cache so the post-batch reload from the UI sees
+            # fresh aggregate data.
+            missing_svc.invalidate_all_caches()
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
 @router.post("/status/run-now")
 async def tracker_run_now():
     # Batch check explicitly requested by the user — drop any cached
@@ -88,6 +117,25 @@ async def tracker_run_now():
 @router.get("/missing-summary", response_model=MissingSummary)
 async def missing_summary_endpoint(refresh: bool = False):
     return await missing_svc.missing_summary(refresh=refresh)
+
+
+@router.post("/missing-summary/stream")
+async def missing_summary_stream_endpoint(refresh: bool = True):
+    """Streaming variant of ``/missing-summary`` — yields NDJSON events
+    as each listing's JavBus catalog walk completes. Lets the "重算缺漏"
+    button show "X / Y" progress instead of a blank spinner for minutes.
+
+    POST (not GET) for parity with the other ``/stream`` endpoints and so
+    the frontend's shared ``streamNdjson`` helper can hit it without a
+    method-specific branch."""
+    async def gen():
+        try:
+            async for event in missing_svc.missing_summary_stream(refresh=refresh):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.get("/missing-all", response_model=AggregatedMissing)
@@ -238,6 +286,24 @@ async def untrack(
     await session.commit()
     missing_svc.invalidate_all_caches()
     return {"ok": True}
+
+
+@router.post("/{kind}/{slug:path}/check/stream")
+async def check_now_stream(kind: str, slug: str):
+    """Streaming variant of ``/check`` — yields ``start`` / ``progress``
+    / ``done`` events around the page-1 and missing-scan phases so the
+    UI button can show "page 1…" / "掃描缺漏…" instead of a silent spinner
+    while the catalog walk runs."""
+    missing_svc.invalidate_all_caches(presence=True)
+
+    async def gen():
+        try:
+            async for event in tracker.check_listing_stream(kind, slug, force=True):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/{kind}/{slug:path}/check", response_model=CheckListingResult)

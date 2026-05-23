@@ -69,29 +69,35 @@ def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
     return out
 
 
-async def _resolve_archive_path_by_code(code: str) -> str:
-    """JavBus-driven path resolution. Walks fetch_detail → TrackedListing
-    membership in ``_KIND_PRIORITY`` order. Returns the fallback path
-    when JavBus fails or no kind matches a tracked listing.
+async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
+    """Decide which tracked listing a JAV code belongs to.
 
-    Used by reorganize (no OfflineTaskLog row context at all) and by
-    ``_resolve_archive_path`` when the row's tracked_* snapshot is empty
-    (manual submits, rows that predate the snapshot columns)."""
-    safe_code = _safe_code(code)
-    fallback = f"{settings.pikpak_archive_folder}/{safe_code}"
+    Looks up the code in JavBus (with ``_detail_cache`` memoisation),
+    enumerates the candidate ``(kind, slug, name)`` triples from the
+    movie detail, then walks ``_KIND_PRIORITY`` and returns the FIRST
+    triple whose ``(kind, slug)`` exists in the ``TrackedListing`` table.
 
+    Returns ``(kind, safe_name)`` where ``safe_name`` has already been
+    run through the same ``_safe_name`` fallback chain that the archiver
+    uses for path components — so callers can plug it straight into a
+    filesystem / pCloud path without re-sanitising.
+
+    Returns ``None`` if JavBus fetch fails, the detail has no listing
+    refs, or no listing kind matches a tracked row. Callers decide what
+    that means (archiver falls back to ``pikpak_archive_folder``; pCloud
+    organize skips with ``reason=no_tracked_match``)."""
     detail = _detail_cache.get(code)
     if detail is None:
         try:
             detail = await scraper.fetch_detail(code)
         except Exception as exc:  # noqa: BLE001
             logger.debug("fetch_detail(%s) failed: %s", code, exc)
-            return fallback
+            return None
         _detail_cache[code] = detail
 
     kinds = _detail_kinds(detail)  # type: ignore[arg-type]
     if not kinds:
-        return fallback
+        return None
 
     async with SessionLocal() as session:
         for kind in _KIND_PRIORITY:
@@ -112,12 +118,27 @@ async def _resolve_archive_path_by_code(code: str) -> str:
                 tracked_row.name or name,
                 fallback=_safe_name(name, fallback=_safe_name(slug, fallback="unknown")),
             )
-            # kind_base_path() returns AVBT/<chinese kind label> by default
-            # (matching the archiver's natural-language layout) and honours
-            # per-kind env overrides like PIKPAK_SERIES_FOLDER.
-            return f"{kind_base_path(kind)}/{safe}/{safe_code}"
+            return kind, safe
 
-    return fallback
+    return None
+
+
+async def _resolve_archive_path_by_code(code: str) -> str:
+    """JavBus-driven path resolution. Returns the fallback path when
+    JavBus fails or no kind matches a tracked listing.
+
+    Used by reorganize (no OfflineTaskLog row context at all) and by
+    ``_resolve_archive_path`` when the row's tracked_* snapshot is empty
+    (manual submits, rows that predate the snapshot columns)."""
+    safe_code = _safe_code(code)
+    resolved = await resolve_listing_for_code(code)
+    if resolved is None:
+        return f"{settings.pikpak_archive_folder}/{safe_code}"
+    kind, safe_name = resolved
+    # kind_base_path() returns AVBT/<chinese kind label> by default
+    # (matching the archiver's natural-language layout) and honours
+    # per-kind env overrides like PIKPAK_SERIES_FOLDER.
+    return f"{kind_base_path(kind)}/{safe_name}/{safe_code}"
 
 
 async def _resolve_archive_path(row: OfflineTaskLog) -> str:

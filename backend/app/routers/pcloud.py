@@ -213,6 +213,32 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
+@router.post("/files/organize/stream")
+async def organize_folder_stream(payload: dict = Body(...)):
+    """Stream NDJSON organize events for the direct children of a folder.
+
+    Body: ``{folder_id: str, dry_run: bool=True}``. For each child whose
+    name contains a JAV code, resolves the tracked listing (series /
+    actress / studio / label / director) via JavBus and moves the item
+    into ``/<kind_base>/<tracked_name>/``. Items with no code or no
+    tracked match are skipped with a structured reason. Scope is one
+    level deep — same as cleanup.
+    """
+    folder_id = str(payload.get("folder_id") or "0").strip() or "0"
+    dry_run = bool(payload.get("dry_run", True))
+
+    async def gen():
+        try:
+            async for event in pcloud_service.organize_folder_stream(
+                folder_id, dry_run=dry_run
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
 # ---------- PikPak → pCloud transfer queue ----------
 
 @router.post("/folders/ensure")

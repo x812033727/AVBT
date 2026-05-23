@@ -121,6 +121,29 @@ class Settings(BaseSettings):
 
     http_proxy: str = ""
 
+    # JavBus shared client + adaptive rate limiter. The old global 1.2 s
+    # serial throttle was a hard ceiling that defeated every downstream
+    # concurrency knob. The limiter now caps in-flight to
+    # ``javbus_concurrency`` requests with a per-request minimum spacing
+    # that widens on 429 and gently recovers toward the base on success.
+    javbus_concurrency: int = 5
+    javbus_min_interval: float = 0.35
+    javbus_429_penalty: float = 2.5
+    javbus_429_recovery: float = 0.92
+    # httpx pool capacity (HTTP/2 multiplexes within each connection).
+    javbus_pool_size: int = 20
+    javbus_http2: bool = True
+
+    # fetch_detail in-memory cache. Same code requested by tracker, bulk
+    # send and manual movie page collapses to a single fetch within TTL.
+    # Set to 0 to disable caching entirely (every call hits JavBus).
+    javbus_detail_cache_ttl_seconds: int = 1800
+    javbus_detail_cache_max: int = 2000
+
+    # Parallel page-walk batch size for listing scans (missing detection
+    # and bulk send-all). Set to 1 to restore strict sequential walks.
+    javbus_page_batch_size: int = 3
+
     # Optional webhook fired after each successful auto-archive. Body is
     # `{"content": "..."}` which is compatible with Discord webhooks.
     webhook_url: str = ""

@@ -17,27 +17,19 @@ import logging
 from typing import AsyncIterator, Awaitable, Callable
 
 from ..schemas import SendAllOptions, SendAllResult
-from ..scrapers import javbus as scraper
 from .download_queue import Job, JobResult, download_queue, new_batch_id
+from .listing_walker import walk_listing
 
 logger = logging.getLogger(__name__)
 
 
 async def _collect_codes(*, kind: str, slug: str, options: SendAllOptions) -> list[str]:
     """Walk all pages of /{kind}/{slug} and return deduped codes."""
-    codes: list[str] = []
-    seen: set[str] = set()
-    for page in range(1, max(1, options.max_pages) + 1):
-        result = await scraper.fetch_listing(
-            kind, slug, page=page, uncensored=options.uncensored
-        )
-        for item in result.items:
-            if item.code and item.code not in seen:
-                seen.add(item.code)
-                codes.append(item.code)
-        if not result.has_next:
-            break
-    return codes
+    items, _pages = await walk_listing(
+        kind, slug, uncensored=options.uncensored,
+        max_pages=max(1, options.max_pages),
+    )
+    return [it.code for it in items if it.code]
 
 
 def _apply_result(summary: SendAllResult, result: JobResult) -> None:

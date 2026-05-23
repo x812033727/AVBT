@@ -27,7 +27,35 @@ function formatTime(iso: string): string {
   }
 }
 
-export default function DownloadQueuePanel({ refreshMs = 4000 }: { refreshMs?: number }) {
+function statusUnchanged(prev: QueueStatus, next: QueueStatus): boolean {
+  // The panel only renders pending count, processing list, totals and
+  // recent length. If none of those changed we can skip the re-render
+  // — important because the poll fires every few seconds and React
+  // would otherwise rebuild the whole subtree on each tick.
+  if (prev.pending !== next.pending) return false;
+  if (prev.concurrency !== next.concurrency) return false;
+  if (prev.processing.length !== next.processing.length) return false;
+  for (let i = 0; i < prev.processing.length; i++) {
+    if (prev.processing[i].code !== next.processing[i].code) return false;
+    if (prev.processing[i].source !== next.processing[i].source) return false;
+  }
+  const t1 = prev.totals;
+  const t2 = next.totals;
+  if (
+    t1.sent !== t2.sent
+    || t1.failed !== t2.failed
+    || t1.skipped_no_magnet !== t2.skipped_no_magnet
+    || t1.skipped_already_sent !== t2.skipped_already_sent
+    || t1.cancelled !== t2.cancelled
+  ) return false;
+  if (prev.recent.length !== next.recent.length) return false;
+  // Cheap top-of-list signature: if the most-recent entry changed, the
+  // recent list churned and we need to re-render.
+  if (prev.recent[0]?.at !== next.recent[0]?.at) return false;
+  return true;
+}
+
+export default function DownloadQueuePanel({ refreshMs = 6000 }: { refreshMs?: number }) {
   const [status, setStatus] = useState<QueueStatus | null>(null);
   const [open, setOpen] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -35,7 +63,7 @@ export default function DownloadQueuePanel({ refreshMs = 4000 }: { refreshMs?: n
   const load = useCallback(async () => {
     try {
       const s = await api.get<QueueStatus>("/api/pikpak/queue");
-      setStatus(s);
+      setStatus((prev) => (prev && statusUnchanged(prev, s) ? prev : s));
     } catch {
       /* ignore — keep last good snapshot */
     }
@@ -49,7 +77,7 @@ export default function DownloadQueuePanel({ refreshMs = 4000 }: { refreshMs?: n
     if (timerRef.current) window.clearInterval(timerRef.current);
     // Poll faster when there's activity so the user sees progress; slow
     // down to refreshMs when idle so we don't hammer the API.
-    const interval = status && (status.pending > 0 || status.processing.length > 0) ? 2000 : refreshMs;
+    const interval = status && (status.pending > 0 || status.processing.length > 0) ? 3000 : refreshMs;
     timerRef.current = window.setInterval(load, interval);
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);

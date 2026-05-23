@@ -216,6 +216,28 @@ class PikPakQuota(BaseModel):
     expire: Optional[str] = None
 
 
+# ---------- pCloud ----------
+
+class PCloudLogin(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    remember: bool = True
+
+
+class PCloudFile(BaseModel):
+    id: str
+    name: str
+    kind: str  # "folder" | "file"
+    size: Optional[int] = None
+    parent_id: Optional[str] = None
+    created_time: Optional[str] = None
+
+
+class PCloudQuota(BaseModel):
+    used: int = 0
+    limit: int = 0
+
+
 # ---------- Missing-codes / presence index ----------
 
 class ExtraCode(BaseModel):

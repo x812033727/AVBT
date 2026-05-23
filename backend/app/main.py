@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import backup, collection, img, javbus, pikpak, tracked
+from .routers import backup, collection, img, javbus, pcloud, pikpak, tracked
 from .scrapers import javbus as scraper
 from .services import archiver, log_cleanup, notify, tracker
 from .services.download_queue import download_queue, warm_sent_hashes
@@ -58,6 +58,7 @@ app.add_middleware(
 
 app.include_router(javbus.router)
 app.include_router(pikpak.router)
+app.include_router(pcloud.router)
 app.include_router(collection.router)
 app.include_router(tracked.router)
 app.include_router(backup.router)

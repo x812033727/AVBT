@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     pikpak_password: str = ""
     pikpak_download_folder: str = "AVBT"
 
+    # pCloud credentials (optional). When set, the pCloud service uses
+    # these to re-login automatically if its cached auth token gets
+    # invalidated; otherwise the user must log in once via /settings.
+    pcloud_username: str = ""
+    pcloud_password: str = ""
+    # Per-call HTTP timeout for pCloud API requests; same role as
+    # ``pikpak_api_timeout_seconds``. 0 disables.
+    pcloud_api_timeout_seconds: float = 60.0
+
     # Cap per-call PikPak API latency so a stuck connection can't freeze
     # the legacy-sweep / archive loop indefinitely. Each PikPak round-trip
     # (folder lookup, list, move, rename, trash) is wrapped in

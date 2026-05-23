@@ -270,16 +270,32 @@ class PCloudService:
                     pw_digest = hashlib.sha1(
                         (password + user_hash + digest).encode("utf-8")
                     ).hexdigest()
+                    # Match the pCloud docs example **exactly** —
+                    # ``logout=1`` is what they show, ``getauth=1`` and
+                    # ``device`` as a User-Agent-like identifier. Some
+                    # accounts (notably Crypto-enabled premium plans)
+                    # silently drop ``auth`` from the response when our
+                    # request doesn't match the expected shape closely.
+                    digest_creds = {
+                        "username": username,
+                        "digest": digest,
+                        "passworddigest": pw_digest,
+                    }
                     attempts.append(
                         (
-                            "digest",
+                            "digest+logout1+device",
                             {
-                                "username": username,
-                                "digest": digest,
-                                "passworddigest": pw_digest,
+                                **digest_creds,
                                 "getauth": 1,
-                                "logout": 0,
+                                "logout": 1,
+                                "device": "AVBT/1.0",
                             },
+                        )
+                    )
+                    attempts.append(
+                        (
+                            "digest+nologout",
+                            {**digest_creds, "getauth": 1},
                         )
                     )
             except PCloudError as exc:
@@ -288,16 +304,23 @@ class PCloudService:
                     host_label,
                     exc,
                 )
-            # Always also queue the plain-password attempt as fallback.
+            # Also queue plain-password attempts in the same two shapes.
+            plain_creds = {"username": username, "password": password}
             attempts.append(
                 (
-                    "plain",
+                    "plain+logout1+device",
                     {
-                        "username": username,
-                        "password": password,
+                        **plain_creds,
                         "getauth": 1,
-                        "logout": 0,
+                        "logout": 1,
+                        "device": "AVBT/1.0",
                     },
+                )
+            )
+            attempts.append(
+                (
+                    "plain+nologout",
+                    {**plain_creds, "getauth": 1},
                 )
             )
 
@@ -344,7 +367,16 @@ class PCloudService:
                 if first_error is None and last_attempt_error is not None:
                     first_error = last_attempt_error
                 continue
-            auth = str(data.get("auth") or "")
+            # Accept whichever field pCloud actually populated. Their
+            # docs say ``auth``, but the live API has been observed using
+            # other names on different code paths.
+            auth = str(
+                data.get("auth")
+                or data.get("authtoken")
+                or data.get("accesstoken")
+                or data.get("apikey")
+                or ""
+            )
             if not auth:
                 # pCloud accepted the credentials (result=0) but didn't
                 # return an ``auth`` token. The well-known cases:
@@ -378,20 +410,51 @@ class PCloudService:
                         "請改用 Access Token:登入 pcloud.com 後從 DevTools "
                         "Network 抓任一 api 請求 query string 的 auth=xxxxx。"
                     )
-                # Dump the entire response so we can diagnose the
-                # specific account state. Strip out anything that
-                # could leak secrets even though pCloud isn't known to
-                # echo passwords here.
-                safe_payload = {
-                    k: v for k, v in data.items() if k not in {"auth"}
+                # No auth token despite a successful credentials check.
+                # This is a known pCloud behaviour for some account
+                # types — most notably **Crypto-enabled premium plans**,
+                # which pCloud restricts to OAuth / web sessions for API
+                # token issuance. We've already retried with 4 different
+                # parameter shapes (digest/plain × with/without logout
+                # and device), so further parameter tweaking is unlikely
+                # to help. Direct the user to the working path.
+                is_crypto_account = bool(
+                    data.get("cryptosetup") or data.get("cryptosubscription")
+                )
+                hint = (
+                    "  → 你的帳號有 Crypto Folder 訂閱(cryptosubscription=True)。"
+                    "pCloud 對這類付費 Crypto 帳號的「公開 API 密碼登入」會在驗證"
+                    "密碼後刻意不發 API token,只允許走 OAuth / web session。"
+                    "這是 server 端政策,目前無法用帳密在本工具登入。\n\n"
+                    if is_crypto_account
+                    else ""
+                )
+                # Trim the payload so the error stays readable in toasts.
+                # We've already logged the full thing above.
+                interesting_fields = {
+                    k: data.get(k)
+                    for k in [
+                        "userid",
+                        "email",
+                        "emailverified",
+                        "haspassword",
+                        "premium",
+                        "cryptosetup",
+                        "cryptosubscription",
+                        "business",
+                    ]
+                    if k in data
                 }
                 raise PCloudError(
-                    "pCloud 接受了帳密(result=0)但沒回傳 auth token。"
-                    "通常代表此帳號需要額外驗證(email 點擊 / 2FA / device "
-                    "verification)才能取得 API token。\n"
-                    "建議改用 Access Token:登入 pcloud.com 後,DevTools "
-                    "Network 抓任一 api 請求 URL 的 auth=xxxx 那串。\n"
-                    f"server 完整回應: {safe_payload}"
+                    "pCloud 已驗證密碼(result=0),但拒絕發 API token。\n"
+                    + hint
+                    + "請改用 Access Token 登入(2 分鐘):\n"
+                    "  1. Chrome 開 https://my.pcloud.com 登入\n"
+                    "  2. F12 → Network 分頁 → 重新整理首頁\n"
+                    "  3. 點任一 api.pcloud.com 或 eapi.pcloud.com 的請求\n"
+                    "  4. 在 Request URL 找 auth=XXXXXXXXXX 那串(60 字元)\n"
+                    "  5. 複製 = 後面那串貼到本頁「Access Token」分頁\n\n"
+                    f"server 回應重點欄位: {interesting_fields}"
                 )
             userid = data.get("userid")
             try:
@@ -446,7 +509,21 @@ class PCloudService:
         """Smoke-test a raw auth token by hitting ``userinfo`` on each host
         until one accepts it. Returns ``(auth, host, userid)`` exactly
         like :meth:`_login_detect_host` so callers can reuse the same
-        downstream code path."""
+        downstream code path.
+
+        On success, opportunistically asks pCloud for a fresh token with
+        the **maximum TTL** (1 year absolute + 1 year inactivity sliding
+        window) and returns the longer-lived token if pCloud issues one.
+        This matters for tokens pulled out of a browser session, whose
+        original TTL is whatever pcloud.com decided — typically days.
+        The exchange is a best-effort: any failure leaves the original
+        token intact so the user never ends up worse off.
+        """
+        # pCloud accepts authexpire up to ~1 year (31536000s). Setting
+        # both authexpire and authinactiveexpire to that ceiling gives
+        # the longest possible lifetime: 1 year hard cap, with each API
+        # call sliding the inactivity window forward.
+        MAX_TTL = 31_536_000
         first_error: Optional[PCloudError] = None
         for host in PCLOUD_HOSTS:
             try:
@@ -460,7 +537,43 @@ class PCloudService:
                 userid_int = int(userid) if userid is not None else None
             except (TypeError, ValueError):
                 userid_int = None
-            return token, host, userid_int
+
+            # Try to swap for a long-lived token. If pCloud either
+            # rejects the extension request or returns no new auth, we
+            # silently keep the original token.
+            chosen_token = token
+            host_label = "US" if "eapi" not in host else "EU"
+            try:
+                renewed = await self._raw_request(
+                    host,
+                    "userinfo",
+                    {
+                        "getauth": 1,
+                        "authexpire": MAX_TTL,
+                        "authinactiveexpire": MAX_TTL,
+                    },
+                    auth=token,
+                )
+                new_auth = str(renewed.get("auth") or "")
+                if new_auth and new_auth != token:
+                    chosen_token = new_auth
+                    logger.info(
+                        "pCloud token extended to max TTL host=%s userid=%s",
+                        host_label,
+                        userid_int,
+                    )
+                else:
+                    logger.info(
+                        "pCloud token extension returned no new auth "
+                        "(server kept original) host=%s",
+                        host_label,
+                    )
+            except PCloudError as exc:
+                logger.info(
+                    "pCloud token extension skipped (server refused): %s",
+                    exc,
+                )
+            return chosen_token, host, userid_int
         if first_error is not None:
             raise first_error
         raise PCloudError("pCloud token 驗證失敗：所有資料中心都拒絕了")

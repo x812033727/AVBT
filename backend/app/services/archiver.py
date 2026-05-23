@@ -69,6 +69,53 @@ def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
     return out
 
 
+async def resolve_listing_loose(
+    code: str,
+    *,
+    priority: tuple[str, ...] = ("series", "label", "studio"),
+) -> tuple[str, str] | None:
+    """Decide which JavBus listing a code belongs to, **without** the
+    TrackedListing membership requirement that :func:`resolve_listing_for_code`
+    imposes.
+
+    Walks ``priority`` in order and returns the first listing kind that
+    JavBus has detail for. Used by pCloud organize: the goal there is
+    "categorise everything we have under a sensible folder" — there's
+    no PikPak-style download flow to gate on whether the user is
+    actively tracking a series, so we just take the strongest hint
+    JavBus gives us. Default priority matches the user-requested
+    fallback chain: series → label (發行商) → studio (製作商).
+
+    Shares ``_detail_cache`` with the strict resolver, so a single
+    pCloud pass and a concurrent PikPak archiver pass don't re-fetch
+    the same code twice.
+
+    Returns ``(kind, safe_name)`` or ``None`` when JavBus has no
+    detail at all (fetch failure / 404) **or** has detail but none of
+    the requested kinds are populated.
+    """
+    detail = _detail_cache.get(code)
+    if detail is None:
+        try:
+            detail = await scraper.fetch_detail(code)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("fetch_detail(%s) failed: %s", code, exc)
+            return None
+        _detail_cache[code] = detail
+
+    kinds = _detail_kinds(detail)  # type: ignore[arg-type]
+    for kind in priority:
+        ref = kinds.get(kind)
+        if not ref:
+            continue
+        slug, name = ref
+        safe = _safe_name(
+            name, fallback=_safe_name(slug, fallback="unknown")
+        )
+        return kind, safe
+    return None
+
+
 async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     """Decide which tracked listing a JAV code belongs to.
 

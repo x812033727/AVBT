@@ -916,15 +916,19 @@ class PCloudService:
         are moved as-is (we don't descend or flatten); the wrapping
         folder ends up as ``<tracked>/<original_folder_name>``.
 
-        Items with no recognisable code, no matching tracked listing,
-        or that already live under the resolved target folder are
-        skipped with a structured ``reason``.
+        Items with no recognisable code, no JavBus listing detail at
+        all, or that already live under the resolved target folder
+        are skipped with a structured ``reason``. **Tracked listings
+        are NOT required** — pCloud organize categorises anything
+        JavBus has metadata for, falling back through series → label
+        (發行商) → studio (製作商). This intentionally differs from the
+        PikPak archiver, which gates on TrackedListing.
 
         ``dry_run`` mode uses :meth:`lookup_path` (read-only) so a
         preview never materialises empty target folders.
         """
         # Lazy import to break the archiver ↔ pcloud import cycle.
-        from .archiver import resolve_listing_for_code
+        from .archiver import resolve_listing_loose
 
         try:
             children = await self.list_files(folder_id)
@@ -990,7 +994,7 @@ class PCloudService:
             try:
                 try:
                     resolved = await asyncio.wait_for(
-                        resolve_listing_for_code(code),
+                        resolve_listing_loose(code),
                         timeout=JAVBUS_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError:
@@ -1008,7 +1012,7 @@ class PCloudService:
                         **base_event,
                         "action": "skip",
                         "code": code,
-                        "reason": "no_tracked_match",
+                        "reason": "no_listing",
                     }
                     continue
 

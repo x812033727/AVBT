@@ -51,6 +51,8 @@ const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = 
 
 const REASON_LABEL: Record<string, string> = {
   no_code: "無法辨識番號",
+  no_listing: "JavBus 查無系列 / 發行商 / 製作商",
+  // legacy — kept so old finished jobs still render their reason
   no_tracked_match: "無追蹤對應",
   already_organized: "已在目標資料夾",
 };
@@ -317,8 +319,10 @@ export default function PCloudOrganizeButton({
             </div>
 
             <p className="text-xs text-white/50">
-              只動此資料夾的直接子項目。對每個有番號的影片 / 資料夾，依 JavBus + 追蹤清單反查到所屬系列 / 女優 / 製作商，搬到{" "}
-              <span className="font-mono">AVBT/&lt;類別&gt;/&lt;追蹤名&gt;/</span>。沒對應追蹤項目的會略過。
+              只動此資料夾的直接子項目。對每個有番號的影片 / 資料夾，依 JavBus 查到的{" "}
+              <span className="font-mono">系列 → 發行商 → 製作商</span>{" "}
+              順序取第一個有的,搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>。
+              不需先追蹤,JavBus 完全查無資料才會略過。
               {" "}
               <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
             </p>

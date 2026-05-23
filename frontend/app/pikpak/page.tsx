@@ -7,6 +7,7 @@ import EpisodeFinderButton from "@/components/EpisodeFinderButton";
 import FolderStatsBar from "@/components/FolderStatsBar";
 import LegacySweepButton from "@/components/LegacySweepButton";
 import MoveModal from "@/components/MoveModal";
+import PCloudSendModal from "@/components/PCloudSendModal";
 import { confirmDialog, toast } from "@/components/Toast";
 import VideoPlayerModal from "@/components/VideoPlayerModal";
 import {
@@ -521,6 +522,10 @@ function FilesPanel({
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [moveOpen, setMoveOpen] = useState(false);
+  const [pcloudOpen, setPcloudOpen] = useState(false);
+  const [pcloudFolder, setPcloudFolder] = useState<
+    { id: string; name: string } | null
+  >(null);
 
   function toggle(id: string) {
     const next = new Set(selected);
@@ -583,7 +588,16 @@ function FilesPanel({
         <div className="flex gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
           <span className="text-white/60">已選 {selectedIds.length} 個</span>
           <button
-            className="ml-auto text-amber-300 hover:underline"
+            className="ml-auto text-emerald-300 hover:underline"
+            onClick={() => {
+              setPcloudFolder(null);
+              setPcloudOpen(true);
+            }}
+          >
+            → pCloud
+          </button>
+          <button
+            className="text-amber-300 hover:underline"
             onClick={() => setMoveOpen(true)}
           >
             移動到…
@@ -610,6 +624,17 @@ function FilesPanel({
         onDone={() => {
           setSelected(new Set());
           onRefresh();
+        }}
+      />
+
+      <PCloudSendModal
+        open={pcloudOpen}
+        fileIds={pcloudFolder ? undefined : selectedIds}
+        folderId={pcloudFolder?.id}
+        folderName={pcloudFolder?.name}
+        onClose={() => setPcloudOpen(false)}
+        onDone={() => {
+          if (!pcloudFolder) setSelected(new Set());
         }}
       />
 
@@ -661,6 +686,27 @@ function FilesPanel({
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex gap-2 text-xs">
+                      <button
+                        onClick={() => {
+                          setPcloudFolder(
+                            f.kind === "drive#folder"
+                              ? { id: f.id, name: f.name }
+                              : null
+                          );
+                          if (f.kind !== "drive#folder") {
+                            setSelected(new Set([f.id]));
+                          }
+                          setPcloudOpen(true);
+                        }}
+                        className="text-emerald-300 hover:underline"
+                        title={
+                          f.kind === "drive#folder"
+                            ? "遞迴傳整個資料夾到 pCloud"
+                            : "傳此檔到 pCloud"
+                        }
+                      >
+                        → pCloud
+                      </button>
                       <button
                         onClick={() => onShare([f.id])}
                         className="text-blue-300 hover:underline"

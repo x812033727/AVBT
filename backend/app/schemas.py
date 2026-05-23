@@ -309,6 +309,94 @@ class ReorganizeOptions(BaseModel):
     dry_run: bool = True
 
 
+# ---------- pCloud ----------
+
+class PCloudLogin(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    access_token: Optional[str] = None
+
+
+class PCloudStatus(BaseModel):
+    logged_in: bool = False
+    username: str = ""
+    user_id: int = 0
+    region: str = "us"
+    has_stored_token: bool = False
+    has_env_credentials: bool = False
+    has_env_token: bool = False
+    default_folder: str = ""
+
+
+class PCloudFolderEntry(BaseModel):
+    """One row of a pCloud folder listing."""
+    folder_id: int = 0
+    file_id: int = 0
+    name: str
+    is_folder: bool = False
+    size: int = 0
+
+
+class PCloudFolderListing(BaseModel):
+    folder_id: int
+    path: str
+    parent_folder_id: Optional[int] = None
+    entries: list[PCloudFolderEntry] = Field(default_factory=list)
+
+
+class PCloudTransferRequest(BaseModel):
+    """Enqueue request body.
+
+    Exactly one of ``pikpak_file_ids`` (single/multi-file mode) and
+    ``pikpak_folder_id`` (recursive folder mode) should be set. ``folder``
+    is the destination path on pCloud — auto-created if missing. ``folder``
+    blank = use ``pcloud_default_folder`` from settings.
+    """
+    pikpak_file_ids: list[str] = Field(default_factory=list)
+    pikpak_folder_id: str = ""
+    folder: str = ""  # destination path on pCloud
+    delete_source: bool = False
+    # Only used when pikpak_folder_id is set. Mirror PikPak's subfolder
+    # tree under the destination instead of flattening everything.
+    preserve_subfolders: bool = True
+
+
+class PCloudTransferOut(BaseModel):
+    id: int
+    parent_id: Optional[int] = None
+    pikpak_file_id: str
+    pikpak_name: str
+    pikpak_size: int = 0
+    pikpak_path: str = ""
+    pcloud_folder_id: int = 0
+    pcloud_folder_path: str = ""
+    pcloud_upload_id: int = 0
+    pcloud_file_id: int = 0
+    status: str
+    message: str = ""
+    bytes_downloaded: int = 0
+    delete_source: bool = False
+    created_at: datetime
+    updated_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class PCloudTransferPage(BaseModel):
+    items: list[PCloudTransferOut]
+    total: int
+    pending: int
+    running: int
+    done: int
+    failed: int
+
+
+class PCloudEnqueueResult(BaseModel):
+    enqueued: int
+    transfer_ids: list[int] = Field(default_factory=list)
+    folder_path: str = ""
+    folder_id: int = 0
+
+
 class EpisodeItem(BaseModel):
     """A multi-part video file surfaced by the episode-finder walk."""
 

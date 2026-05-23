@@ -5,9 +5,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import backup, collection, img, javbus, pikpak, tracked
+from .routers import backup, collection, img, javbus, pcloud, pikpak, tracked
 from .services import archiver, log_cleanup, notify, tracker
 from .services.download_queue import download_queue
+from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue
 
 
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await download_queue.start()
     await webhook_queue.start()
+    await pcloud_transfer_queue.start()
     background = [
         asyncio.create_task(archiver.run_loop()),
         asyncio.create_task(tracker.run_loop()),
@@ -31,6 +33,7 @@ async def lifespan(app: FastAPI):
                 await t
             except asyncio.CancelledError:
                 pass
+        await pcloud_transfer_queue.stop()
         await webhook_queue.stop()
         await download_queue.stop()
         await img.aclose_client()
@@ -49,6 +52,7 @@ app.add_middleware(
 
 app.include_router(javbus.router)
 app.include_router(pikpak.router)
+app.include_router(pcloud.router)
 app.include_router(collection.router)
 app.include_router(tracked.router)
 app.include_router(backup.router)

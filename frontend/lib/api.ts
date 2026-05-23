@@ -377,6 +377,80 @@ export type PresenceCodeLookup = {
   paths: string[];
 };
 
+// ---------- pCloud ----------
+
+export type PCloudStatus = {
+  logged_in: boolean;
+  username: string;
+  user_id: number;
+  region: string;
+  has_stored_token: boolean;
+  has_env_credentials: boolean;
+  has_env_token: boolean;
+  default_folder: string;
+};
+
+export type PCloudFolderEntry = {
+  folder_id: number;
+  file_id: number;
+  name: string;
+  is_folder: boolean;
+  size: number;
+};
+
+export type PCloudFolderListing = {
+  folder_id: number;
+  path: string;
+  parent_folder_id: number | null;
+  entries: PCloudFolderEntry[];
+};
+
+export type PCloudTransfer = {
+  id: number;
+  parent_id: number | null;
+  pikpak_file_id: string;
+  pikpak_name: string;
+  pikpak_size: number;
+  pikpak_path: string;
+  pcloud_folder_id: number;
+  pcloud_folder_path: string;
+  pcloud_upload_id: number;
+  pcloud_file_id: number;
+  status: "pending" | "running" | "done" | "failed" | "cancelled";
+  message: string;
+  bytes_downloaded: number;
+  delete_source: boolean;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
+
+export type PCloudTransferPage = {
+  items: PCloudTransfer[];
+  total: number;
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+};
+
+export type PCloudEnqueueResult = {
+  enqueued: number;
+  transfer_ids: number[];
+  folder_path: string;
+  folder_id: number;
+};
+
+export type PCloudQueueStatus = {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  inflight: number;
+  concurrency: number;
+};
+
 export type QueueStatus = {
   concurrency: number;
   pending: number;

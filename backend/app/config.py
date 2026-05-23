@@ -118,6 +118,23 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 
+    # ----- pCloud: PikPak → pCloud 遠端傳輸 -----
+    # 帳密 / token 任一即可。token 優先;若無 token 但有帳密,啟動時
+    # 自動換 token 並寫入 data/pcloud_token.txt。
+    pcloud_username: str = ""
+    pcloud_password: str = ""
+    pcloud_access_token: str = ""
+    # us = api.pcloud.com (美國) / eu = eapi.pcloud.com (歐洲) /
+    # auto = 先試 us,失敗 fallback eu
+    pcloud_region: str = "auto"
+    # 預設要把檔案丟到 pCloud 的哪個資料夾路徑(以 / 起頭)。空字串 = 根目錄
+    pcloud_default_folder: str = "/From PikPak"
+    # 後台 transfer worker 同時處理幾個 job。pCloud savefilefromurl 是
+    # 非同步的(它自己拉檔),所以這只控制併發送出的速度,不影響頻寬
+    pcloud_transfer_concurrency: int = 3
+    # 輪詢一個 pCloud 上傳任務狀態的間隔(秒)
+    pcloud_poll_interval_seconds: int = 15
+
 
 settings = Settings()
 

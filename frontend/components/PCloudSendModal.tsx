@@ -4,20 +4,20 @@ import { useEffect, useState } from "react";
 import {
   api,
   type PCloudEnqueueResult,
-  type PCloudFolderListing,
+  type PCloudFile,
   type PCloudStatus,
 } from "@/lib/api";
 import { toast } from "@/components/Toast";
 
-type Crumb = { id: number; name: string };
+type Crumb = { id: string; name: string };
 
 /**
- * 把選定的 PikPak 檔案或單一資料夾送到 pCloud。
+ * Send selected PikPak file(s) or one PikPak folder to pCloud.
  *
- * - 傳入 ``fileIds`` 時:逐檔送出,共用同一個 pCloud 目標目錄
- * - 傳入 ``folderId`` 時:遞迴整個 PikPak 資料夾,(預設)鏡射子目錄結構
+ * - ``fileIds`` set:每個檔案分別送到同一 pCloud 目錄
+ * - ``folderId`` set:遞迴整個資料夾,可選保留子目錄結構
  *
- * 兩個都可以同時不傳(modal 不會打開),擇一非空即可。
+ * 兩個都不傳 modal 不會開,擇一非空即可。
  */
 export default function PCloudSendModal({
   open,
@@ -35,8 +35,8 @@ export default function PCloudSendModal({
   onDone?: (res: PCloudEnqueueResult) => void;
 }) {
   const [status, setStatus] = useState<PCloudStatus | null>(null);
-  const [crumbs, setCrumbs] = useState<Crumb[]>([{ id: 0, name: "我的 pCloud" }]);
-  const [listing, setListing] = useState<PCloudFolderListing | null>(null);
+  const [crumbs, setCrumbs] = useState<Crumb[]>([{ id: "0", name: "我的 pCloud" }]);
+  const [entries, setEntries] = useState<PCloudFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [pathOverride, setPathOverride] = useState("");
@@ -68,8 +68,8 @@ export default function PCloudSendModal({
   useEffect(() => {
     if (!open || !status?.logged_in) {
       if (!open) {
-        setCrumbs([{ id: 0, name: "我的 pCloud" }]);
-        setListing(null);
+        setCrumbs([{ id: "0", name: "我的 pCloud" }]);
+        setEntries([]);
         setNewFolderName("");
       }
       return;
@@ -77,8 +77,10 @@ export default function PCloudSendModal({
     let alive = true;
     setLoading(true);
     api
-      .get<PCloudFolderListing>(`/api/pcloud/folders?folder_id=${currentId}`)
-      .then((res) => alive && setListing(res))
+      .get<PCloudFile[]>(
+        `/api/pcloud/files?parent_id=${encodeURIComponent(currentId)}`
+      )
+      .then((res) => alive && setEntries(res))
       .catch((e: any) => alive && toast.error(e.message || "讀取 pCloud 資料夾失敗"))
       .finally(() => alive && setLoading(false));
     return () => {
@@ -86,8 +88,9 @@ export default function PCloudSendModal({
     };
   }, [open, currentId, status?.logged_in]);
 
-  function openFolder(entry: { folder_id: number; name: string }) {
-    setCrumbs([...crumbs, { id: entry.folder_id, name: entry.name }]);
+  function openFolder(entry: PCloudFile) {
+    if (entry.kind !== "folder") return;
+    setCrumbs([...crumbs, { id: entry.id, name: entry.name }]);
     setPathOverride("");
   }
 
@@ -96,21 +99,27 @@ export default function PCloudSendModal({
     setPathOverride("");
   }
 
+  // Walk the breadcrumb chain to build the current absolute pCloud path.
+  function currentPath(): string {
+    if (crumbs.length <= 1) return "/";
+    return "/" + crumbs.slice(1).map((c) => c.name).join("/");
+  }
+
   async function createFolder() {
     const name = newFolderName.trim();
     if (!name) return;
     setCreating(true);
     try {
-      const base = listing?.path && listing.path !== "/" ? listing.path : "";
-      const path = `${base}/${name}`.replace(/\/+/g, "/");
-      await api.post("/api/pcloud/folders/ensure", { path });
-      toast.success(`已建立 ${path}`);
+      await api.post("/api/pcloud/folders/create", {
+        parent_id: currentId,
+        name,
+      });
+      toast.success(`已建立 ${name}`);
       setNewFolderName("");
-      // Reload current folder
-      const res = await api.get<PCloudFolderListing>(
-        `/api/pcloud/folders?folder_id=${currentId}`
+      const res = await api.get<PCloudFile[]>(
+        `/api/pcloud/files?parent_id=${encodeURIComponent(currentId)}`
       );
-      setListing(res);
+      setEntries(res);
     } catch (e: any) {
       toast.error(e.message);
     } finally {
@@ -121,7 +130,7 @@ export default function PCloudSendModal({
   function effectivePath(): string {
     const override = pathOverride.trim();
     if (override) return override.startsWith("/") ? override : "/" + override;
-    return (listing?.path || crumbs.map((c) => c.name).join("/")) || "/";
+    return currentPath();
   }
 
   async function submit() {
@@ -148,6 +157,8 @@ export default function PCloudSendModal({
   }
 
   if (!open) return null;
+
+  const folderEntries = entries.filter((e) => e.kind === "folder");
 
   return (
     <div
@@ -176,7 +187,7 @@ export default function PCloudSendModal({
               href="/pcloud"
               className="inline-block rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm text-accent hover:bg-accent/20"
             >
-              前往 pCloud 設定頁登入
+              前往 /pcloud 登入
             </a>
           </div>
         ) : (
@@ -197,25 +208,23 @@ export default function PCloudSendModal({
                 <div className="px-3 py-6 text-center text-sm text-white/40">
                   載入中…
                 </div>
-              ) : !listing?.entries.filter((e) => e.is_folder).length ? (
+              ) : !folderEntries.length ? (
                 <div className="px-3 py-6 text-center text-sm text-white/40">
                   此目錄沒有子資料夾
                 </div>
               ) : (
                 <ul className="divide-y divide-white/5 text-sm">
-                  {listing.entries
-                    .filter((e) => e.is_folder)
-                    .map((f) => (
-                      <li key={`f-${f.folder_id}`}>
-                        <button
-                          onClick={() => openFolder(f)}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/5"
-                        >
-                          <span>📁</span>
-                          <span className="truncate text-white/90">{f.name}</span>
-                        </button>
-                      </li>
-                    ))}
+                  {folderEntries.map((f) => (
+                    <li key={`f-${f.id}`}>
+                      <button
+                        onClick={() => openFolder(f)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/5"
+                      >
+                        <span>📁</span>
+                        <span className="truncate text-white/90">{f.name}</span>
+                      </button>
+                    </li>
+                  ))}
                 </ul>
               )}
             </div>
@@ -243,7 +252,7 @@ export default function PCloudSendModal({
               <input
                 value={pathOverride}
                 onChange={(e) => setPathOverride(e.target.value)}
-                placeholder={listing?.path || "/From PikPak"}
+                placeholder={currentPath()}
                 className="w-full rounded-md border border-white/10 bg-panel px-2 py-1 font-mono text-sm outline-none focus:border-accent"
               />
             </div>

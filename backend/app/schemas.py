@@ -216,6 +216,84 @@ class PikPakQuota(BaseModel):
     expire: Optional[str] = None
 
 
+# ---------- pCloud ----------
+
+class PCloudLogin(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    # ``access_token`` lets the user paste a pCloud-issued token instead
+    # of supplying username + password. Token wins when both are set.
+    access_token: Optional[str] = None
+    remember: bool = True
+
+
+class PCloudFile(BaseModel):
+    id: str
+    name: str
+    kind: str  # "folder" | "file"
+    size: Optional[int] = None
+    parent_id: Optional[str] = None
+    created_time: Optional[str] = None
+
+
+class PCloudQuota(BaseModel):
+    used: int = 0
+    limit: int = 0
+
+
+# ----- transfer queue (PikPak → pCloud via savefilefromurl) -----
+
+class PCloudTransferRequest(BaseModel):
+    """Enqueue body. Exactly one of ``pikpak_file_ids`` (single/multi-file
+    mode) and ``pikpak_folder_id`` (recursive folder mode) should be set.
+    ``folder`` is the destination path on pCloud — auto-created if it
+    doesn't exist. Empty string = use ``pcloud_default_folder``."""
+    pikpak_file_ids: list[str] = Field(default_factory=list)
+    pikpak_folder_id: str = ""
+    folder: str = ""
+    delete_source: bool = False
+    # Only used in recursive folder mode. Mirror PikPak's subfolder tree
+    # under the destination instead of flattening everything into one
+    # bucket.
+    preserve_subfolders: bool = True
+
+
+class PCloudTransferOut(BaseModel):
+    id: int
+    parent_id: Optional[int] = None
+    pikpak_file_id: str
+    pikpak_name: str
+    pikpak_size: int = 0
+    pikpak_path: str = ""
+    pcloud_folder_id: int = 0
+    pcloud_folder_path: str = ""
+    pcloud_upload_id: int = 0
+    pcloud_file_id: int = 0
+    status: str
+    message: str = ""
+    bytes_downloaded: int = 0
+    delete_source: bool = False
+    created_at: datetime
+    updated_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class PCloudTransferPage(BaseModel):
+    items: list[PCloudTransferOut]
+    total: int
+    pending: int
+    running: int
+    done: int
+    failed: int
+
+
+class PCloudEnqueueResult(BaseModel):
+    enqueued: int
+    transfer_ids: list[int] = Field(default_factory=list)
+    folder_path: str = ""
+    folder_id: int = 0
+
+
 # ---------- Missing-codes / presence index ----------
 
 class ExtraCode(BaseModel):

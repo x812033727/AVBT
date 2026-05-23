@@ -198,6 +198,44 @@ export type PikPakQuota = {
   expire: string | null;
 };
 
+export type PCloudFile = {
+  id: string;
+  name: string;
+  kind: string; // "folder" | "file"
+  size: number | null;
+  parent_id: string | null;
+  created_time: string | null;
+};
+
+export type PCloudQuota = {
+  used: number;
+  limit: number;
+};
+
+export type PCloudStatus = {
+  logged_in: boolean;
+  username: string;
+  host: string;
+  region?: string;
+  user_id?: number;
+  has_stored_token: boolean;
+  has_env_credentials: boolean;
+  has_env_token?: boolean;
+  default_folder?: string;
+  quota?: PCloudQuota;
+  quota_error?: string;
+};
+
+export type PCloudFolderStats = {
+  total_files: number;
+  total_folders: number;
+  total_size: number;
+  video_count: number;
+  video_size: number;
+  coded_count: number;
+  partial: boolean;
+};
+
 export type ArchiverStatus = {
   enabled: boolean;
   interval_seconds: number;
@@ -377,33 +415,7 @@ export type PresenceCodeLookup = {
   paths: string[];
 };
 
-// ---------- pCloud ----------
-
-export type PCloudStatus = {
-  logged_in: boolean;
-  username: string;
-  user_id: number;
-  region: string;
-  has_stored_token: boolean;
-  has_env_credentials: boolean;
-  has_env_token: boolean;
-  default_folder: string;
-};
-
-export type PCloudFolderEntry = {
-  folder_id: number;
-  file_id: number;
-  name: string;
-  is_folder: boolean;
-  size: number;
-};
-
-export type PCloudFolderListing = {
-  folder_id: number;
-  path: string;
-  parent_folder_id: number | null;
-  entries: PCloudFolderEntry[];
-};
+// ---------- pCloud transfer queue ----------
 
 export type PCloudTransfer = {
   id: number;

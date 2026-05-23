@@ -31,6 +31,7 @@ from ..schemas import (
 )
 from ..scrapers import javbus as scraper
 from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
+from .listing_walker import walk_listing
 from .pikpak_presence import presence_index
 
 
@@ -187,30 +188,9 @@ async def fetch_all_listing_codes(
             return list(cached[1]), cached[2]
 
     cap = max_pages or max(1, settings.missing_max_pages)
-    items: list[MovieListItem] = []
-    seen: set[str] = set()
-    pages = 0
-    page = 1
-    while page <= cap:
-        try:
-            res = await scraper.fetch_listing(
-                kind, slug, page=page, uncensored=uncensored
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "fetch_listing(%s/%s p=%d) failed: %s", kind, slug, page, exc
-            )
-            break
-        pages += 1
-        if not res.items:
-            break
-        for it in res.items:
-            if it.code and it.code not in seen:
-                seen.add(it.code)
-                items.append(it)
-        if not res.has_next:
-            break
-        page += 1
+    items, pages = await walk_listing(
+        kind, slug, uncensored=uncensored, max_pages=cap
+    )
 
     _listing_cache[key] = (datetime.utcnow(), list(items), pages)
     return items, pages

@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
 from .routers import backup, collection, img, javbus, pcloud, pikpak, tracked
+from .scrapers import javbus as scraper
 from .services import archiver, log_cleanup, notify, tracker
-from .services.download_queue import download_queue
+from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue
 
@@ -15,7 +16,14 @@ from .services.webhook_queue import webhook_queue
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Build the shared JavBus HTTP client before workers start — they
+    # call into the scraper as soon as a job lands.
+    await scraper.init_client()
     await download_queue.start()
+    # Pre-load the sent-hash cache so the first job doesn't pay the
+    # full-table-scan latency. Cheap on small DBs, ~hundreds of ms on
+    # ones with 10k+ rows.
+    await warm_sent_hashes()
     await webhook_queue.start()
     await pcloud_transfer_queue.start()
     background = [
@@ -36,6 +44,7 @@ async def lifespan(app: FastAPI):
         await pcloud_transfer_queue.stop()
         await webhook_queue.stop()
         await download_queue.stop()
+        await scraper.aclose_client()
         await img.aclose_client()
         await notify.aclose_client()
 

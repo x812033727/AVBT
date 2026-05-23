@@ -9,6 +9,7 @@ from .routers import backup, collection, img, javbus, pcloud, pikpak, tracked
 from .scrapers import javbus as scraper
 from .services import archiver, log_cleanup, notify, tracker
 from .services.download_queue import download_queue, warm_sent_hashes
+from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue
 
 
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI):
     # ones with 10k+ rows.
     await warm_sent_hashes()
     await webhook_queue.start()
+    await pcloud_transfer_queue.start()
     background = [
         asyncio.create_task(archiver.run_loop()),
         asyncio.create_task(tracker.run_loop()),
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
                 await t
             except asyncio.CancelledError:
                 pass
+        await pcloud_transfer_queue.stop()
         await webhook_queue.stop()
         await download_queue.stop()
         await scraper.aclose_client()

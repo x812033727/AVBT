@@ -216,8 +216,12 @@ export type PCloudStatus = {
   logged_in: boolean;
   username: string;
   host: string;
+  region?: string;
+  user_id?: number;
   has_stored_token: boolean;
   has_env_credentials: boolean;
+  has_env_token?: boolean;
+  default_folder?: string;
   quota?: PCloudQuota;
   quota_error?: string;
 };
@@ -409,6 +413,54 @@ export type PresenceDetail = PresenceStatus & {
 export type PresenceCodeLookup = {
   code: string;
   paths: string[];
+};
+
+// ---------- pCloud transfer queue ----------
+
+export type PCloudTransfer = {
+  id: number;
+  parent_id: number | null;
+  pikpak_file_id: string;
+  pikpak_name: string;
+  pikpak_size: number;
+  pikpak_path: string;
+  pcloud_folder_id: number;
+  pcloud_folder_path: string;
+  pcloud_upload_id: number;
+  pcloud_file_id: number;
+  status: "pending" | "running" | "done" | "failed" | "cancelled";
+  message: string;
+  bytes_downloaded: number;
+  delete_source: boolean;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
+
+export type PCloudTransferPage = {
+  items: PCloudTransfer[];
+  total: number;
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+};
+
+export type PCloudEnqueueResult = {
+  enqueued: number;
+  transfer_ids: number[];
+  folder_path: string;
+  folder_id: number;
+};
+
+export type PCloudQueueStatus = {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  inflight: number;
+  concurrency: number;
 };
 
 export type QueueStatus = {

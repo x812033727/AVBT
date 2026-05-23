@@ -53,6 +53,10 @@ async def init_db() -> None:
             # Records the missing-count from the last full scan so the
             # tracker can skip ticks on listings that are already complete.
             "ALTER TABLE tracked_listing ADD COLUMN last_missing_count INTEGER DEFAULT 0",
+            # pCloud transfer queue indices.
+            "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_status ON pcloud_transfer(status)",
+            "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_parent ON pcloud_transfer(parent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_pikpak_file ON pcloud_transfer(pikpak_file_id)",
         ):
             try:
                 await conn.exec_driver_sql(ddl)

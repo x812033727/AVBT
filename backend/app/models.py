@@ -63,6 +63,42 @@ class TrackedActress(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PCloudTransfer(Base):
+    """One PikPak → pCloud transfer job.
+
+    States: ``pending`` → ``running`` → ``done`` | ``failed`` | ``cancelled``.
+    ``upload_id`` is filled once pCloud has accepted the savefilefromurl
+    call; that's also the handle we use to poll progress + cancel.
+    ``parent_id`` (FK to another PCloudTransfer.id) chains files that came
+    from the same "send whole folder recursively" request, so the UI can
+    group them.
+    """
+    __tablename__ = "pcloud_transfer"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # PikPak source
+    pikpak_file_id: Mapped[str] = mapped_column(String(128), index=True, default="")
+    pikpak_name: Mapped[str] = mapped_column(String(512), default="")
+    pikpak_size: Mapped[int] = mapped_column(Integer, default=0)
+    pikpak_path: Mapped[str] = mapped_column(String(1024), default="")
+    # pCloud target
+    pcloud_folder_id: Mapped[int] = mapped_column(Integer, default=0)
+    pcloud_folder_path: Mapped[str] = mapped_column(String(1024), default="")
+    pcloud_upload_id: Mapped[int] = mapped_column(Integer, default=0)
+    pcloud_file_id: Mapped[int] = mapped_column(Integer, default=0)
+    # Lifecycle
+    status: Mapped[str] = mapped_column(String(16), index=True, default="pending")
+    message: Mapped[str] = mapped_column(Text, default="")
+    bytes_downloaded: Mapped[int] = mapped_column(Integer, default=0)
+    delete_source: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class OfflineTaskLog(Base):
     __tablename__ = "offline_task_log"
 

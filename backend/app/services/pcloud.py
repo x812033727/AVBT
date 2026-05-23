@@ -114,14 +114,20 @@ class PCloudService:
     # ---------- public ----------
 
     def status(self) -> dict:
+        host = self._host or PCLOUD_HOSTS[0]
+        region = "eu" if host.startswith("https://eapi.") else "us"
         return {
             "logged_in": bool(self._auth),
             "username": self._username,
-            "host": self._host,
+            "host": host,
+            "region": region,
+            "user_id": self._userid or 0,
             "has_stored_token": TOKEN_FILE.exists(),
             "has_env_credentials": bool(
                 settings.pcloud_username and settings.pcloud_password
             ),
+            "has_env_token": bool(settings.pcloud_access_token),
+            "default_folder": settings.pcloud_default_folder or "/",
         }
 
     def logout(self) -> None:
@@ -239,6 +245,29 @@ class PCloudService:
             raise first_error
         raise PCloudError("pCloud 登入失敗：所有資料中心都拒絕了帳號")
 
+    async def _verify_token(self, token: str) -> tuple[str, str, int | None]:
+        """Smoke-test a raw auth token by hitting ``userinfo`` on each host
+        until one accepts it. Returns ``(auth, host, userid)`` exactly
+        like :meth:`_login_detect_host` so callers can reuse the same
+        downstream code path."""
+        first_error: Optional[PCloudError] = None
+        for host in PCLOUD_HOSTS:
+            try:
+                data = await self._raw_request(host, "userinfo", auth=token)
+            except PCloudError as exc:
+                if first_error is None:
+                    first_error = exc
+                continue
+            userid = data.get("userid")
+            try:
+                userid_int = int(userid) if userid is not None else None
+            except (TypeError, ValueError):
+                userid_int = None
+            return token, host, userid_int
+        if first_error is not None:
+            raise first_error
+        raise PCloudError("pCloud token 驗證失敗：所有資料中心都拒絕了")
+
     async def _ensure_auth(self) -> str:
         async with self._lock:
             if self._auth:
@@ -251,12 +280,28 @@ class PCloudService:
                 self._username = str(stored.get("username") or "")
                 return self._auth
 
+            # 1) .env access token wins over username/password.
+            env_token = (settings.pcloud_access_token or "").strip()
+            if env_token:
+                auth, host, userid = await self._verify_token(env_token)
+                self._auth = auth
+                self._host = host
+                self._userid = userid
+                # ``userinfo`` returns email — capture for display.
+                try:
+                    info = await self._raw_request(host, "userinfo", auth=auth)
+                    self._username = str(info.get("email") or "")
+                except PCloudError:
+                    self._username = ""
+                self._save_token(auth, host, self._username)
+                return auth
+
             env_user = settings.pcloud_username
             env_pwd = settings.pcloud_password
             if not env_user or not env_pwd:
                 raise PCloudError(
-                    "pCloud 尚未登入。請到 /settings 填入帳密，或在 .env 設定 "
-                    "PCLOUD_USERNAME / PCLOUD_PASSWORD。"
+                    "pCloud 尚未登入。請到 /pcloud 填入帳密 / token,或在 .env "
+                    "設定 PCLOUD_USERNAME+PCLOUD_PASSWORD 或 PCLOUD_ACCESS_TOKEN。"
                 )
             auth, host, userid = await self._login_detect_host(env_user, env_pwd)
             self._auth = auth
@@ -266,10 +311,36 @@ class PCloudService:
             self._save_token(auth, host, env_user)
             return auth
 
-    async def login(self, username: str, password: str) -> dict:
-        if not username or not password:
-            raise PCloudError("請填入帳號與密碼")
+    async def login(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        access_token: Optional[str] = None,
+    ) -> dict:
+        """Explicit login. Caller can supply either username+password OR
+        a raw access token (e.g. from pCloud's developer page). Token
+        path verifies the token before caching it."""
         async with self._lock:
+            if access_token:
+                token = access_token.strip()
+                if not token:
+                    raise PCloudError("Token 不可空白")
+                auth, host, userid = await self._verify_token(token)
+                # Pull email so status() shows something meaningful.
+                email = ""
+                try:
+                    info = await self._raw_request(host, "userinfo", auth=auth)
+                    email = str(info.get("email") or "")
+                except PCloudError:
+                    pass
+                self._auth = auth
+                self._host = host
+                self._username = email
+                self._userid = userid
+                self._save_token(auth, host, email)
+                return {"username": email, "userid": userid, "host": host}
+            if not username or not password:
+                raise PCloudError("請填入帳號與密碼,或提供 access token")
             auth, host, userid = await self._login_detect_host(username, password)
             self._auth = auth
             self._host = host
@@ -521,6 +592,137 @@ class PCloudService:
                 yield {**base_event, "action": "error", "target": None, "reason": str(exc)}
 
         yield {"type": "done", "result": summary}
+
+    # ---------- PikPak → pCloud transfer support ----------
+    #
+    # These are used by ``services.pcloud_transfer`` to make pCloud pull
+    # files directly from PikPak's CDN. ``savefilefromurl`` is async on
+    # the server side: it returns immediately with an ``upload_id`` and
+    # downloads in the background; we poll ``savefilefromurlstatus`` for
+    # progress.
+
+    async def ensure_path(self, path: str) -> int:
+        """Walk-create ``/a/b/c`` and return the leaf folder id. Empty
+        / ``"/"`` returns the root (0). Used to materialise the user's
+        chosen destination before submitting a transfer."""
+        path = (path or "").strip()
+        if not path or path == "/":
+            return 0
+        segments = [s for s in path.split("/") if s]
+        parent_id = 0
+        for seg in segments:
+            data = await self._call(
+                "createfolderifnotexists",
+                {"folderid": parent_id, "name": seg},
+            )
+            meta = data.get("metadata") or {}
+            try:
+                parent_id = int(meta.get("folderid", 0))
+            except (TypeError, ValueError):
+                raise PCloudError(
+                    f"pCloud 無法建立或解析資料夾: {seg} (path={path})"
+                )
+        return parent_id
+
+    async def save_file_from_url(
+        self,
+        url: str,
+        folder_id: int,
+        *,
+        filename: str = "",
+    ) -> dict:
+        """Kick off an async fetch of ``url`` into pCloud folder
+        ``folder_id``. Returns ``{"upload_id": int, "raw": dict}``. The
+        underlying pCloud call returns immediately; pCloud then pulls
+        the URL on its own bandwidth in the background. Poll progress
+        via :meth:`upload_progress`.
+        """
+        params: dict[str, Any] = {
+            "url": url,
+            "folderid": folder_id,
+            "nopartial": 1,
+        }
+        if filename:
+            params["target"] = filename
+        data = await self._call("savefilefromurl", params)
+        upload_id = 0
+        # pCloud's response shape has shifted across versions; check the
+        # few likely keys before falling back to the "uploadlinks" array.
+        for k in ("uploadlinkid", "uploadid"):
+            v = data.get(k)
+            if v:
+                try:
+                    upload_id = int(v)
+                    break
+                except (TypeError, ValueError):
+                    pass
+        if not upload_id:
+            links = data.get("uploadlinks") or data.get("uploads") or []
+            if isinstance(links, list) and links:
+                first = links[0] or {}
+                for k in ("uploadlinkid", "uploadid", "id"):
+                    if first.get(k):
+                        try:
+                            upload_id = int(first[k])
+                            break
+                        except (TypeError, ValueError):
+                            pass
+        return {"upload_id": upload_id, "raw": data}
+
+    async def upload_progress(self, upload_id: int) -> dict:
+        """Poll a savefilefromurl background job. Normalised return:
+
+        - ``{"status": "downloading", "downloaded": int, "size": int}``
+        - ``{"status": "done", "metadata": dict, "file_id": int}``
+        - ``{"status": "failed", "error": str}``
+        - ``{"status": "unknown"}`` — pCloud no longer remembers this id
+
+        We translate the pCloud shape into this small set so the worker
+        doesn't have to chase format variants.
+        """
+        try:
+            data = await self._call(
+                "savefilefromurlstatus", {"uploadid": upload_id}
+            )
+        except PCloudError as exc:
+            # 2009 = upload not found / completed and reaped.
+            if getattr(exc, "result", 0) in (2009, 2003):
+                return {"status": "unknown", "error": str(exc)}
+            raise
+        files = data.get("files") or []
+        if isinstance(files, list) and files:
+            f = files[0] or {}
+            meta = f.get("metadata") or {}
+            file_id = 0
+            try:
+                file_id = int(meta.get("fileid") or 0)
+            except (TypeError, ValueError):
+                pass
+            if file_id:
+                return {
+                    "status": "done",
+                    "metadata": meta,
+                    "file_id": file_id,
+                }
+        if "downloaded" in data or "size" in data:
+            return {
+                "status": "downloading",
+                "downloaded": int(data.get("downloaded") or 0),
+                "size": int(data.get("size") or 0),
+            }
+        if data.get("error"):
+            return {"status": "failed", "error": str(data["error"])}
+        return {"status": "unknown"}
+
+    async def cancel_upload(self, upload_id: int) -> None:
+        try:
+            await self._call(
+                "savefilefromurlcancel", {"uploadid": upload_id}
+            )
+        except PCloudError as exc:
+            if getattr(exc, "result", 0) in (2009, 2003):
+                return
+            raise
 
 
 pcloud_service = PCloudService()

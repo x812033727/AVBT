@@ -307,3 +307,16 @@ class PresenceCodeLookup(BaseModel):
 
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True
+
+
+class EpisodeItem(BaseModel):
+    """A multi-part video file surfaced by the episode-finder walk."""
+
+    file_id: str
+    name: str
+    code: str
+    category: str  # "canonical" (already _N) | "multifile" (raw/CD/-N/variant)
+    marker_index: int = 0
+    parent_id: str
+    parent_path: str
+    size: Optional[int] = None

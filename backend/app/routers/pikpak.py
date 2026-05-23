@@ -18,7 +18,7 @@ from ..schemas import (
     ReorganizeOptions,
     SendAllOptions,
 )
-from ..services import archiver
+from ..services import archiver, episode_finder
 from ..services.download_queue import Job, download_queue
 from ..services.jav_code import extract_jav_code, is_video
 from ..services.pikpak import PikPakError, pikpak_service
@@ -277,6 +277,56 @@ async def share_files(
         )
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.post("/files/episodes/scan/stream")
+async def episodes_scan_stream(payload: dict = Body(...)):
+    """Recursively walk ``folder_id`` and stream every file that looks
+    like a multi-part episode. Read-only — no mutations.
+
+    Body: ``{folder_id: str, max_depth?: int=8, cap?: int=20000}``.
+    """
+    folder_id = (payload.get("folder_id") or "").strip()
+    max_depth = int(payload.get("max_depth") or 8)
+    cap = int(payload.get("cap") or 20000)
+
+    async def gen():
+        try:
+            async for event in episode_finder.walk_for_episodes(
+                folder_id, max_depth=max_depth, cap=cap
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@router.post("/files/episodes/process/stream")
+async def episodes_process_stream(payload: dict = Body(...)):
+    """Trash a list of episode files, then (optionally) strip ``_N``
+    markers from any code that becomes a singleton in the affected
+    parent folders.
+
+    Body: ``{file_ids_to_trash: list[str], parent_ids_touched: list[str],
+            auto_strip: bool=True}``.
+    """
+    file_ids = list(payload.get("file_ids_to_trash") or [])
+    parent_ids = list(payload.get("parent_ids_touched") or [])
+    auto_strip = bool(payload.get("auto_strip", True))
+
+    async def gen():
+        try:
+            async for event in episode_finder.process_trash_and_strip(
+                file_ids_to_trash=file_ids,
+                parent_ids_touched=parent_ids,
+                auto_strip=auto_strip,
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/files/cleanup/stream")

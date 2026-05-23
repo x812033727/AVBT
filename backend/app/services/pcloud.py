@@ -346,14 +346,53 @@ class PCloudService:
                 continue
             auth = str(data.get("auth") or "")
             if not auth:
-                # Some 2FA flows return result=0 but no auth + a tfatoken
-                # — translate that too.
-                if data.get("tfatoken") or data.get("tfa_required"):
+                # pCloud accepted the credentials (result=0) but didn't
+                # return an ``auth`` token. The well-known cases:
+                #
+                #   - 2FA pending: response carries ``tfatoken`` (snake
+                #     case) or rarely ``tfaToken``. The web client then
+                #     calls ``/tfa_login`` with the code from email/app
+                #     — a flow we don't implement yet.
+                #   - Email verification pending after password reset:
+                #     response may carry ``verifyrequired`` or similar.
+                #   - pCloud rolled out a new field name we don't read
+                #     yet — in that case we want the raw payload visible
+                #     so we can ship a fix without another guess.
+                tfa_token = (
+                    data.get("tfatoken")
+                    or data.get("tfaToken")
+                    or data.get("tfa_required")
+                )
+                logger.warning(
+                    "pCloud login result=0 but no auth user=%s host=%s "
+                    "method=%s response_keys=%s",
+                    username,
+                    host_label,
+                    kind,
+                    sorted(data.keys()),
+                )
+                if tfa_token:
                     raise PCloudError(
-                        "此 pCloud 帳號需要 2FA 驗證,目前不支援。"
-                        "請改用 Access Token 登入。"
+                        "此 pCloud 帳號需要 2FA 驗證(server 回傳 tfatoken),"
+                        "目前不支援密碼+2FA 的兩步驟登入流程。\n"
+                        "請改用 Access Token:登入 pcloud.com 後從 DevTools "
+                        "Network 抓任一 api 請求 query string 的 auth=xxxxx。"
                     )
-                raise PCloudError("pCloud 登入回應未含 auth token")
+                # Dump the entire response so we can diagnose the
+                # specific account state. Strip out anything that
+                # could leak secrets even though pCloud isn't known to
+                # echo passwords here.
+                safe_payload = {
+                    k: v for k, v in data.items() if k not in {"auth"}
+                }
+                raise PCloudError(
+                    "pCloud 接受了帳密(result=0)但沒回傳 auth token。"
+                    "通常代表此帳號需要額外驗證(email 點擊 / 2FA / device "
+                    "verification)才能取得 API token。\n"
+                    "建議改用 Access Token:登入 pcloud.com 後,DevTools "
+                    "Network 抓任一 api 請求 URL 的 auth=xxxx 那串。\n"
+                    f"server 完整回應: {safe_payload}"
+                )
             userid = data.get("userid")
             try:
                 userid_int = int(userid) if userid is not None else None

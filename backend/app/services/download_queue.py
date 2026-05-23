@@ -431,14 +431,52 @@ class DownloadQueue:
 # need direct DB access) ----------
 
 
+# Process-wide cache of OfflineTaskLog.btih values. The download queue
+# uses this on every job (when ``opts.skip_sent`` is True) to filter out
+# magnets already sent to PikPak. The set is lazily loaded the first
+# time anyone asks for it, and appended-to on every successful
+# ``_log_offline_task`` — so a bulk send of 500 codes only touches the
+# DB once (on the first lookup) instead of running a full table scan
+# per job. The backend is the sole writer of ``OfflineTaskLog`` so the
+# append-on-success hook is sufficient; nothing else needs invalidation.
+_sent_hashes_cache: set[str] | None = None
+_sent_hashes_lock = asyncio.Lock()
+
+
 async def _load_sent_hashes() -> set[str]:
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
-            )
-        ).scalars().all()
-    return set(rows)
+    global _sent_hashes_cache
+    if _sent_hashes_cache is not None:
+        return _sent_hashes_cache
+    async with _sent_hashes_lock:
+        if _sent_hashes_cache is not None:
+            return _sent_hashes_cache
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(OfflineTaskLog.btih).where(OfflineTaskLog.btih != "")
+                )
+            ).scalars().all()
+        _sent_hashes_cache = set(rows)
+        logger.info("sent-hash cache loaded: %d entries", len(_sent_hashes_cache))
+    return _sent_hashes_cache
+
+
+async def warm_sent_hashes() -> None:
+    """Pre-load the sent-hash cache during lifespan startup so the
+    first job pulled by a worker doesn't pay the full-table-scan
+    latency."""
+    await _load_sent_hashes()
+
+
+def _note_sent_hash(magnet: str) -> None:
+    """Append a newly-submitted btih to the cache, if it's already
+    populated. If the cache hasn't loaded yet (no skip_sent job has
+    arrived), do nothing — the eventual lazy load will pick it up."""
+    if _sent_hashes_cache is None:
+        return
+    h = extract_btih(magnet)
+    if h:
+        _sent_hashes_cache.add(h)
 
 
 async def _log_offline_task(
@@ -471,6 +509,7 @@ async def _log_offline_task(
             )
         )
         await session.commit()
+    _note_sent_hash(magnet)
 
 
 def new_batch_id() -> str:

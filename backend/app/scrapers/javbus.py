@@ -32,24 +32,137 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 
-# Global throttle so multi-call paths (missing-codes walks,
-# auto-send-missing, batch tracker checks) can't accidentally machine-
-# gun JavBus into a 429. Keep this conservative — JavBus rate-limits
-# unauthenticated scrapers pretty aggressively.
-_JAVBUS_MIN_INTERVAL = 1.2  # seconds between any two consecutive fetches
-_javbus_lock = asyncio.Lock()
-_javbus_last_fetch_ts: float = 0.0
+class RateLimiter:
+    """Adaptive concurrency + spacing limiter for JavBus requests.
+
+    Caps in-flight requests to ``concurrency`` (via a semaphore) AND
+    enforces a minimum spacing between request *starts* that grows on
+    429 (``signal_429``) and decays toward the base on each successful
+    acquire. The combination lets us run multiple requests in parallel
+    in the steady state while still backing off automatically when the
+    server pushes back.
+
+    Used as an async context manager — acquire on enter, release on
+    exit. ``signal_429`` is called from the 429 retry path so the next
+    request waits longer."""
+
+    def __init__(
+        self, *, concurrency: int, min_interval: float,
+        penalty: float, recovery: float,
+    ) -> None:
+        self._sem = asyncio.Semaphore(max(1, concurrency))
+        self._base = max(0.0, min_interval)
+        self._cur = self._base
+        self._penalty = max(1.0, penalty)
+        self._recovery = max(0.0, min(1.0, recovery))
+        # Hard ceiling so a 429 storm can't push spacing to infinity.
+        self._ceiling = max(self._base * 20.0, 30.0)
+        self._last = 0.0
+        self._lock = asyncio.Lock()
+
+    async def __aenter__(self) -> "RateLimiter":
+        await self._sem.acquire()
+        async with self._lock:
+            wait = self._last + self._cur - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last = time.monotonic()
+            if self._cur > self._base:
+                self._cur = max(self._base, self._cur * self._recovery)
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        self._sem.release()
+
+    def signal_429(self) -> None:
+        """Widen spacing in response to a 429. Idempotent enough that
+        calling it once per failed attempt is fine."""
+        new = min(self._ceiling, max(self._cur, self._base) * self._penalty)
+        if new > self._cur:
+            logger.warning(
+                "JavBus rate limiter widened: %.2fs -> %.2fs", self._cur, new
+            )
+            self._cur = new
 
 
-async def _javbus_throttle() -> None:
-    """Sleep just enough to keep at least ``_JAVBUS_MIN_INTERVAL``
-    between consecutive outbound JavBus requests, across all callers."""
-    global _javbus_last_fetch_ts
-    async with _javbus_lock:
-        wait = _javbus_last_fetch_ts + _JAVBUS_MIN_INTERVAL - time.monotonic()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _javbus_last_fetch_ts = time.monotonic()
+_limiter = RateLimiter(
+    concurrency=settings.javbus_concurrency,
+    min_interval=settings.javbus_min_interval,
+    penalty=settings.javbus_429_penalty,
+    recovery=settings.javbus_429_recovery,
+)
+
+
+# Shared httpx.AsyncClient. Built once at FastAPI lifespan startup so
+# every JavBus request reuses the same connection pool (keep-alive +
+# optional HTTP/2). Set on ``init_client``, cleared on ``aclose_client``.
+_shared_client: httpx.AsyncClient | None = None
+
+
+async def init_client() -> None:
+    """Build the shared httpx.AsyncClient. Idempotent — calling twice is
+    a no-op so reloads don't leak clients."""
+    global _shared_client
+    if _shared_client is not None:
+        return
+    want_http2 = bool(settings.javbus_http2)
+    if want_http2:
+        # The h2 package is an optional httpx dep. Probe before binding
+        # so older installs that haven't reinstalled requirements still
+        # start up — they just get HTTP/1.1.
+        try:
+            import h2  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "JAVBUS_HTTP2=true but the 'h2' package isn't installed; "
+                "falling back to HTTP/1.1. Run `pip install httpx[http2]` to enable."
+            )
+            want_http2 = False
+    kwargs: dict[str, Any] = dict(
+        http2=want_http2,
+        limits=httpx.Limits(
+            max_connections=settings.javbus_pool_size,
+            max_keepalive_connections=settings.javbus_pool_size,
+        ),
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        },
+        cookies=DEFAULT_COOKIES,
+        follow_redirects=True,
+        timeout=30.0,
+    )
+    if settings.http_proxy:
+        kwargs["proxy"] = settings.http_proxy
+    _shared_client = httpx.AsyncClient(**kwargs)
+    logger.info(
+        "JavBus shared client ready: http2=%s pool=%d concurrency=%d "
+        "min_interval=%.2fs",
+        want_http2, settings.javbus_pool_size,
+        settings.javbus_concurrency, settings.javbus_min_interval,
+    )
+
+
+async def aclose_client() -> None:
+    """Close the shared client. Called from FastAPI lifespan shutdown."""
+    global _shared_client
+    if _shared_client is None:
+        return
+    await _shared_client.aclose()
+    _shared_client = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Accessor — raises if the lifespan startup didn't run, which
+    immediately surfaces ordering bugs instead of silently leaking
+    short-lived clients."""
+    if _shared_client is None:
+        raise RuntimeError(
+            "javbus scraper not initialised — call init_client() in lifespan startup"
+        )
+    return _shared_client
+
+
 from ..schemas import (
     ActressRef,
     GenreRef,
@@ -199,22 +312,6 @@ class JavbusBlocked(RuntimeError):
     """Raised when JavBus refuses to serve content (region-blocked)."""
 
 
-def _client(**overrides: Any) -> httpx.AsyncClient:
-    kwargs: dict[str, Any] = dict(
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-        },
-        cookies=DEFAULT_COOKIES,
-        follow_redirects=True,
-        timeout=30.0,
-    )
-    if settings.http_proxy:
-        kwargs["proxy"] = settings.http_proxy
-    kwargs.update(overrides)
-    return httpx.AsyncClient(**kwargs)
-
-
 def _is_age_gate(html: str) -> bool:
     return any(marker in html for marker in AGE_GATE_MARKERS)
 
@@ -238,15 +335,18 @@ async def _bypass_age_gate(cli: httpx.AsyncClient, target_url: str) -> bool:
 async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None) -> str:
     headers = {"Referer": referer} if referer else None
 
-    # Up to 3 attempts on 429. Backoff doubles: 4s, 8s, 16s. The
-    # ``_javbus_throttle`` call inside the loop is intentional so each
-    # retry also respects the global min-interval.
+    # Up to 4 attempts on 429. Backoff doubles: 4s, 8s, 16s. The rate
+    # limiter is entered once per attempt so each retry respects both
+    # the configured spacing AND the dynamic widening that signal_429
+    # applies after a server pushback.
+    resp = None
     for attempt in range(4):
-        await _javbus_throttle()
-        resp = await cli.get(url, headers=headers)
+        async with _limiter:
+            resp = await cli.get(url, headers=headers)
         if resp.status_code == 404:
             return ""
         if resp.status_code == 429:
+            _limiter.signal_429()
             if attempt == 3:
                 # Give up — let it propagate so the caller can surface
                 # the error to the user (it's already a clear message).
@@ -261,6 +361,7 @@ async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None
         resp.raise_for_status()
         break
 
+    assert resp is not None
     if _is_age_gate(resp.text):
         ok = await _bypass_age_gate(cli, url)
         if not ok:
@@ -268,8 +369,8 @@ async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None
                 "JavBus 持續要求年齡驗證 — 此 IP 可能被地區阻擋。"
                 "請在 .env 設定 HTTP_PROXY 或改用鏡像站 (JAVBUS_BASE_URL)。"
             )
-        await _javbus_throttle()
-        resp = await cli.get(url, headers=headers)
+        async with _limiter:
+            resp = await cli.get(url, headers=headers)
         resp.raise_for_status()
     return resp.text
 
@@ -355,10 +456,9 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
     prefix = "/uncensored/search" if uncensored else "/search"
     url = f"{base}{prefix}/{keyword}/{max(1, page)}"
 
-    async with _client() as cli:
-        html = await _fetch(cli, url)
-        if not html:
-            return SearchResult(items=[], page=page, has_next=False)
+    html = await _fetch(_get_client(), url)
+    if not html:
+        return SearchResult(items=[], page=page, has_next=False)
 
     return _parse_listing(html, page)
 
@@ -378,10 +478,9 @@ async def fetch_listing(
     prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
     url = f"{base}{prefix}/{slug}/{max(1, page)}"
 
-    async with _client() as cli:
-        html = await _fetch(cli, url)
-        if not html:
-            return SearchResult(items=[], page=page, has_next=False)
+    html = await _fetch(_get_client(), url)
+    if not html:
+        return SearchResult(items=[], page=page, has_next=False)
 
     return _parse_listing(html, page)
 
@@ -417,10 +516,9 @@ async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) ->
     prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
     url = f"{base}{prefix}/{slug}/1"
     try:
-        async with _client() as cli:
-            html = await _fetch(cli, url)
-            if not html:
-                return ""
+        html = await _fetch(_get_client(), url)
+        if not html:
+            return ""
         from ..services.jav_code import clean_listing_name  # avoid cycle
         return clean_listing_name(_parse_listing_title(html))
     except Exception:
@@ -499,10 +597,9 @@ async def fetch_star_profile(star_id: str, *, uncensored: bool = False) -> StarP
     base = settings.javbus_base_url.rstrip("/")
     prefix = "/uncensored/star" if uncensored else "/star"
     url = f"{base}{prefix}/{star_id}/1"
-    async with _client() as cli:
-        html = await _fetch(cli, url)
-        if not html:
-            return None
+    html = await _fetch(_get_client(), url)
+    if not html:
+        return None
     return _parse_star_profile(html, star_id)
 
 
@@ -510,12 +607,75 @@ async def fetch_genre(genre_id: str, page: int = 1, uncensored: bool = False) ->
     return await fetch_listing("genre", genre_id, page=page, uncensored=uncensored)
 
 
-async def fetch_detail(code: str) -> MovieDetail:
+# fetch_detail in-memory cache: {code: (stored_at_monotonic, MovieDetail)}.
+# Same code requested from tracker / bulk / movie page collapses to one
+# fetch within TTL. Cache is per-process — restart drops it.
+_detail_cache: dict[str, tuple[float, MovieDetail]] = {}
+_detail_cache_lock = asyncio.Lock()
+# In-flight dedup: when two callers race the same code, the second one
+# awaits the first's Event instead of issuing a duplicate HTTP pair.
+_detail_inflight: dict[str, asyncio.Event] = {}
+
+
+def _detail_cache_get(code: str) -> MovieDetail | None:
+    ttl = settings.javbus_detail_cache_ttl_seconds
+    if ttl <= 0:
+        return None
+    entry = _detail_cache.get(code)
+    if entry is None:
+        return None
+    stored_at, detail = entry
+    if time.monotonic() - stored_at > ttl:
+        _detail_cache.pop(code, None)
+        return None
+    return detail
+
+
+def _detail_cache_put(code: str, detail: MovieDetail) -> None:
+    if settings.javbus_detail_cache_ttl_seconds <= 0:
+        return
+    _detail_cache[code] = (time.monotonic(), detail)
+    cap = max(1, settings.javbus_detail_cache_max)
+    if len(_detail_cache) > cap:
+        # Trim oldest 25% by stored timestamp. Cheap O(n log n), runs
+        # only when over capacity.
+        oldest = sorted(_detail_cache.items(), key=lambda kv: kv[1][0])
+        drop = max(1, cap // 4)
+        for k, _ in oldest[:drop]:
+            _detail_cache.pop(k, None)
+
+
+async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     code = code.strip().upper()
+    owns_inflight = False
+    if not refresh:
+        cached = _detail_cache_get(code)
+        if cached is not None:
+            return cached
+        # Coalesce concurrent callers onto the same in-flight fetch.
+        async with _detail_cache_lock:
+            cached = _detail_cache_get(code)
+            if cached is not None:
+                return cached
+            event = _detail_inflight.get(code)
+            if event is None:
+                event = asyncio.Event()
+                _detail_inflight[code] = event
+                owns_inflight = True
+        if not owns_inflight:
+            await event.wait()
+            cached = _detail_cache_get(code)
+            if cached is not None:
+                return cached
+            # Owner finished but didn't cache (empty title / error). Fall
+            # through to fetch ourselves — rare and we deliberately do
+            # NOT register a new in-flight event here to avoid races.
+
     base = settings.javbus_base_url.rstrip("/")
     url = f"{base}/{code}"
+    cli = _get_client()
 
-    async with _client() as cli:
+    try:
         html = await _fetch(cli, url)
         if not html:
             return MovieDetail(code=code, title="")
@@ -535,7 +695,15 @@ async def fetch_detail(code: str) -> MovieDetail:
                 img=img_m.group(1),
             )
 
-    return detail
+        if detail.title:
+            _detail_cache_put(code, detail)
+        return detail
+    finally:
+        if owns_inflight:
+            async with _detail_cache_lock:
+                pending = _detail_inflight.pop(code, None)
+            if pending is not None:
+                pending.set()
 
 
 def _parse_detail(html: str, code: str) -> MovieDetail:
@@ -639,10 +807,17 @@ async def _fetch_magnets(
         f"?gid={gid}&lang={settings.javbus_lang}&img={img}"
         f"&uc={uc}&floor={random.randint(100, 999)}"
     )
-    resp = await cli.get(url, headers={"Referer": referer})
-    if resp.status_code != 200 or not resp.text.strip():
+    # Route through _fetch so the AJAX call also gets rate limiting +
+    # 429 retry. _fetch returns "" on 404 — magnet table sometimes
+    # 404s for very old codes; treat as "no magnets".
+    try:
+        body = await _fetch(cli, url, referer=referer)
+    except httpx.HTTPError as exc:
+        logger.debug("magnet AJAX %s failed: %s", url, exc)
         return []
-    soup = BeautifulSoup(resp.text, "lxml")
+    if not body.strip():
+        return []
+    soup = BeautifulSoup(body, "lxml")
     magnets: list[Magnet] = []
     for tr in soup.select("tr"):
         link_a = tr.select_one("a[href^='magnet:']")

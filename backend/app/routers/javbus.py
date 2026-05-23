@@ -32,9 +32,9 @@ async def search(
 
 
 @router.get("/movie/{code}", response_model=MovieDetail)
-async def movie_detail(code: str):
+async def movie_detail(code: str, refresh: bool = Query(False)):
     try:
-        detail = await scraper.fetch_detail(code)
+        detail = await scraper.fetch_detail(code, refresh=refresh)
     except JavbusBlocked as exc:
         raise HTTPException(status_code=451, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

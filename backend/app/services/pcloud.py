@@ -994,21 +994,43 @@ class PCloudService:
                 continue
 
             try:
-                try:
-                    resolved = await asyncio.wait_for(
-                        resolve_listing_loose(code),
-                        timeout=JAVBUS_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
+                # Two-attempt JavBus lookup. The scraper itself already
+                # does 429-backoff, but a single attempt's wall-clock can
+                # still blow our wrapper budget on heavily-throttled
+                # codes. Retry once with a 2s spacer (gives the server
+                # room and avoids hammering the global JavBus rate
+                # limiter) before declaring the code an error. Most
+                # codes never hit retry; the second attempt rescues the
+                # genuine "first try was unlucky" cases.
+                resolved = None
+                timed_out = False
+                for attempt in (1, 2):
+                    try:
+                        resolved = await asyncio.wait_for(
+                            resolve_listing_loose(code),
+                            timeout=JAVBUS_TIMEOUT_SECONDS,
+                        )
+                        timed_out = False
+                        break
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                        if attempt == 1:
+                            logger.info(
+                                "pCloud organize: JavBus timeout for %s, "
+                                "retrying after 2s",
+                                code,
+                            )
+                            await asyncio.sleep(2)
+                if timed_out:
                     summary["errors"] += 1
                     yield {
                         **base_event,
                         "action": "error",
                         "code": code,
                         "reason": (
-                            f"JavBus 查詢逾時（{int(JAVBUS_TIMEOUT_SECONDS)}s）。"
-                            "通常是該番號頁面慢或 429 限流 — 點「再來一次」"
-                            "通常可成功;若常常逾時可在 .env 設 "
+                            f"JavBus 兩次查詢都逾時（各 {int(JAVBUS_TIMEOUT_SECONDS)}s）。"
+                            "該番號頁面可能持續慢或被 429 限流 — "
+                            "點「再來一次」隔一陣子重試;若常常逾時可在 .env 設 "
                             "PCLOUD_ORGANIZE_JAVBUS_TIMEOUT=120"
                         ),
                     }

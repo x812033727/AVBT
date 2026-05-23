@@ -130,12 +130,14 @@ class Settings(BaseSettings):
     javbus_min_interval: float = 0.35
     javbus_429_penalty: float = 2.5
     javbus_429_recovery: float = 0.92
-    # Wrapper timeout for a single ``fetch_detail`` call from the pCloud
-    # organize pass. Must be larger than the scraper's own per-request
-    # timeout (30s) plus enough 429-retry budget that one transient slow
-    # response doesn't error-skip a perfectly valid code. 60s covers
-    # "first attempt + one retry" comfortably.
-    pcloud_organize_javbus_timeout: float = 60.0
+    # Wrapper timeout for one attempt of ``fetch_detail`` in pCloud
+    # organize. The scraper itself does 4× 429-retries × 30s requests
+    # (~150s worst case), so any wrapper limit shorter than that cuts
+    # the scraper's retries short. 90s covers "first request + one
+    # 429 retry" comfortably. Organize ALSO retries the whole attempt
+    # one extra time per code (inside organize_folder_stream), so total
+    # budget per slow code is ~2× this value.
+    pcloud_organize_javbus_timeout: float = 90.0
     # httpx pool capacity (HTTP/2 multiplexes within each connection).
     javbus_pool_size: int = 20
     javbus_http2: bool = True

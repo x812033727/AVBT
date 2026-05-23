@@ -1181,30 +1181,16 @@ class PCloudService:
 
                 target_id, taken = target_cache[target_path]
 
-                # Same-folder no-op: child already lives at the resolved
-                # target. ``target_id is None`` (dry_run, target doesn't
-                # exist) naturally fails this check.
-                if target_id is not None and str(target_id) == str(folder_id):
-                    summary["skipped"] += 1
-                    yield {
-                        **base_event,
-                        "action": "skip",
-                        "code": code,
-                        "listing_kind": listing_kind,
-                        "listing_name": listing_name,
-                        "target_path": target_path,
-                        "reason": "already_organized",
-                    }
-                    continue
-
-                # Folder children: try to extract the main video out so
-                # the user lands at ``<tracked>/<code>.<ext>`` instead
-                # of ``<tracked>/<wrapper>/<file>``. When the wrapper
-                # has no extractable video (e.g. just images / nfos),
-                # ``_flatten_wrapper_to_target`` returns None and we
-                # fall through to the wrapper-as-is move below. In
-                # dry_run with target_id=None we still preview-flatten;
-                # the helper short-circuits the actual move on dry_run.
+                # Folder children: try flatten FIRST so in-place
+                # wrappers (target_id == folder_id) still get unwrapped
+                # to ``<tracked>/<code>.<ext>``. If we ran the
+                # already_organized skip below first, a wrapper sitting
+                # at its own target would short-circuit out and never
+                # be flattened. When the wrapper has no extractable
+                # video (just images / nfos), the helper returns None
+                # and we fall through. In dry_run with target_id=None
+                # we still preview-flatten; the helper short-circuits
+                # the actual move on dry_run.
                 if kind == "folder":
                     flatten_target_id = (
                         self._folder_param(str(target_id))
@@ -1234,6 +1220,23 @@ class PCloudService:
                             event["would_create"] = True
                         yield event
                         continue
+
+                # Same-folder no-op: child already lives at the resolved
+                # target. Reached for file children and for wrappers
+                # whose flatten declined. ``target_id is None`` (dry_run,
+                # target doesn't exist) naturally fails this check.
+                if target_id is not None and str(target_id) == str(folder_id):
+                    summary["skipped"] += 1
+                    yield {
+                        **base_event,
+                        "action": "skip",
+                        "code": code,
+                        "listing_kind": listing_kind,
+                        "listing_name": listing_name,
+                        "target_path": target_path,
+                        "reason": "already_organized",
+                    }
+                    continue
 
                 # dry_run + target doesn't exist yet → report as
                 # `would_create` so the UI can flag it without an actual

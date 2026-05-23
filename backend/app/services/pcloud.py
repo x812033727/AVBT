@@ -175,15 +175,35 @@ class PCloudService:
 
         Caller is responsible for adding ``auth`` (we do it here when
         ``auth`` is provided) and for picking the right host.
+
+        Switches to **POST + form body** automatically when the
+        serialised query would exceed ~4 KB. pCloud accepts either
+        GET or POST for every method, but their edge / CDN layer
+        rejects very long URLs (e.g. ``savefilefromurl`` with a long
+        signed PikPak CDN URL) with a bare HTTP 404 instead of the
+        usual ``result != 0`` JSON. POST sidesteps the URL length
+        limit by carrying parameters in the request body.
         """
         url = f"{host}/{method}"
         q = dict(params or {})
         if auth:
             q["auth"] = auth
         timeout = float(settings.pcloud_api_timeout_seconds or 0) or None
+        # Estimate query string size. httpx will URL-encode each value,
+        # so we conservatively count the encoded length; 4 KB leaves
+        # comfortable headroom under typical edge limits (8 KB) for the
+        # base URL, auth, headers, etc.
+        approx_qs_len = sum(len(str(k)) + len(str(v)) + 2 for k, v in q.items())
+        use_post = approx_qs_len > 4096
         try:
             async with httpx.AsyncClient(timeout=timeout, **self._client_args()) as client:
-                resp = await client.get(url, params=q)
+                if use_post:
+                    # pCloud accepts standard form-encoded POST. We move
+                    # everything (including auth) into the body so the
+                    # URL itself stays short.
+                    resp = await client.post(url, data=q)
+                else:
+                    resp = await client.get(url, params=q)
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException as exc:

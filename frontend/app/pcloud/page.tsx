@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PCloudCleanupButton from "@/components/PCloudCleanupButton";
+import PCloudOrganizeButton from "@/components/PCloudOrganizeButton";
 import PCloudMoveModal from "@/components/PCloudMoveModal";
 import { confirmDialog, toast } from "@/components/Toast";
 import {
@@ -321,6 +322,12 @@ function FilesPanel({
           ))}
         </div>
         <div className="ml-auto flex gap-2">
+          <PCloudOrganizeButton
+            folder_id={currentParent}
+            folder_name={currentName}
+            disabled={atRoot}
+            onDone={onRefresh}
+          />
           <PCloudCleanupButton
             folder_id={currentParent}
             folder_name={currentName}

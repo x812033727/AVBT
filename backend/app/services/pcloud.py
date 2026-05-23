@@ -28,7 +28,7 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
-from ..config import settings
+from ..config import kind_base_path, settings
 from ..schemas import PCloudFile, PCloudQuota
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
 from .pikpak import _build_video_rename_plan, _uniquify_target
@@ -903,6 +903,193 @@ class PCloudService:
 
         yield {"type": "done", "result": summary}
 
+    async def organize_folder_stream(
+        self, folder_id: str, *, dry_run: bool = True
+    ) -> AsyncIterator[dict]:
+        """Move each direct child of ``folder_id`` to the canonical
+        archive path ``/<kind_base>/<tracked_name>/`` based on the JAV
+        code in its name and the user's ``TrackedListing`` table.
+
+        Mirrors the PikPak ``reorganize_stream`` semantics but limited
+        to one folder, one level deep — same scope as
+        :meth:`cleanup_folder_stream`. Folder children carrying a code
+        are moved as-is (we don't descend or flatten); the wrapping
+        folder ends up as ``<tracked>/<original_folder_name>``.
+
+        Items with no recognisable code, no matching tracked listing,
+        or that already live under the resolved target folder are
+        skipped with a structured ``reason``.
+
+        ``dry_run`` mode uses :meth:`lookup_path` (read-only) so a
+        preview never materialises empty target folders.
+        """
+        # Lazy import to break the archiver ↔ pcloud import cycle.
+        from .archiver import resolve_listing_for_code
+
+        try:
+            children = await self.list_files(folder_id)
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": f"列出資料夾失敗: {exc}"}
+            return
+
+        summary = {
+            "total": len(children),
+            "moved": 0,
+            "skipped": 0,
+            "errors": 0,
+            "dry_run": dry_run,
+        }
+
+        yield {
+            "type": "start",
+            "total": len(children),
+            "dry_run": dry_run,
+            "folder_id": folder_id,
+        }
+
+        # Per-run cache: target path → (target_id, taken_names). Avoids
+        # re-walking ``lookup_path`` and re-listing siblings for every
+        # child that maps to the same tracked listing.
+        target_cache: dict[str, tuple[Optional[int], set[str]]] = {}
+
+        for idx, child in enumerate(children, start=1):
+            await asyncio.sleep(0.02)
+            kind = "folder" if child.kind == "folder" else "file"
+            base_event = {
+                "type": "progress",
+                "current": idx,
+                "kind": kind,
+                "source": child.name,
+            }
+
+            code = extract_jav_code(child.name)
+            if not code:
+                summary["skipped"] += 1
+                yield {**base_event, "action": "skip", "reason": "no_code"}
+                continue
+
+            try:
+                resolved = await resolve_listing_for_code(code)
+                if resolved is None:
+                    summary["skipped"] += 1
+                    yield {
+                        **base_event,
+                        "action": "skip",
+                        "code": code,
+                        "reason": "no_tracked_match",
+                    }
+                    continue
+
+                listing_kind, listing_name = resolved
+                target_path = f"{kind_base_path(listing_kind)}/{listing_name}"
+
+                if target_path not in target_cache:
+                    if dry_run:
+                        tid = await self.lookup_path(target_path)
+                    else:
+                        tid = await self.ensure_path(target_path)
+                    if tid is None:
+                        # dry_run only — record empty sibling set so
+                        # we don't try to list a folder that isn't
+                        # there yet.
+                        target_cache[target_path] = (None, set())
+                    else:
+                        siblings = await self.list_files(str(tid))
+                        target_cache[target_path] = (
+                            tid,
+                            {s.name for s in siblings},
+                        )
+
+                target_id, taken = target_cache[target_path]
+
+                # dry_run + target doesn't exist yet → report as
+                # `would_create` so the UI can flag it without an
+                # actual id. Live mode never sees this branch because
+                # ensure_path always returns an id.
+                if target_id is None:
+                    summary["moved"] += 1
+                    yield {
+                        **base_event,
+                        "action": "move",
+                        "code": code,
+                        "listing_kind": listing_kind,
+                        "listing_name": listing_name,
+                        "target_path": target_path,
+                        "target_name": child.name,
+                        "would_create": True,
+                    }
+                    continue
+
+                if str(target_id) == str(folder_id):
+                    summary["skipped"] += 1
+                    yield {
+                        **base_event,
+                        "action": "skip",
+                        "code": code,
+                        "listing_kind": listing_kind,
+                        "listing_name": listing_name,
+                        "target_path": target_path,
+                        "reason": "already_organized",
+                    }
+                    continue
+
+                new_name = _uniquify_target(child.name, taken)
+
+                if not dry_run:
+                    # pCloud's renamefile/renamefolder accepts tofolderid
+                    # + toname in the same call, so we move and (if
+                    # needed) rename atomically. This avoids a brief
+                    # window where the source folder would hold a
+                    # duplicate name.
+                    fid_int = self._file_param(child.id)
+                    params: dict[str, Any] = {
+                        "tofolderid": self._folder_param(str(target_id)),
+                    }
+                    if new_name != child.name:
+                        params["toname"] = new_name
+                    if kind == "file":
+                        params["fileid"] = fid_int
+                        try:
+                            await self._call("renamefile", params)
+                        except PCloudError as exc:
+                            # 2009 = "file does not exist" — fall back
+                            # to renamefolder when our heuristic kind
+                            # guess was wrong (e.g. listfolder returned
+                            # a folder we treated as a file).
+                            if getattr(exc, "result", 0) != 2009:
+                                raise
+                            params.pop("fileid", None)
+                            params["folderid"] = fid_int
+                            await self._call("renamefolder", params)
+                    else:
+                        params["folderid"] = fid_int
+                        await self._call("renamefolder", params)
+
+                taken.add(new_name)
+                summary["moved"] += 1
+                yield {
+                    **base_event,
+                    "action": "move",
+                    "code": code,
+                    "listing_kind": listing_kind,
+                    "listing_name": listing_name,
+                    "target_path": target_path,
+                    "target_name": new_name,
+                }
+            except Exception as exc:  # noqa: BLE001
+                summary["errors"] += 1
+                logger.warning(
+                    "pcloud organize failed for %s: %s", child.name, exc
+                )
+                yield {
+                    **base_event,
+                    "action": "error",
+                    "code": code,
+                    "reason": str(exc),
+                }
+
+        yield {"type": "done", "result": summary}
+
     # ---------- PikPak → pCloud transfer support ----------
     #
     # These are used by ``services.pcloud_transfer`` to make pCloud pull
@@ -932,6 +1119,41 @@ class PCloudService:
                 raise PCloudError(
                     f"pCloud 無法建立或解析資料夾: {seg} (path={path})"
                 )
+        return parent_id
+
+    async def lookup_path(self, path: str) -> Optional[int]:
+        """Read-only twin of :meth:`ensure_path`.
+
+        Walks ``/a/b/c`` segment-by-segment and returns the leaf folder
+        id, or ``None`` as soon as any segment doesn't exist. Never
+        creates anything — that's the whole point. Used by
+        :meth:`organize_folder_stream` in ``dry_run`` mode so previewing
+        doesn't leave empty target folders littered around the account.
+        """
+        path = (path or "").strip()
+        if not path or path == "/":
+            return 0
+        segments = [s for s in path.split("/") if s]
+        parent_id = 0
+        for seg in segments:
+            try:
+                children = await self.list_files(str(parent_id))
+            except PCloudError:
+                return None
+            match = next(
+                (
+                    c
+                    for c in children
+                    if c.kind == "folder" and c.name == seg
+                ),
+                None,
+            )
+            if match is None:
+                return None
+            try:
+                parent_id = int(match.id)
+            except (TypeError, ValueError):
+                return None
         return parent_id
 
     async def save_file_from_url(

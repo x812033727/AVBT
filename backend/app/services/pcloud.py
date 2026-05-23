@@ -59,6 +59,12 @@ PCLOUD_HOSTS = (
     "https://eapi.pcloud.com",  # EU
 )
 
+# BT releases bundle tiny ad mp4s alongside the real video. Anything well
+# below 300 MB is junk; the real episode is almost always larger. Used
+# by the organize-flatten pass when extracting the main video out of a
+# wrapper folder. Matches the PikPak reorganize threshold.
+_JUNK_BYTES = 300 * 1024 * 1024
+
 # pCloud server-side result codes that mean "your stored auth token is
 # no longer accepted" — typically expired sessions or manual revocation.
 # When we see one of these during a normal API call (i.e. we already
@@ -903,6 +909,110 @@ class PCloudService:
 
         yield {"type": "done", "result": summary}
 
+    async def _flatten_wrapper_to_target(
+        self,
+        folder: PCloudFile,
+        code: str,
+        target_folder_id: int,
+        taken: set[str],
+        *,
+        dry_run: bool,
+    ) -> Optional[dict]:
+        """Peek inside ``folder`` (a wrapper child carrying ``code``) and,
+        if it holds a single obvious main video, extract that video to
+        ``target_folder_id`` renamed to ``<code>.<ext>`` and trash the
+        wrapper. Mirrors PikPak's :func:`_resolve_folder_winner`.
+
+        Returns:
+          - ``{target_name, extras_count}`` on success (caller emits a
+            ``flatten`` event).
+          - ``None`` when the wrapper has no extractable video (caller
+            falls back to moving the wrapper as-is).
+
+        Resolution order:
+          1. Largest direct video ≥ ``_JUNK_BYTES`` (300 MB).
+          2. Largest direct video of any size (small / sample-only
+             downloads).
+          3. Largest video one level deeper inside a nested folder
+             (handles torrent-name-dir wrappers like
+             ``MIUM-1104/<torrent name>/MIUM-1104.mp4``).
+        """
+        try:
+            inner = await self.list_files(folder.id)
+        except PCloudError:
+            return None
+
+        direct_videos = [
+            i for i in inner if i.kind != "folder" and is_video(i.name)
+        ]
+        main_videos = [
+            v for v in direct_videos
+            if v.size is None or v.size >= _JUNK_BYTES
+        ]
+        if not main_videos and direct_videos:
+            main_videos = direct_videos
+
+        if not main_videos:
+            nested = [i for i in inner if i.kind == "folder"]
+            deep_videos: list[PCloudFile] = []
+            for n in nested:
+                try:
+                    deeper = await self.list_files(n.id)
+                except PCloudError:
+                    continue
+                for d in deeper:
+                    if d.kind != "folder" and is_video(d.name):
+                        deep_videos.append(d)
+            if deep_videos:
+                main_videos = deep_videos
+
+        if not main_videos:
+            return None
+
+        main_videos.sort(key=lambda v: int(v.size or 0), reverse=True)
+        keeper = main_videos[0]
+        canonical = f"{code}{ext_of(keeper.name)}"
+        final_name = _uniquify_target(canonical, taken)
+
+        if not dry_run:
+            params: dict[str, Any] = {
+                "fileid": self._file_param(keeper.id),
+                "tofolderid": target_folder_id,
+            }
+            if keeper.name != final_name:
+                params["toname"] = final_name
+            try:
+                await self._call("renamefile", params)
+            except PCloudError as exc:
+                # Move-out failed — signal caller to fall back to the
+                # wrapper-as-is path. We haven't touched anything yet.
+                logger.warning(
+                    "flatten move keeper %s → %s failed: %s",
+                    keeper.name, final_name, exc,
+                )
+                return None
+            # Trash the wrapper recursively — clears junk siblings and
+            # any nested folder the keeper was extracted from. pCloud
+            # trash is recoverable for the account's retention window
+            # (typically 15-30 days) so a wrong call is undoable.
+            try:
+                await self._call(
+                    "deletefolderrecursive",
+                    {"folderid": self._file_param(folder.id)},
+                )
+            except PCloudError as exc:
+                # Non-fatal: the keeper is already at the target. Leaving
+                # the now-empty (or junk-only) wrapper behind is uglier
+                # than failing the whole organize.
+                logger.warning(
+                    "flatten trash wrapper %s failed: %s",
+                    folder.name, exc,
+                )
+
+        taken.add(final_name)
+        extras_count = max(0, len(inner) - 1)
+        return {"target_name": final_name, "extras_count": extras_count}
+
     async def organize_folder_stream(
         self, folder_id: str, *, dry_run: bool = True
     ) -> AsyncIterator[dict]:
@@ -913,8 +1023,11 @@ class PCloudService:
         Mirrors the PikPak ``reorganize_stream`` semantics but limited
         to one folder, one level deep — same scope as
         :meth:`cleanup_folder_stream`. Folder children carrying a code
-        are moved as-is (we don't descend or flatten); the wrapping
-        folder ends up as ``<tracked>/<original_folder_name>``.
+        are flattened: the main video inside the wrapper is extracted
+        to ``<tracked>/<code>.<ext>`` and the wrapper is trashed, so
+        the user doesn't end up with ``<tracked>/<wrapper>/<file>`` after
+        organize. When a wrapper has no extractable video, it falls
+        back to moving the wrapper as-is.
 
         Items with no recognisable code, no JavBus listing detail at
         all, or that already live under the resolved target folder
@@ -939,6 +1052,7 @@ class PCloudService:
         summary = {
             "total": len(children),
             "moved": 0,
+            "flattened": 0,
             "skipped": 0,
             "errors": 0,
             "dry_run": dry_run,
@@ -1067,10 +1181,66 @@ class PCloudService:
 
                 target_id, taken = target_cache[target_path]
 
+                # Same-folder no-op: child already lives at the resolved
+                # target. ``target_id is None`` (dry_run, target doesn't
+                # exist) naturally fails this check.
+                if target_id is not None and str(target_id) == str(folder_id):
+                    summary["skipped"] += 1
+                    yield {
+                        **base_event,
+                        "action": "skip",
+                        "code": code,
+                        "listing_kind": listing_kind,
+                        "listing_name": listing_name,
+                        "target_path": target_path,
+                        "reason": "already_organized",
+                    }
+                    continue
+
+                # Folder children: try to extract the main video out so
+                # the user lands at ``<tracked>/<code>.<ext>`` instead
+                # of ``<tracked>/<wrapper>/<file>``. When the wrapper
+                # has no extractable video (e.g. just images / nfos),
+                # ``_flatten_wrapper_to_target`` returns None and we
+                # fall through to the wrapper-as-is move below. In
+                # dry_run with target_id=None we still preview-flatten;
+                # the helper short-circuits the actual move on dry_run.
+                if kind == "folder":
+                    flatten_target_id = (
+                        self._folder_param(str(target_id))
+                        if target_id is not None
+                        else 0
+                    )
+                    flatten = await self._flatten_wrapper_to_target(
+                        child,
+                        code,
+                        flatten_target_id,
+                        taken,
+                        dry_run=dry_run,
+                    )
+                    if flatten is not None:
+                        summary["flattened"] += 1
+                        event = {
+                            **base_event,
+                            "action": "flatten",
+                            "code": code,
+                            "listing_kind": listing_kind,
+                            "listing_name": listing_name,
+                            "target_path": target_path,
+                            "target_name": flatten["target_name"],
+                            "extras_count": flatten["extras_count"],
+                        }
+                        if target_id is None:
+                            event["would_create"] = True
+                        yield event
+                        continue
+
                 # dry_run + target doesn't exist yet → report as
-                # `would_create` so the UI can flag it without an
-                # actual id. Live mode never sees this branch because
-                # ensure_path always returns an id.
+                # `would_create` so the UI can flag it without an actual
+                # id. Live mode never sees this branch because
+                # ensure_path always returns an id. We end up here for
+                # file children, and for folder children whose flatten
+                # attempt found no extractable video.
                 if target_id is None:
                     summary["moved"] += 1
                     yield {
@@ -1082,19 +1252,6 @@ class PCloudService:
                         "target_path": target_path,
                         "target_name": child.name,
                         "would_create": True,
-                    }
-                    continue
-
-                if str(target_id) == str(folder_id):
-                    summary["skipped"] += 1
-                    yield {
-                        **base_event,
-                        "action": "skip",
-                        "code": code,
-                        "listing_kind": listing_kind,
-                        "listing_name": listing_name,
-                        "target_path": target_path,
-                        "reason": "already_organized",
                     }
                     continue
 

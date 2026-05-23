@@ -332,7 +332,13 @@ async def _bypass_age_gate(cli: httpx.AsyncClient, target_url: str) -> bool:
         return False
 
 
-async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None) -> str:
+async def _fetch(
+    cli: httpx.AsyncClient,
+    url: str,
+    *,
+    referer: str | None = None,
+    cookies: dict[str, str] | None = None,
+) -> str:
     headers = {"Referer": referer} if referer else None
 
     # Up to 4 attempts on 429. Backoff doubles: 4s, 8s, 16s. The rate
@@ -342,7 +348,7 @@ async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None
     resp = None
     for attempt in range(4):
         async with _limiter:
-            resp = await cli.get(url, headers=headers)
+            resp = await cli.get(url, headers=headers, cookies=cookies)
         if resp.status_code == 404:
             return ""
         if resp.status_code == 429:
@@ -370,7 +376,7 @@ async def _fetch(cli: httpx.AsyncClient, url: str, *, referer: str | None = None
                 "請在 .env 設定 HTTP_PROXY 或改用鏡像站 (JAVBUS_BASE_URL)。"
             )
         async with _limiter:
-            resp = await cli.get(url, headers=headers)
+            resp = await cli.get(url, headers=headers, cookies=cookies)
         resp.raise_for_status()
     return resp.text
 
@@ -464,12 +470,27 @@ async def search(keyword: str, page: int = 1, uncensored: bool = False) -> Searc
 
 
 async def fetch_listing(
-    kind: str, slug: str, page: int = 1, uncensored: bool = False
+    kind: str,
+    slug: str,
+    page: int = 1,
+    uncensored: bool = False,
+    *,
+    with_magnets_only: bool = True,
 ) -> SearchResult:
     """Generic /{kind}/{slug}[/{page}] listing fetcher.
 
     Works for star / genre / studio / label / series / director — every
     JavBus listing page uses the same ``a.movie-box`` grid markup.
+
+    ``with_magnets_only`` controls whether the JavBus ``existmag=mag``
+    cookie filter is applied to this request. Default ``True`` matches
+    the historical behaviour: only works that currently have at least
+    one magnet link are returned, which is what the tracker / send-all
+    flows want (no point listing un-downloadable codes). Pass ``False``
+    for full-catalog walks (e.g. "extras" detection) so works whose
+    magnet links have aged off JavBus still appear in the listing —
+    otherwise the user has the file in PikPak but the scraper says the
+    code isn't in the listing, producing a false-positive "extra".
     """
     if kind not in LISTING_KINDS:
         raise ValueError(f"unknown listing kind: {kind}")
@@ -478,7 +499,11 @@ async def fetch_listing(
     prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
     url = f"{base}{prefix}/{slug}/{max(1, page)}"
 
-    html = await _fetch(_get_client(), url)
+    # Per-request cookies merge into the shared client's jar, so passing
+    # ``existmag=all`` overrides the shared ``existmag=mag`` for THIS
+    # request only — no need to maintain a second AsyncClient.
+    cookies = None if with_magnets_only else {"existmag": "all"}
+    html = await _fetch(_get_client(), url, cookies=cookies)
     if not html:
         return SearchResult(items=[], page=page, has_next=False)
 

@@ -61,6 +61,7 @@ export default function PCloudOrganizeButton({
   const [dryRun, setDryRun] = useState(true);
   const [total, setTotal] = useState(0);
   const [progress, setProgress] = useState<Progress[]>([]);
+  const [processing, setProcessing] = useState<{ current: number; source: string } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -70,6 +71,7 @@ export default function PCloudOrganizeButton({
     setError(null);
     setResult(null);
     setProgress([]);
+    setProcessing(null);
     setTotal(0);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -80,10 +82,18 @@ export default function PCloudOrganizeButton({
         { folder_id, dry_run: wasDryRun },
         (event) => {
           if (event.type === "start") setTotal(event.total ?? 0);
-          else if (event.type === "progress")
+          else if (event.type === "processing")
+            setProcessing({ current: event.current, source: event.source });
+          else if (event.type === "progress") {
             setProgress((prev) => [...prev, event]);
-          else if (event.type === "done") setResult(event.result);
-          else if (event.type === "error") setError(event.message);
+            setProcessing(null);
+          } else if (event.type === "done") {
+            setResult(event.result);
+            setProcessing(null);
+          } else if (event.type === "error") {
+            setError(event.message);
+            setProcessing(null);
+          }
         },
         ctrl.signal
       );
@@ -92,6 +102,7 @@ export default function PCloudOrganizeButton({
       if (e.name !== "AbortError") setError(e.message);
     } finally {
       setBusy(false);
+      setProcessing(null);
       abortRef.current = null;
     }
   }
@@ -104,6 +115,7 @@ export default function PCloudOrganizeButton({
     if (busy) return;
     setOpen(false);
     setProgress([]);
+    setProcessing(null);
     setResult(null);
     setError(null);
     setTotal(0);
@@ -188,8 +200,17 @@ export default function PCloudOrganizeButton({
                     style={{ width: `${percent}%` }}
                   />
                 </div>
+                {processing && (
+                  <div className="flex items-center gap-2 rounded-md border border-amber-400/20 bg-amber-400/5 px-2 py-1 text-xs text-amber-200/80">
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+                    <span>
+                      ⏳ 正在查 JavBus（{processing.current}/{total}）：
+                    </span>
+                    <span className="truncate font-mono">{processing.source}</span>
+                  </div>
+                )}
                 <ul className="max-h-72 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
-                  {recent.length === 0 && (
+                  {recent.length === 0 && !processing && (
                     <li className="text-white/40">等待第一筆…</li>
                   )}
                   {recent.map((p) => {

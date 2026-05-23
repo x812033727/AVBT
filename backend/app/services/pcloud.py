@@ -952,6 +952,13 @@ class PCloudService:
         # child that maps to the same tracked listing.
         target_cache: dict[str, tuple[Optional[int], set[str]]] = {}
 
+        # Per-code JavBus timeout. resolve_listing_for_code can stall if
+        # JavBus is slow/down, and without a ceiling the whole stream
+        # appears frozen at "等待第一筆…". 15s is generous for a single
+        # detail fetch (the scraper itself retries internally) and still
+        # lets us move on instead of hanging the whole pass.
+        JAVBUS_TIMEOUT_SECONDS = 15.0
+
         for idx, child in enumerate(children, start=1):
             await asyncio.sleep(0.02)
             kind = "folder" if child.kind == "folder" else "file"
@@ -962,6 +969,18 @@ class PCloudService:
                 "source": child.name,
             }
 
+            # Heartbeat BEFORE any await — so the UI sees activity even
+            # when the very first child triggers a slow JavBus lookup.
+            # Without this, a 15s timeout on item 1 leaves the modal
+            # stuck on "waiting for first event" the whole time.
+            yield {
+                "type": "processing",
+                "current": idx,
+                "total": len(children),
+                "source": child.name,
+                "kind": kind,
+            }
+
             code = extract_jav_code(child.name)
             if not code:
                 summary["skipped"] += 1
@@ -969,7 +988,20 @@ class PCloudService:
                 continue
 
             try:
-                resolved = await resolve_listing_for_code(code)
+                try:
+                    resolved = await asyncio.wait_for(
+                        resolve_listing_for_code(code),
+                        timeout=JAVBUS_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    summary["errors"] += 1
+                    yield {
+                        **base_event,
+                        "action": "error",
+                        "code": code,
+                        "reason": f"JavBus 查詢超過 {int(JAVBUS_TIMEOUT_SECONDS)}s 逾時",
+                    }
+                    continue
                 if resolved is None:
                     summary["skipped"] += 1
                     yield {

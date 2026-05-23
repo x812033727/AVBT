@@ -26,8 +26,11 @@ router = APIRouter(prefix="/api/pcloud", tags=["pcloud"])
 
 
 def _wrap(exc: Exception) -> HTTPException:
+    # PCloudError messages already include "pCloud 錯誤" prefix; passing
+    # them through verbatim avoids the doubled-prefix output that made
+    # past errors read like "pCloud 錯誤: pCloud 錯誤 (2000): ...".
     if isinstance(exc, PCloudError):
-        return HTTPException(status_code=400, detail=f"pCloud 錯誤: {exc}")
+        return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, PikPakError):
         return HTTPException(status_code=400, detail=f"PikPak 錯誤: {exc}")
     return HTTPException(status_code=502, detail=f"pCloud 錯誤: {exc}")

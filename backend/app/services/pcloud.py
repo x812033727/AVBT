@@ -19,6 +19,7 @@ right endpoint.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -213,27 +214,82 @@ class PCloudService:
     ) -> tuple[str, str, int | None]:
         """Try US first, then EU. Returns ``(auth, host, userid)``.
 
+        Uses pCloud's recommended **digest authentication** instead of
+        passing the password in the URL:
+
+          1. ``GET /getdigest`` → fresh nonce
+          2. ``passworddigest = sha1(password + sha1_hex(lower(user)) + digest)``
+          3. ``GET /userinfo?username=&digest=&passworddigest=&getauth=1``
+
+        This avoids two classes of "Log in failed" we've seen with the
+        plain-password flow: passwords containing characters that need
+        URL-encoding (the server sometimes mishandles ``+`` / ``%``),
+        and longer passwords that get rejected silently when on the query
+        string. The hash digest is short, ASCII, and stable.
+
         pCloud's documented "wrong region" response is ``result: 2321``,
         but in practice it sometimes returns the generic ``result: 2000``
-        ("Log in failed") when an EU account hits the US endpoint. To
-        stay correct in both cases we try every host and only surface
-        the **first** error if every host rejected us — that way a
-        genuinely-wrong password still produces a useful message.
+        ("Log in failed") when an EU account hits the US endpoint. So
+        we try every host and only surface the **first** error if every
+        host rejected us — that way a genuinely-wrong password still
+        produces a useful message.
+
+        2FA accounts: pCloud returns ``result: 2229`` (or sometimes
+        ``2297``) on the userinfo call when TFA is required. We translate
+        those into a clearer Chinese message pointing at the cause.
         """
         first_error: Optional[PCloudError] = None
+        user_lower = username.strip().lower()
         for host in PCLOUD_HOSTS:
             try:
+                digest_resp = await self._raw_request(host, "getdigest")
+                digest = str(digest_resp.get("digest") or "")
+                if not digest:
+                    raise PCloudError("pCloud 未回傳 digest")
+                user_hash = hashlib.sha1(user_lower.encode("utf-8")).hexdigest()
+                pw_digest = hashlib.sha1(
+                    (password + user_hash + digest).encode("utf-8")
+                ).hexdigest()
                 data = await self._raw_request(
                     host,
                     "userinfo",
-                    {"username": username, "password": password, "getauth": 1},
+                    {
+                        "username": username,
+                        "digest": digest,
+                        "passworddigest": pw_digest,
+                        "getauth": 1,
+                        "logout": 0,
+                    },
                 )
             except PCloudError as exc:
+                code = getattr(exc, "result", 0)
+                # 2229/2297 = TFA required. Surface a clear message
+                # instead of leaving the user to wonder which datacenter
+                # complained.
+                if code in (2229, 2297):
+                    raise PCloudError(
+                        "此 pCloud 帳號開啟了 2FA(二步驟驗證),目前不支援。"
+                        "請到 pCloud 設定關閉 2FA,或在 pCloud 開發者頁產生 "
+                        "Access Token 後用 token 登入。"
+                    ) from exc
+                # 4000 = "Too many login tries from this IP" — rate-limit
+                if code == 4000:
+                    raise PCloudError(
+                        "pCloud 因為太多失敗登入嘗試暫時封鎖此 IP,請等幾分鐘後再試,"
+                        "或改用 Access Token 登入。"
+                    ) from exc
                 if first_error is None:
                     first_error = exc
                 continue
             auth = str(data.get("auth") or "")
             if not auth:
+                # Some 2FA flows return result=0 but no auth + a tfatoken
+                # — translate that too.
+                if data.get("tfatoken") or data.get("tfa_required"):
+                    raise PCloudError(
+                        "此 pCloud 帳號需要 2FA 驗證,目前不支援。"
+                        "請改用 Access Token 登入。"
+                    )
                 raise PCloudError("pCloud 登入回應未含 auth token")
             userid = data.get("userid")
             try:
@@ -243,7 +299,7 @@ class PCloudService:
             return auth, host, userid_int
         if first_error is not None:
             raise first_error
-        raise PCloudError("pCloud 登入失敗：所有資料中心都拒絕了帳號")
+        raise PCloudError("pCloud 登入失敗:所有資料中心都拒絕了帳號")
 
     async def _verify_token(self, token: str) -> tuple[str, str, int | None]:
         """Smoke-test a raw auth token by hitting ``userinfo`` on each host

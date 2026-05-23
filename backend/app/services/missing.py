@@ -72,11 +72,67 @@ def _compute_extras(
     return out
 
 
+async def _extras_expected_set(
+    kind: str,
+    slug: str,
+    name: str,
+    uncensored: bool,
+    base_expected: set[str],
+    *,
+    refresh: bool = False,
+) -> set[str]:
+    """Return ``base_expected`` augmented with codes that exist in this
+    listing's catalog but have no current magnet on JavBus.
+
+    The default listing walk uses the ``existmag=mag`` cookie so only
+    works with active magnets show up — fine for missing-codes (we can't
+    download magnet-less ones anyway) but wrong for extras: a user can
+    perfectly well own a file for a work whose magnets have aged off
+    JavBus. Without this fixup, every such file gets flagged as 多餘.
+
+    Skipped entirely when PikPak's presence index sees no candidate
+    extras under this listing's folder — saves one JavBus round-trip
+    per refresh in the common case. When candidates do exist, the
+    full-catalog walk is cached separately for an hour so repeat calls
+    are free.
+    """
+    roots = _expected_roots(kind, slug, name)
+    found = presence_index.codes_under(*roots)
+    candidates = {c for c in found if c not in base_expected}
+    if not candidates:
+        return base_expected
+    try:
+        full_items, _ = await fetch_all_listing_codes(
+            kind, slug, uncensored=uncensored, refresh=refresh,
+            with_magnets_only=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Network / geo-block: prefer not flagging false extras over a
+        # hard failure. Leave the base set unchanged and log so the
+        # user can correlate if they complain about stale flags.
+        logger.warning(
+            "extras full-catalog walk failed for %s/%s: %s — keeping "
+            "magnet-only expected set", kind, slug, exc,
+        )
+        return base_expected
+    augmented = set(base_expected)
+    for it in full_items:
+        c = normalize_code(it.code) or it.code
+        augmented.add(c)
+    return augmented
+
+
 logger = logging.getLogger(__name__)
 
 
-# (kind, slug, uncensored) → (built_at, list[MovieListItem], pages_scanned)
-_listing_cache: dict[tuple[str, str, bool], tuple[datetime, list[MovieListItem], int]] = {}
+# (kind, slug, uncensored, with_magnets_only) → (built_at, list[MovieListItem], pages_scanned).
+# The ``with_magnets_only`` axis distinguishes the magnet-filtered walk
+# (used for missing detection — only codes with downloadable magnets
+# count) from the full-catalog walk (used for extras — codes whose
+# magnets have aged off JavBus still belong in the listing).
+_listing_cache: dict[
+    tuple[str, str, bool, bool], tuple[datetime, list[MovieListItem], int]
+] = {}
 _summary_lock = asyncio.Lock()
 
 # Result caches for the aggregate views. The /tracked page hits
@@ -174,14 +230,19 @@ async def fetch_all_listing_codes(
     uncensored: bool,
     refresh: bool = False,
     max_pages: int | None = None,
+    with_magnets_only: bool = True,
 ) -> tuple[list[MovieListItem], int]:
     """Walk JavBus pages until ``has_next == False`` (or hit the cap).
 
     Returns (items, pages_scanned). De-duplicates by code so the same
     work appearing on two pages (rare but possible at page boundaries)
     only counts once.
+
+    ``with_magnets_only`` mirrors ``scraper.fetch_listing``: default
+    ``True`` keeps the historical magnet-filtered view; pass ``False``
+    for the full catalog walk used by extras detection.
     """
-    key = (kind, slug, uncensored)
+    key = (kind, slug, uncensored, with_magnets_only)
     if not refresh:
         cached = _listing_cache.get(key)
         if cached and _cache_fresh(cached[0]):
@@ -189,7 +250,8 @@ async def fetch_all_listing_codes(
 
     cap = max_pages or max(1, settings.missing_max_pages)
     items, pages = await walk_listing(
-        kind, slug, uncensored=uncensored, max_pages=cap
+        kind, slug, uncensored=uncensored, max_pages=cap,
+        with_magnets_only=with_magnets_only,
     )
 
     _listing_cache[key] = (datetime.utcnow(), list(items), pages)
@@ -258,12 +320,16 @@ async def missing_for_listing(
     # Only flag extras when we actually got a JavBus catalog to compare
     # against. If the listing fetch returned nothing (network, geo-block,
     # invalid slug…) every file in the folder would otherwise look like
-    # an extra.
-    extras = (
-        _compute_extras(kind, slug, name, expected)
-        if items
-        else []
-    )
+    # an extra. The extras-expected set augments ``expected`` with
+    # magnet-less catalog entries so old works the user owns offline
+    # aren't false-flagged.
+    if items:
+        extras_expected = await _extras_expected_set(
+            kind, slug, name, uncensored, expected, refresh=refresh
+        )
+        extras = _compute_extras(kind, slug, name, extras_expected)
+    else:
+        extras = []
 
     return MissingCodesResult(
         kind=kind,
@@ -304,11 +370,15 @@ async def _summary_item(
         missing = [m for m in missing if m.code in owned]
     # See note in missing_for_listing: skip extras when we got no
     # listing data, otherwise every file in the folder appears extra.
-    extras = (
-        _compute_extras(row.kind, row.id, row.name or "", expected)
-        if items
-        else []
-    )
+    if items:
+        extras_expected = await _extras_expected_set(
+            row.kind, row.id, row.name or "", bool(row.uncensored), expected,
+        )
+        extras = _compute_extras(
+            row.kind, row.id, row.name or "", extras_expected
+        )
+    else:
+        extras = []
     return MissingSummaryItem(
         kind=row.kind,
         id=row.id,

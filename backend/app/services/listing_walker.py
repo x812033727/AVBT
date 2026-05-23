@@ -28,6 +28,7 @@ async def walk_listing(
     uncensored: bool,
     max_pages: int,
     batch_size: int | None = None,
+    with_magnets_only: bool = True,
 ) -> tuple[list[MovieListItem], int]:
     """Walk JavBus pages until the end (``has_next=False``), the page
     cap (``max_pages``) or a fetch error. Returns ``(items, pages_scanned)``
@@ -57,7 +58,10 @@ async def walk_listing(
     while not stop and next_page <= cap:
         batch_pages = list(range(next_page, min(next_page + batch, cap + 1)))
         tasks = [
-            scraper.fetch_listing(kind, slug, page=p, uncensored=uncensored)
+            scraper.fetch_listing(
+                kind, slug, page=p, uncensored=uncensored,
+                with_magnets_only=with_magnets_only,
+            )
             for p in batch_pages
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)

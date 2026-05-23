@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CleanupButton from "@/components/CleanupButton";
 import DownloadQueuePanel from "@/components/DownloadQueuePanel";
+import EpisodeFinderButton from "@/components/EpisodeFinderButton";
 import FolderStatsBar from "@/components/FolderStatsBar";
 import LegacySweepButton from "@/components/LegacySweepButton";
 import MoveModal from "@/components/MoveModal";
@@ -543,7 +544,13 @@ function FilesPanel({
             </span>
           ))}
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          <EpisodeFinderButton
+            folder_id={parents[parents.length - 1].id}
+            folder_name={parents[parents.length - 1].name}
+            disabled={parents.length <= 1}
+            onDone={onRefresh}
+          />
           <CleanupButton
             folder_id={parents[parents.length - 1].id}
             folder_name={parents[parents.length - 1].name}

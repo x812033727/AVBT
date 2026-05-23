@@ -198,6 +198,40 @@ export type PikPakQuota = {
   expire: string | null;
 };
 
+export type PCloudFile = {
+  id: string;
+  name: string;
+  kind: string; // "folder" | "file"
+  size: number | null;
+  parent_id: string | null;
+  created_time: string | null;
+};
+
+export type PCloudQuota = {
+  used: number;
+  limit: number;
+};
+
+export type PCloudStatus = {
+  logged_in: boolean;
+  username: string;
+  host: string;
+  has_stored_token: boolean;
+  has_env_credentials: boolean;
+  quota?: PCloudQuota;
+  quota_error?: string;
+};
+
+export type PCloudFolderStats = {
+  total_files: number;
+  total_folders: number;
+  total_size: number;
+  video_count: number;
+  video_size: number;
+  coded_count: number;
+  partial: boolean;
+};
+
 export type ArchiverStatus = {
   enabled: boolean;
   interval_seconds: number;

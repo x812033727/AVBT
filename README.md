@@ -19,6 +19,7 @@ JavBus 磁力擷取 + PikPak 離線下載管理站。
 - **自動歸檔**：完成的離線檔案會自動搬到 `<archive_folder>/<番號>/`
 - **歸檔通知**：可選 webhook（Discord 相容）通知歸檔事件
 - PikPak 雲端檔案：資料夾瀏覽、檔案搜尋、批次建立分享連結、移至垃圾桶
+- pCloud 雲端管理：資料夾瀏覽、移動、改名、新增、刪除、搜尋、批次番號正規化（US / EU 自動偵測）
 
 ## 快速啟動
 
@@ -63,6 +64,8 @@ JAVBUS_BASE_URL=https://www.javbus.com
 PIKPAK_USERNAME=your@email.com
 PIKPAK_PASSWORD=your_password
 PIKPAK_DOWNLOAD_FOLDER=AVBT      # 可選，會自動建立
+PCLOUD_USERNAME=                  # 可選，pCloud 管理頁用
+PCLOUD_PASSWORD=                  # 可選
 HTTP_PROXY=                       # 可選
 ```
 

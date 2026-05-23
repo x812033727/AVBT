@@ -509,7 +509,21 @@ class PCloudService:
         """Smoke-test a raw auth token by hitting ``userinfo`` on each host
         until one accepts it. Returns ``(auth, host, userid)`` exactly
         like :meth:`_login_detect_host` so callers can reuse the same
-        downstream code path."""
+        downstream code path.
+
+        On success, opportunistically asks pCloud for a fresh token with
+        the **maximum TTL** (1 year absolute + 1 year inactivity sliding
+        window) and returns the longer-lived token if pCloud issues one.
+        This matters for tokens pulled out of a browser session, whose
+        original TTL is whatever pcloud.com decided — typically days.
+        The exchange is a best-effort: any failure leaves the original
+        token intact so the user never ends up worse off.
+        """
+        # pCloud accepts authexpire up to ~1 year (31536000s). Setting
+        # both authexpire and authinactiveexpire to that ceiling gives
+        # the longest possible lifetime: 1 year hard cap, with each API
+        # call sliding the inactivity window forward.
+        MAX_TTL = 31_536_000
         first_error: Optional[PCloudError] = None
         for host in PCLOUD_HOSTS:
             try:
@@ -523,7 +537,43 @@ class PCloudService:
                 userid_int = int(userid) if userid is not None else None
             except (TypeError, ValueError):
                 userid_int = None
-            return token, host, userid_int
+
+            # Try to swap for a long-lived token. If pCloud either
+            # rejects the extension request or returns no new auth, we
+            # silently keep the original token.
+            chosen_token = token
+            host_label = "US" if "eapi" not in host else "EU"
+            try:
+                renewed = await self._raw_request(
+                    host,
+                    "userinfo",
+                    {
+                        "getauth": 1,
+                        "authexpire": MAX_TTL,
+                        "authinactiveexpire": MAX_TTL,
+                    },
+                    auth=token,
+                )
+                new_auth = str(renewed.get("auth") or "")
+                if new_auth and new_auth != token:
+                    chosen_token = new_auth
+                    logger.info(
+                        "pCloud token extended to max TTL host=%s userid=%s",
+                        host_label,
+                        userid_int,
+                    )
+                else:
+                    logger.info(
+                        "pCloud token extension returned no new auth "
+                        "(server kept original) host=%s",
+                        host_label,
+                    )
+            except PCloudError as exc:
+                logger.info(
+                    "pCloud token extension skipped (server refused): %s",
+                    exc,
+                )
+            return chosen_token, host, userid_int
         if first_error is not None:
             raise first_error
         raise PCloudError("pCloud token 驗證失敗：所有資料中心都拒絕了")

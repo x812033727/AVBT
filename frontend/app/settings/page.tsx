@@ -197,7 +197,7 @@ export default function SettingsPage() {
       {msg && (
         <div
           className={
-            "rounded-md border px-3 py-2 text-sm " +
+            "whitespace-pre-wrap rounded-md border px-3 py-2 text-sm leading-relaxed " +
             (msg.kind === "ok"
               ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
               : "border-red-500/30 bg-red-500/10 text-red-300")

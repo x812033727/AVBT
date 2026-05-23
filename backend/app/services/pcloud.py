@@ -241,6 +241,7 @@ class PCloudService:
         first_error: Optional[PCloudError] = None
         user_lower = username.strip().lower()
         for host in PCLOUD_HOSTS:
+            host_label = "US" if "eapi" not in host else "EU"
             try:
                 digest_resp = await self._raw_request(host, "getdigest")
                 digest = str(digest_resp.get("digest") or "")
@@ -250,6 +251,12 @@ class PCloudService:
                 pw_digest = hashlib.sha1(
                     (password + user_hash + digest).encode("utf-8")
                 ).hexdigest()
+                logger.info(
+                    "pCloud login attempt user=%s host=%s pw_len=%d",
+                    username,
+                    host_label,
+                    len(password),
+                )
                 data = await self._raw_request(
                     host,
                     "userinfo",
@@ -263,6 +270,13 @@ class PCloudService:
                 )
             except PCloudError as exc:
                 code = getattr(exc, "result", 0)
+                logger.warning(
+                    "pCloud login rejected user=%s host=%s result=%s msg=%s",
+                    username,
+                    host_label,
+                    code,
+                    exc,
+                )
                 # 2229/2297 = TFA required. Surface a clear message
                 # instead of leaving the user to wonder which datacenter
                 # complained.
@@ -296,8 +310,28 @@ class PCloudService:
                 userid_int = int(userid) if userid is not None else None
             except (TypeError, ValueError):
                 userid_int = None
+            logger.info(
+                "pCloud login success user=%s host=%s userid=%s",
+                username,
+                host_label,
+                userid_int,
+            )
             return auth, host, userid_int
+        # Every host rejected us. If the rejection was the generic
+        # "Log in failed" (2000), surface the three real-world causes so
+        # the user can self-diagnose instead of staring at a one-liner.
         if first_error is not None:
+            if getattr(first_error, "result", 0) == 2000:
+                raise PCloudError(
+                    "pCloud 登入失敗(帳密被拒)。常見原因:\n"
+                    "  1) 此 pCloud 帳號是用「Sign in with Google」建立的,"
+                    "從未設定過密碼 — 請先到 pcloud.com 點「Forgot password」"
+                    "設一組密碼,或改用 Access Token 登入。\n"
+                    "  2) 帳號開了 2FA — 請關閉 2FA 或改用 Access Token。\n"
+                    "  3) 密碼真的輸入錯了。\n"
+                    "建議改用 Access Token:在 pcloud.com 登入後,"
+                    "到 https://docs.pcloud.com 取得 Authorize Token。"
+                ) from first_error
             raise first_error
         raise PCloudError("pCloud 登入失敗:所有資料中心都拒絕了帳號")
 

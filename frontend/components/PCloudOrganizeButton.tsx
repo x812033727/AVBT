@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { streamNdjson } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
 
 type Progress = {
   current: number;
@@ -25,6 +25,24 @@ type Result = {
   dry_run: boolean;
 };
 
+type JobStatus = "running" | "done" | "error" | "cancelled";
+
+type Job = {
+  job_id: string;
+  folder_id: string;
+  folder_name: string;
+  dry_run: boolean;
+  status: JobStatus;
+  started_at: string;
+  finished_at: string | null;
+  total: number;
+  processing: { current: number; source: string; kind: string } | null;
+  events: Progress[];
+  next_since: number;
+  result: Result | null;
+  error: string | null;
+};
+
 const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = {
   move: { text: "📦 歸類", cls: "text-emerald-300" },
   skip: { text: "⏭ 略過", cls: "text-white/50" },
@@ -45,6 +63,13 @@ const KIND_LABEL: Record<string, string> = {
   director: "導演",
 };
 
+const STATUS_LABEL: Record<JobStatus, { text: string; cls: string }> = {
+  running: { text: "執行中", cls: "text-amber-300" },
+  done: { text: "已完成", cls: "text-emerald-300" },
+  error: { text: "錯誤", cls: "text-red-300" },
+  cancelled: { text: "已取消", cls: "text-white/60" },
+};
+
 export default function PCloudOrganizeButton({
   folder_id,
   folder_name,
@@ -57,78 +82,191 @@ export default function PCloudOrganizeButton({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [dryRun, setDryRun] = useState(true);
-  const [total, setTotal] = useState(0);
-  const [progress, setProgress] = useState<Progress[]>([]);
-  const [processing, setProcessing] = useState<{ current: number; source: string } | null>(null);
-  const [result, setResult] = useState<Result | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  // Lightweight indicator on the button when a background job is
+  // running for this folder, even though the modal is closed.
+  const [activeBg, setActiveBg] = useState(false);
 
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    setProgress([]);
-    setProcessing(null);
-    setTotal(0);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    const wasDryRun = dryRun;
-    try {
-      await streamNdjson(
-        "/api/pcloud/files/organize/stream",
-        { folder_id, dry_run: wasDryRun },
-        (event) => {
-          if (event.type === "start") setTotal(event.total ?? 0);
-          else if (event.type === "processing")
-            setProcessing({ current: event.current, source: event.source });
-          else if (event.type === "progress") {
-            setProgress((prev) => [...prev, event]);
-            setProcessing(null);
-          } else if (event.type === "done") {
-            setResult(event.result);
-            setProcessing(null);
-          } else if (event.type === "error") {
-            setError(event.message);
-            setProcessing(null);
-          }
-        },
-        ctrl.signal
-      );
-      if (!wasDryRun) onDone?.();
-    } catch (e: any) {
-      if (e.name !== "AbortError") setError(e.message);
-    } finally {
-      setBusy(false);
-      setProcessing(null);
-      abortRef.current = null;
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sinceRef = useRef(0);
+  const previousStatusRef = useRef<JobStatus | null>(null);
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearTimeout(pollRef.current);
+      pollRef.current = null;
     }
   }
 
-  function cancel() {
-    abortRef.current?.abort();
+  // Background-job indicator: when no modal is open, check periodically
+  // whether this folder has a running job (e.g. one started before the
+  // modal was closed, or in another browser tab). Light touch — 5s.
+  useEffect(() => {
+    if (open) {
+      setActiveBg(false);
+      return;
+    }
+    let cancelled = false;
+    async function tick() {
+      try {
+        const jobs = await api.get<Job[]>(
+          `/api/pcloud/files/organize/jobs?folder_id=${encodeURIComponent(
+            folder_id
+          )}&status=running`
+        );
+        if (!cancelled) setActiveBg(jobs.length > 0);
+      } catch {
+        if (!cancelled) setActiveBg(false);
+      }
+    }
+    tick();
+    const h = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(h);
+    };
+  }, [open, folder_id]);
+
+  async function pollOnce(id: string) {
+    try {
+      const data = await api.get<Job>(
+        `/api/pcloud/files/organize/jobs/${id}?since=${sinceRef.current}`
+      );
+      sinceRef.current = data.next_since;
+      // Merge new events onto whatever we already have rather than
+      // replacing — the response only carries the tail since `since`.
+      setJob((prev) => {
+        if (!prev || prev.job_id !== id) {
+          return { ...data, events: data.events };
+        }
+        return {
+          ...data,
+          events: [...prev.events, ...data.events],
+        };
+      });
+      if (data.status === "running") {
+        pollRef.current = setTimeout(() => pollOnce(id), 1000);
+      } else {
+        // Terminal — fire onDone once for live (non-dry) success.
+        if (
+          previousStatusRef.current === "running" &&
+          data.status === "done" &&
+          !data.dry_run
+        ) {
+          onDone?.();
+        }
+        previousStatusRef.current = data.status;
+      }
+    } catch (e: any) {
+      setError(e.message || "查詢任務失敗");
+      stopPolling();
+    }
+  }
+
+  function startPolling(id: string) {
+    stopPolling();
+    sinceRef.current = 0;
+    previousStatusRef.current = "running";
+    pollOnce(id);
+  }
+
+  async function submit() {
+    setError(null);
+    setJob(null);
+    sinceRef.current = 0;
+    try {
+      const data = await api.post<{ job_id: string; status: string }>(
+        "/api/pcloud/files/organize/jobs",
+        { folder_id, folder_name, dry_run: dryRun }
+      );
+      setJobId(data.job_id);
+      startPolling(data.job_id);
+    } catch (e: any) {
+      // 409 = active job already — auto-attach to it instead of erroring.
+      const msg = e?.message || "";
+      const match = msg.match(/job_id['":\s]+([0-9a-f]{6,})/i);
+      if (match) {
+        setJobId(match[1]);
+        startPolling(match[1]);
+        return;
+      }
+      setError(msg || "建立任務失敗");
+    }
+  }
+
+  async function cancel() {
+    if (!jobId) return;
+    try {
+      await api.post(`/api/pcloud/files/organize/jobs/${jobId}/cancel`, {});
+    } catch {
+      /* polling will reflect terminal state */
+    }
   }
 
   function close() {
-    if (busy) return;
+    // Modal close does NOT stop the job — that's the whole point of
+    // the background-task refactor. We just stop polling locally.
+    stopPolling();
     setOpen(false);
-    setProgress([]);
-    setProcessing(null);
-    setResult(null);
-    setError(null);
-    setTotal(0);
-    setDryRun(true);
+    // Keep error / jobId so the next open can resume cleanly.
+    if (!job || job.status !== "running") {
+      setJob(null);
+      setJobId(null);
+      setError(null);
+      setDryRun(true);
+    }
   }
 
-  const percent = total ? Math.round((progress.length / total) * 100) : 0;
-  const recent = progress.slice(-10).reverse();
+  // On open: if there's already an active job for this folder, attach
+  // to it instead of showing the submit form. This is the "I closed
+  // the tab, came back, want to see the progress" path.
+  useEffect(() => {
+    if (!open) {
+      stopPolling();
+      return;
+    }
+    if (jobId) {
+      // Already attached to a job (e.g. user reopened mid-run).
+      startPolling(jobId);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const jobs = await api.get<Job[]>(
+          `/api/pcloud/files/organize/jobs?folder_id=${encodeURIComponent(
+            folder_id
+          )}&status=running`
+        );
+        if (cancelled) return;
+        if (jobs.length > 0) {
+          setJobId(jobs[0].job_id);
+          startPolling(jobs[0].job_id);
+        }
+      } catch {
+        /* not fatal — user can still kick off a new job */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const busy = job?.status === "running";
+  const percent =
+    job && job.total ? Math.round((job.events.length / job.total) * 100) : 0;
+  const recent = job ? job.events.slice(-10).reverse() : [];
+  const processing = job?.processing ?? null;
 
   return (
     <>
       <button
-        className="btn-ghost disabled:opacity-30"
+        className="btn-ghost relative disabled:opacity-30"
         onClick={() => setOpen(true)}
         disabled={disabled}
         title={
@@ -138,6 +276,12 @@ export default function PCloudOrganizeButton({
         }
       >
         📦 歸類此資料夾
+        {activeBg && (
+          <span
+            className="absolute -top-1 -right-1 h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400"
+            title="此資料夾有歸類任務在背景執行中"
+          />
+        )}
       </button>
 
       {open && (
@@ -148,13 +292,25 @@ export default function PCloudOrganizeButton({
           }}
         >
           <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
-            <div className="flex items-center">
+            <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">
                 歸類「{folder_name}」
               </h2>
+              {job && (
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${STATUS_LABEL[job.status].cls}`}
+                >
+                  {STATUS_LABEL[job.status].text}
+                </span>
+              )}
               <button
                 className="ml-auto text-white/40 hover:text-white"
                 onClick={close}
+                title={
+                  busy
+                    ? "關閉視窗但工作會在背景繼續，下次開啟會自動接回"
+                    : "關閉"
+                }
               >
                 ✕
               </button>
@@ -163,17 +319,20 @@ export default function PCloudOrganizeButton({
             <p className="text-xs text-white/50">
               只動此資料夾的直接子項目。對每個有番號的影片 / 資料夾，依 JavBus + 追蹤清單反查到所屬系列 / 女優 / 製作商，搬到{" "}
               <span className="font-mono">AVBT/&lt;類別&gt;/&lt;追蹤名&gt;/</span>。沒對應追蹤項目的會略過。
+              {" "}
+              <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
             </p>
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
-                disabled={busy}
-              />
-              <span>只預覽（不實際修改，也不建立目標資料夾）</span>
-            </label>
+            {!job && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={dryRun}
+                  onChange={(e) => setDryRun(e.target.checked)}
+                />
+                <span>只預覽（不實際修改，也不建立目標資料夾）</span>
+              </label>
+            )}
 
             {error && (
               <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
@@ -181,17 +340,17 @@ export default function PCloudOrganizeButton({
               </div>
             )}
 
-            {(busy || result) && (
+            {job && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-white/60">
                   <span>
-                    {progress.length} / {total} ({percent}%)
-                    {result?.dry_run && " ・ 預覽模式"}
+                    {job.events.length} / {job.total}{job.total > 0 ? ` (${percent}%)` : ""}
+                    {job.dry_run && " ・ 預覽模式"}
                   </span>
                   <span>
-                    歸類 {progress.filter((p) => p.action === "move").length} ／
-                    略過 {progress.filter((p) => p.action === "skip").length} ／
-                    失敗 {progress.filter((p) => p.action === "error").length}
+                    歸類 {job.events.filter((p) => p.action === "move").length} ／
+                    略過 {job.events.filter((p) => p.action === "skip").length} ／
+                    失敗 {job.events.filter((p) => p.action === "error").length}
                   </span>
                 </div>
                 <div className="h-2 overflow-hidden rounded bg-white/10">
@@ -204,7 +363,7 @@ export default function PCloudOrganizeButton({
                   <div className="flex items-center gap-2 rounded-md border border-amber-400/20 bg-amber-400/5 px-2 py-1 text-xs text-amber-200/80">
                     <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
                     <span>
-                      ⏳ 正在查 JavBus（{processing.current}/{total}）：
+                      ⏳ 正在查 JavBus（{processing.current}/{job.total}）：
                     </span>
                     <span className="truncate font-mono">{processing.source}</span>
                   </div>
@@ -265,35 +424,55 @@ export default function PCloudOrganizeButton({
               </div>
             )}
 
-            {result && (
+            {job?.result && (
               <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
                 <div>
-                  共 <strong>{result.total}</strong> 個項目
-                  {result.dry_run && (
+                  共 <strong>{job.result.total}</strong> 個項目
+                  {job.result.dry_run && (
                     <span className="ml-2 text-amber-300/80">（僅預覽，未修改）</span>
                   )}
                 </div>
-                <div className="text-emerald-300">📦 已歸類 {result.moved}</div>
-                <div className="text-white/60">⏭ 略過 {result.skipped}</div>
-                {result.errors > 0 && (
-                  <div className="text-red-300">✗ 失敗 {result.errors}</div>
+                <div className="text-emerald-300">📦 已歸類 {job.result.moved}</div>
+                <div className="text-white/60">⏭ 略過 {job.result.skipped}</div>
+                {job.result.errors > 0 && (
+                  <div className="text-red-300">✗ 失敗 {job.result.errors}</div>
                 )}
+              </div>
+            )}
+
+            {job?.error && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {job.error}
               </div>
             )}
 
             <div className="flex justify-end gap-2">
               {busy ? (
                 <button className="btn-ghost" onClick={cancel}>
-                  取消
+                  取消任務
                 </button>
               ) : (
                 <>
                   <button className="btn-ghost" onClick={close}>
                     關閉
                   </button>
-                  <button className="btn-primary" onClick={submit}>
-                    {dryRun ? "預覽" : "執行"}
-                  </button>
+                  {!job && (
+                    <button className="btn-primary" onClick={submit}>
+                      {dryRun ? "預覽" : "執行"}
+                    </button>
+                  )}
+                  {job && job.status !== "running" && (
+                    <button
+                      className="btn-primary"
+                      onClick={() => {
+                        setJob(null);
+                        setJobId(null);
+                        setError(null);
+                      }}
+                    >
+                      再來一次
+                    </button>
+                  )}
                 </>
               )}
             </div>

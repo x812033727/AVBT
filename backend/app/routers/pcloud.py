@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -18,6 +19,7 @@ from ..schemas import (
 )
 from ..services.jav_code import extract_jav_code, is_video
 from ..services.pcloud import PCloudError, pcloud_service
+from ..services.pcloud_jobs import organize_job_manager
 from ..services.pcloud_transfer import pcloud_transfer_queue
 from ..services.pikpak import PikPakError, pikpak_service
 
@@ -213,30 +215,74 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
-@router.post("/files/organize/stream")
-async def organize_folder_stream(payload: dict = Body(...)):
-    """Stream NDJSON organize events for the direct children of a folder.
+@router.post("/files/organize/jobs")
+async def create_organize_job(payload: dict = Body(...)):
+    """Kick off an organize pass as a background task.
 
-    Body: ``{folder_id: str, dry_run: bool=True}``. For each child whose
-    name contains a JAV code, resolves the tracked listing (series /
-    actress / studio / label / director) via JavBus and moves the item
-    into ``/<kind_base>/<tracked_name>/``. Items with no code or no
-    tracked match are skipped with a structured reason. Scope is one
-    level deep — same as cleanup.
+    Body: ``{folder_id: str, folder_name: str = "", dry_run: bool = True}``.
+    Returns ``{job_id, status}`` immediately. The actual work runs
+    decoupled from this request, so the client can close the browser
+    and resume polling later.
+
+    Rejects with 409 if the same folder already has a running job — two
+    concurrent passes on the same children would race each other's
+    moves.
     """
     folder_id = str(payload.get("folder_id") or "0").strip() or "0"
+    folder_name = str(payload.get("folder_name") or "")
     dry_run = bool(payload.get("dry_run", True))
 
-    async def gen():
-        try:
-            async for event in pcloud_service.organize_folder_stream(
-                folder_id, dry_run=dry_run
-            ):
-                yield json.dumps(event, ensure_ascii=False) + "\n"
-        except Exception as exc:  # noqa: BLE001
-            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+    existing = organize_job_manager.active_for_folder(folder_id)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "此資料夾已有歸類任務進行中",
+                "job_id": existing.job_id,
+            },
+        )
 
-    return StreamingResponse(gen(), media_type="application/x-ndjson")
+    job = organize_job_manager.create(folder_id, folder_name, dry_run)
+    job.task = asyncio.create_task(
+        organize_job_manager.run(job, pcloud_service)
+    )
+    return {"job_id": job.job_id, "status": job.status}
+
+
+@router.get("/files/organize/jobs/{job_id}")
+async def get_organize_job(job_id: str, since: int = Query(0, ge=0)):
+    """Fetch current state of an organize job.
+
+    ``since`` is the event index returned as ``next_since`` from the
+    previous poll — pass it back to get only events appended since
+    then. The first poll should pass ``since=0``.
+    """
+    job = organize_job_manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job 不存在")
+    return job.to_public_dict(since=since)
+
+
+@router.post("/files/organize/jobs/{job_id}/cancel")
+async def cancel_organize_job(job_id: str):
+    """Cancel a running organize job. Already-finished jobs are a no-op
+    (still returns 200). Partial moves are NOT rolled back — pCloud is
+    where the truth lives."""
+    ok = organize_job_manager.cancel(job_id)
+    return {"ok": ok}
+
+
+@router.get("/files/organize/jobs")
+async def list_organize_jobs(
+    folder_id: str | None = Query(None),
+    status: str | None = Query(None),
+):
+    """List jobs, newest first. Filter by ``folder_id`` to check if the
+    current folder has anything running — the UI uses this on modal
+    open to resume display of a job started in a previous session.
+    """
+    jobs = organize_job_manager.list_jobs(folder_id=folder_id, status=status)
+    return [j.to_public_dict() for j in jobs]
 
 
 # ---------- PikPak → pCloud transfer queue ----------

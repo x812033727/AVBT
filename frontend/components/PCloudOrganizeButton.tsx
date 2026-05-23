@@ -6,13 +6,16 @@ import { api } from "@/lib/api";
 type Progress = {
   current: number;
   kind: "file" | "folder";
-  action: "move" | "skip" | "error";
+  action: "move" | "flatten" | "skip" | "error";
   source: string;
   code?: string | null;
   listing_kind?: string | null;
   listing_name?: string | null;
   target_path?: string | null;
   target_name?: string | null;
+  // Number of items trashed alongside the keeper when flattening a
+  // wrapper folder — surfaced so the user sees what was discarded.
+  extras_count?: number;
   would_create?: boolean;
   reason?: string | null;
 };
@@ -20,6 +23,7 @@ type Progress = {
 type Result = {
   total: number;
   moved: number;
+  flattened: number;
   skipped: number;
   errors: number;
   dry_run: boolean;
@@ -45,6 +49,7 @@ type Job = {
 
 const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = {
   move: { text: "📦 歸類", cls: "text-emerald-300" },
+  flatten: { text: "📤 取出主檔", cls: "text-sky-300" },
   skip: { text: "⏭ 略過", cls: "text-white/50" },
   error: { text: "✗ 失敗", cls: "text-red-300" },
 };
@@ -322,6 +327,9 @@ export default function PCloudOrganizeButton({
               只動此資料夾的直接子項目。對每個有番號的影片 / 資料夾，依 JavBus 查到的{" "}
               <span className="font-mono">系列 → 發行商 → 製作商</span>{" "}
               順序取第一個有的,搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>。
+              子資料夾會自動「展平」：取出最大支影片改名為{" "}
+              <span className="font-mono">&lt;番號&gt;.&lt;副檔名&gt;</span>{" "}
+              丟到目標路徑,並把原本的包裝資料夾(含 sample / nfo / 種子等)送進回收桶。
               不需先追蹤,JavBus 完全查無資料才會略過。
               {" "}
               <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
@@ -353,6 +361,7 @@ export default function PCloudOrganizeButton({
                   </span>
                   <span>
                     歸類 {job.events.filter((p) => p.action === "move").length} ／
+                    取出 {job.events.filter((p) => p.action === "flatten").length} ／
                     略過 {job.events.filter((p) => p.action === "skip").length} ／
                     失敗 {job.events.filter((p) => p.action === "error").length}
                   </span>
@@ -402,7 +411,8 @@ export default function PCloudOrganizeButton({
                             {p.source}
                           </span>
                         </div>
-                        {p.action === "move" && p.target_path && (
+                        {(p.action === "move" || p.action === "flatten") &&
+                          p.target_path && (
                           <div className="ml-8 flex items-baseline gap-1 text-white/50">
                             <span className="text-white/30">→</span>
                             {kindTag && (
@@ -419,6 +429,13 @@ export default function PCloudOrganizeButton({
                                 （將建立）
                               </span>
                             )}
+                            {p.action === "flatten" &&
+                              typeof p.extras_count === "number" &&
+                              p.extras_count > 0 && (
+                                <span className="text-[10px] text-white/40">
+                                  （清掉 {p.extras_count} 個額外項目）
+                                </span>
+                              )}
                           </div>
                         )}
                       </li>
@@ -437,6 +454,11 @@ export default function PCloudOrganizeButton({
                   )}
                 </div>
                 <div className="text-emerald-300">📦 已歸類 {job.result.moved}</div>
+                {job.result.flattened > 0 && (
+                  <div className="text-sky-300">
+                    📤 已取出主檔 {job.result.flattened}
+                  </div>
+                )}
                 <div className="text-white/60">⏭ 略過 {job.result.skipped}</div>
                 {job.result.errors > 0 && (
                   <div className="text-red-300">✗ 失敗 {job.result.errors}</div>

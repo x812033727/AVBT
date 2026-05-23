@@ -810,11 +810,16 @@ function LoginPanel({
   const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Sticky in-form error: toasts auto-dismiss but the multi-line
+  // diagnostic message from /api/pcloud/login needs to stay visible long
+  // enough for the user to read all three possible causes.
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
+    setLoginError(null);
     try {
       const body =
         mode === "token"
@@ -827,7 +832,9 @@ function LoginPanel({
       setToken("");
       onChanged();
     } catch (e: any) {
-      toast.error(e.message);
+      const msg = e?.message || "登入失敗";
+      setLoginError(msg);
+      toast.error(msg.split("\n")[0]);
     } finally {
       setSubmitting(false);
     }
@@ -892,6 +899,11 @@ function LoginPanel({
         <button type="submit" className="btn-primary text-sm" disabled={submitting}>
           {submitting ? "登入中…" : "登入"}
         </button>
+        {loginError && (
+          <div className="whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300">
+            {loginError}
+          </div>
+        )}
       </form>
     </div>
   );

@@ -38,7 +38,18 @@ logger = logging.getLogger(__name__)
 
 
 class PCloudError(RuntimeError):
-    pass
+    """pCloud-side error.
+
+    Carries:
+      - ``.result`` — the numeric ``result`` code from the JSON body
+        (0 if not from a structured response).
+      - ``.payload`` — the full parsed response dict, when available,
+        so callers can introspect undocumented hint fields (e.g.
+        ``tfatoken``, ``hint``, ``region``) without re-parsing.
+    """
+
+    result: int = 0
+    payload: Optional[dict] = None
 
 
 TOKEN_FILE = Path("data/pcloud_token.json")
@@ -183,6 +194,7 @@ class PCloudService:
             err = data.get("error") or f"result={code}"
             exc = PCloudError(f"pCloud 錯誤 ({code}): {err}")
             exc.result = code  # type: ignore[attr-defined]
+            exc.payload = data  # type: ignore[attr-defined]
             raise exc
         return data
 
@@ -241,45 +253,96 @@ class PCloudService:
         first_error: Optional[PCloudError] = None
         user_lower = username.strip().lower()
         for host in PCLOUD_HOSTS:
+            host_label = "US" if "eapi" not in host else "EU"
+            # Try digest first (works without exposing password in URL),
+            # then fall back to plain password over HTTPS. pCloud's docs
+            # list both as supported; in practice we've seen accounts
+            # where one path fails and the other works, so we try both
+            # before declaring the credentials bad.
+            attempts: list[tuple[str, dict[str, Any]]] = []
             try:
                 digest_resp = await self._raw_request(host, "getdigest")
                 digest = str(digest_resp.get("digest") or "")
-                if not digest:
-                    raise PCloudError("pCloud 未回傳 digest")
-                user_hash = hashlib.sha1(user_lower.encode("utf-8")).hexdigest()
-                pw_digest = hashlib.sha1(
-                    (password + user_hash + digest).encode("utf-8")
-                ).hexdigest()
-                data = await self._raw_request(
-                    host,
-                    "userinfo",
+                if digest:
+                    user_hash = hashlib.sha1(
+                        user_lower.encode("utf-8")
+                    ).hexdigest()
+                    pw_digest = hashlib.sha1(
+                        (password + user_hash + digest).encode("utf-8")
+                    ).hexdigest()
+                    attempts.append(
+                        (
+                            "digest",
+                            {
+                                "username": username,
+                                "digest": digest,
+                                "passworddigest": pw_digest,
+                                "getauth": 1,
+                                "logout": 0,
+                            },
+                        )
+                    )
+            except PCloudError as exc:
+                logger.warning(
+                    "pCloud getdigest failed host=%s err=%s",
+                    host_label,
+                    exc,
+                )
+            # Always also queue the plain-password attempt as fallback.
+            attempts.append(
+                (
+                    "plain",
                     {
                         "username": username,
-                        "digest": digest,
-                        "passworddigest": pw_digest,
+                        "password": password,
                         "getauth": 1,
                         "logout": 0,
                     },
                 )
-            except PCloudError as exc:
-                code = getattr(exc, "result", 0)
-                # 2229/2297 = TFA required. Surface a clear message
-                # instead of leaving the user to wonder which datacenter
-                # complained.
-                if code in (2229, 2297):
-                    raise PCloudError(
-                        "此 pCloud 帳號開啟了 2FA(二步驟驗證),目前不支援。"
-                        "請到 pCloud 設定關閉 2FA,或在 pCloud 開發者頁產生 "
-                        "Access Token 後用 token 登入。"
-                    ) from exc
-                # 4000 = "Too many login tries from this IP" — rate-limit
-                if code == 4000:
-                    raise PCloudError(
-                        "pCloud 因為太多失敗登入嘗試暫時封鎖此 IP,請等幾分鐘後再試,"
-                        "或改用 Access Token 登入。"
-                    ) from exc
-                if first_error is None:
-                    first_error = exc
+            )
+
+            data: Optional[dict] = None
+            last_attempt_error: Optional[PCloudError] = None
+            for kind, params in attempts:
+                logger.info(
+                    "pCloud login attempt user=%s host=%s method=%s pw_len=%d",
+                    username,
+                    host_label,
+                    kind,
+                    len(password),
+                )
+                try:
+                    data = await self._raw_request(host, "userinfo", params)
+                    break
+                except PCloudError as exc:
+                    last_attempt_error = exc
+                    code = getattr(exc, "result", 0)
+                    payload = getattr(exc, "payload", None) or {}
+                    logger.warning(
+                        "pCloud login rejected user=%s host=%s method=%s "
+                        "result=%s payload=%s",
+                        username,
+                        host_label,
+                        kind,
+                        code,
+                        payload,
+                    )
+                    # Fast-path the truly terminal cases — no point trying
+                    # the alternate method or the other DC.
+                    if code in (2229, 2297) or payload.get("tfatoken"):
+                        raise PCloudError(
+                            "此 pCloud 帳號開啟了 2FA(二步驟驗證),目前不支援。"
+                            "請到 pCloud 設定關閉 2FA,或在 pCloud 開發者頁產生 "
+                            "Access Token 後用 token 登入。"
+                        ) from exc
+                    if code == 4000:
+                        raise PCloudError(
+                            "pCloud 因為太多失敗登入嘗試暫時封鎖此 IP,"
+                            "請等幾分鐘後再試,或改用 Access Token 登入。"
+                        ) from exc
+            if data is None:
+                if first_error is None and last_attempt_error is not None:
+                    first_error = last_attempt_error
                 continue
             auth = str(data.get("auth") or "")
             if not auth:
@@ -296,8 +359,47 @@ class PCloudService:
                 userid_int = int(userid) if userid is not None else None
             except (TypeError, ValueError):
                 userid_int = None
+            logger.info(
+                "pCloud login success user=%s host=%s userid=%s",
+                username,
+                host_label,
+                userid_int,
+            )
             return auth, host, userid_int
+        # Every host rejected us. If the rejection was the generic
+        # "Log in failed" (2000), surface the three real-world causes so
+        # the user can self-diagnose instead of staring at a one-liner.
         if first_error is not None:
+            if getattr(first_error, "result", 0) == 2000:
+                # Include any extra hint fields pCloud sent — sometimes
+                # they include ``hint``, ``message`` or region fields
+                # that explain why the same password works on the web
+                # but not via the public API (e.g. account-level OAuth
+                # enforcement).
+                payload = getattr(first_error, "payload", None) or {}
+                extra_fields = {
+                    k: v
+                    for k, v in payload.items()
+                    if k not in {"result", "error"} and v not in (None, "", 0)
+                }
+                hint_block = (
+                    f"\nserver 附帶欄位: {extra_fields}" if extra_fields else ""
+                )
+                raise PCloudError(
+                    "pCloud 登入失敗(帳密被拒,digest 與 plain 兩種都試過)。\n"
+                    "你能登入 pcloud.com 網頁 → 密碼是對的。\n"
+                    "常見原因(網頁能登入但 API 不能):\n"
+                    "  1) 此帳號是用「Sign in with Google」OAuth 建立的。"
+                    "即使後來設了密碼,pCloud 對這類帳號的 公開 API 密碼登入 "
+                    "有時會擋掉(只允許 web / OAuth flow)。\n"
+                    "  2) 帳號開了 2FA / device verification。\n"
+                    "  3) IP 區域被 pCloud 短期擋住。\n"
+                    "建議解法:改用 Access Token。\n"
+                    "  → 開瀏覽器登入 pcloud.com,開 DevTools 的 Network,"
+                    "重新整理一次首頁,任何 api 請求的 query string 都會帶 "
+                    "auth=xxxxxx,複製那串貼到「Access Token」欄位即可。"
+                    + hint_block
+                ) from first_error
             raise first_error
         raise PCloudError("pCloud 登入失敗:所有資料中心都拒絕了帳號")
 

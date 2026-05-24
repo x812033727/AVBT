@@ -963,16 +963,28 @@ class PCloudService:
                 videos.append(it)
         return videos, direct_count
 
-    @staticmethod
-    def _pick_keeper(videos: list[PCloudFile]) -> Optional[PCloudFile]:
-        """Choose the main video from a collected list: the largest one
-        ≥ ``_JUNK_BYTES``, else the largest of any size (sample-only
-        downloads). Returns ``None`` for an empty list."""
-        if not videos:
-            return None
-        main = [v for v in videos if v.size is None or v.size >= _JUNK_BYTES]
-        pool = main or videos
-        return max(pool, key=lambda v: int(v.size or 0))
+    async def _resolve_target_id(
+        self,
+        target_path: str,
+        target_cache: dict[str, tuple[Optional[int], set[str]]],
+        *,
+        dry_run: bool,
+    ) -> tuple[Optional[int], set[str]]:
+        """Resolve ``target_path`` to ``(folder_id, sibling_names)``,
+        memoised in ``target_cache``. ``dry_run`` uses read-only
+        :meth:`lookup_path` (returns ``(None, set())`` when the folder
+        doesn't exist yet); live mode :meth:`ensure_path`-creates it."""
+        if target_path not in target_cache:
+            if dry_run:
+                tid = await self.lookup_path(target_path)
+            else:
+                tid = await self.ensure_path(target_path)
+            if tid is None:
+                target_cache[target_path] = (None, set())
+            else:
+                siblings = await self.list_files(str(tid))
+                target_cache[target_path] = (tid, {s.name for s in siblings})
+        return target_cache[target_path]
 
     async def _resolve_listing_with_retry(
         self, code: str, timeout: float
@@ -1008,25 +1020,22 @@ class PCloudService:
                     await asyncio.sleep(2)
         return ("timeout", None)
 
-    async def _extract_keeper_to_target(
+    async def _move_keeper_to_target(
         self,
-        folder: PCloudFile,
         keeper: PCloudFile,
         code: str,
         target_folder_id: int,
         taken: set[str],
         *,
-        extras_count: int,
         dry_run: bool,
-    ) -> Optional[dict]:
-        """Move ``keeper`` (a video found inside ``folder``) to
-        ``target_folder_id`` renamed ``<code>.<ext>`` and trash the
-        wrapper. Mirrors PikPak's :func:`_resolve_folder_winner`.
+    ) -> Optional[str]:
+        """Move ``keeper`` to ``target_folder_id`` renamed ``<code>.<ext>``.
 
-        Returns ``{target_name, extras_count}`` on success, or ``None``
-        when the move failed (caller falls back to moving the wrapper
-        as-is). ``dry_run`` skips the actual API calls but still computes
-        the would-be name so previews match the live run.
+        Returns the final name on success, or ``None`` if the move call
+        failed. Does **not** trash anything — the caller trashes the
+        wrapper once, after every keeper has been pulled out, so a
+        multi-video wrapper never loses the works we didn't extract yet.
+        ``dry_run`` skips the API call but still reserves the name.
         """
         canonical = f"{code}{ext_of(keeper.name)}"
         final_name = _uniquify_target(canonical, taken)
@@ -1041,33 +1050,29 @@ class PCloudService:
             try:
                 await self._call("renamefile", params)
             except PCloudError as exc:
-                # Move-out failed — signal caller to fall back to the
-                # wrapper-as-is path. We haven't touched anything yet.
                 logger.warning(
                     "flatten move keeper %s → %s failed: %s",
                     keeper.name, final_name, exc,
                 )
                 return None
-            # Trash the wrapper recursively — clears junk siblings and
-            # any nested folder the keeper was extracted from. pCloud
-            # trash is recoverable for the account's retention window
-            # (typically 15-30 days) so a wrong call is undoable.
-            try:
-                await self._call(
-                    "deletefolderrecursive",
-                    {"folderid": self._file_param(folder.id)},
-                )
-            except PCloudError as exc:
-                # Non-fatal: the keeper is already at the target. Leaving
-                # the now-empty (or junk-only) wrapper behind is uglier
-                # than failing the whole organize.
-                logger.warning(
-                    "flatten trash wrapper %s failed: %s",
-                    folder.name, exc,
-                )
 
         taken.add(final_name)
-        return {"target_name": final_name, "extras_count": extras_count}
+        return final_name
+
+    async def _trash_folder(self, folder: PCloudFile) -> None:
+        """Trash ``folder`` recursively. Best-effort: a failure here only
+        leaves a now-junk-only wrapper behind, which is cosmetically ugly
+        but not fatal — the keepers are already extracted. pCloud trash is
+        recoverable for the account's retention window (15-30 days)."""
+        try:
+            await self._call(
+                "deletefolderrecursive",
+                {"folderid": self._file_param(folder.id)},
+            )
+        except PCloudError as exc:
+            logger.warning(
+                "flatten trash wrapper %s failed: %s", folder.name, exc
+            )
 
     async def organize_folder_stream(
         self, folder_id: str, *, dry_run: bool = True
@@ -1143,16 +1148,21 @@ class PCloudService:
         # attempt + one retry) doesn't error-skip an otherwise valid
         # code. Bump via env if your JavBus access is unusually slow.
         JAVBUS_TIMEOUT_SECONDS = settings.pcloud_organize_javbus_timeout
+        TIMEOUT_REASON = (
+            f"JavBus 兩次查詢都逾時（各 {int(JAVBUS_TIMEOUT_SECONDS)}s）。"
+            "該番號頁面可能持續慢或被 429 限流 — "
+            "點「再來一次」隔一陣子重試;若常常逾時可在 .env 設 "
+            "PCLOUD_ORGANIZE_JAVBUS_TIMEOUT=120"
+        )
+
+        # Monotonic key for each emitted progress event. A single folder
+        # child can fan out into several extractions, so the per-child
+        # ``idx`` is no longer unique — ``seq`` is.
+        seq = 0
 
         for idx, child in enumerate(children, start=1):
             await asyncio.sleep(0.02)
             kind = "folder" if child.kind == "folder" else "file"
-            base_event = {
-                "type": "progress",
-                "current": idx,
-                "kind": kind,
-                "source": child.name,
-            }
 
             # Heartbeat BEFORE any await — so the UI sees activity even
             # when the very first child triggers a slow JavBus lookup.
@@ -1171,164 +1181,161 @@ class PCloudService:
             code = extract_jav_code(child.name)
 
             try:
-                # Folder children: open and walk the subtree to find the
-                # main video. This is what lets us flatten wrappers whose
-                # *name* has no code (we borrow the video's code) and
-                # reach videos nested several torrent-dirs deep. Files
-                # can't be opened, so a file with no name code is a skip.
-                keeper: Optional[PCloudFile] = None
-                extras_count = 0
+                # ---- Folder children: recursively pull out EVERY work ----
+                # Walk the subtree, group videos by code (each video's own,
+                # falling back to the wrapper name's), and extract the
+                # largest of each code group renamed ``<code>.<ext>``. This
+                # reaches videos nested several torrent-dirs deep AND lifts
+                # a folder that bundles multiple different works — not just
+                # one. Same-code extras are resolution dups, trashed with
+                # the wrapper at the end.
                 if kind == "folder":
                     videos, direct_count = await self._collect_videos_in_subtree(
                         child.id
                     )
-                    extras_count = max(0, direct_count - 1)
+                    if videos:
+                        groups: dict[str, list[PCloudFile]] = {}
+                        # True if we can't safely trash the wrapper after
+                        # extraction (a substantial video we couldn't place,
+                        # or a keeper whose move/lookup didn't complete).
+                        leftover = False
+                        for v in videos:
+                            vcode = extract_jav_code(v.name) or code
+                            if not vcode:
+                                if v.size is not None and v.size >= _JUNK_BYTES:
+                                    leftover = True
+                                continue
+                            groups.setdefault(vcode, []).append(v)
 
-                    # Data-safety guard. Flattening extracts ONE keeper
-                    # then trashes the wrapper recursively. If the subtree
-                    # holds two or more substantial (≥ _JUNK_BYTES) videos
-                    # — multiple works bundled together, or a multi-part
-                    # release split across files — that recursive trash
-                    # would delete every video we didn't keep. The old
-                    # one-level peek never reached such files; now that we
-                    # walk deep we must refuse to flatten them and leave
-                    # the wrapper intact for the user to sort by hand.
-                    substantial = [
-                        v for v in videos
-                        if v.size is not None and v.size >= _JUNK_BYTES
-                    ]
-                    if len(substantial) >= 2:
-                        summary["skipped"] += 1
-                        yield {
-                            **base_event,
-                            "action": "skip",
-                            "code": code,
-                            "reason": "multi_video",
-                        }
-                        continue
+                        if groups:
+                            extracted_any = False
+                            extras_count = max(0, direct_count - 1)
+                            for gcode, gvids in groups.items():
+                                keeper = max(
+                                    gvids, key=lambda v: int(v.size or 0)
+                                )
+                                status, resolved = (
+                                    await self._resolve_listing_with_retry(
+                                        gcode, JAVBUS_TIMEOUT_SECONDS
+                                    )
+                                )
+                                seq += 1
+                                ev = {
+                                    "type": "progress",
+                                    "current": seq,
+                                    "kind": "folder",
+                                    "source": child.name,
+                                }
+                                if status == "timeout":
+                                    leftover = True  # keeper untouched
+                                    summary["errors"] += 1
+                                    yield {**ev, "action": "error",
+                                           "code": gcode, "reason": TIMEOUT_REASON}
+                                    continue
 
-                    keeper = self._pick_keeper(videos)
-                    if keeper is not None and not code:
-                        code = extract_jav_code(keeper.name)
+                                if status == "ok":
+                                    listing_kind, listing_name = resolved  # type: ignore[misc]
+                                    target_path = (
+                                        f"{kind_base_path(listing_kind)}/{listing_name}"
+                                    )
+                                    target_id, taken = await self._resolve_target_id(
+                                        target_path, target_cache, dry_run=dry_run
+                                    )
+                                    move_to = (
+                                        self._folder_param(str(target_id))
+                                        if target_id is not None else 0
+                                    )
+                                    move_taken = taken
+                                else:
+                                    # JavBus can't categorise → pull the
+                                    # video out of its wrapper *in place*.
+                                    listing_kind = listing_name = None
+                                    target_path = None
+                                    target_id = None
+                                    move_to = self._folder_param(str(folder_id))
+                                    move_taken = inplace_taken
 
+                                final_name = await self._move_keeper_to_target(
+                                    keeper, gcode, move_to, move_taken,
+                                    dry_run=dry_run,
+                                )
+                                if final_name is None:
+                                    leftover = True  # keeper still inside
+                                    summary["errors"] += 1
+                                    yield {**ev, "action": "error",
+                                           "code": gcode, "reason": "搬移失敗"}
+                                    continue
+
+                                extracted_any = True
+                                summary["flattened"] += 1
+                                out = {
+                                    **ev,
+                                    "action": "flatten",
+                                    "code": gcode,
+                                    "listing_kind": listing_kind,
+                                    "listing_name": listing_name,
+                                    "target_path": target_path,
+                                    "target_name": final_name,
+                                    "extras_count": extras_count,
+                                }
+                                if status == "ok" and target_id is None:
+                                    out["would_create"] = True
+                                if status != "ok":
+                                    out["uncategorized"] = True
+                                yield out
+
+                            # Trash the wrapper once, after every keeper is
+                            # out — but only when nothing substantial was
+                            # left behind (an un-placed video, a failed
+                            # move, a timeout). pCloud trash is recoverable
+                            # but we still avoid deleting un-extracted works.
+                            if extracted_any and not leftover and not dry_run:
+                                await self._trash_folder(child)
+                            continue
+                        # No video had a resolvable code → fall through to
+                        # the wrapper-as-is / skip paths using the name code.
+
+                # ---- File children, or video-less / code-less folders ----
                 if not code:
+                    seq += 1
                     summary["skipped"] += 1
-                    yield {**base_event, "action": "skip", "reason": "no_code"}
+                    yield {"type": "progress", "current": seq, "kind": kind,
+                           "source": child.name, "action": "skip",
+                           "reason": "no_code"}
                     continue
 
                 status, resolved = await self._resolve_listing_with_retry(
                     code, JAVBUS_TIMEOUT_SECONDS
                 )
+                seq += 1
+                base_event = {
+                    "type": "progress",
+                    "current": seq,
+                    "kind": kind,
+                    "source": child.name,
+                }
                 if status == "timeout":
                     summary["errors"] += 1
-                    yield {
-                        **base_event,
-                        "action": "error",
-                        "code": code,
-                        "reason": (
-                            f"JavBus 兩次查詢都逾時（各 {int(JAVBUS_TIMEOUT_SECONDS)}s）。"
-                            "該番號頁面可能持續慢或被 429 限流 — "
-                            "點「再來一次」隔一陣子重試;若常常逾時可在 .env 設 "
-                            "PCLOUD_ORGANIZE_JAVBUS_TIMEOUT=120"
-                        ),
-                    }
+                    yield {**base_event, "action": "error",
+                           "code": code, "reason": TIMEOUT_REASON}
                     continue
-
-                if status == "ok":
-                    listing_kind, listing_name = resolved  # type: ignore[misc]
-                    target_path = f"{kind_base_path(listing_kind)}/{listing_name}"
-                    if target_path not in target_cache:
-                        if dry_run:
-                            tid = await self.lookup_path(target_path)
-                        else:
-                            tid = await self.ensure_path(target_path)
-                        if tid is None:
-                            # dry_run only — record empty sibling set so
-                            # we don't try to list a folder that isn't
-                            # there yet.
-                            target_cache[target_path] = (None, set())
-                        else:
-                            siblings = await self.list_files(str(tid))
-                            target_cache[target_path] = (
-                                tid,
-                                {s.name for s in siblings},
-                            )
-                    target_id, taken = target_cache[target_path]
-                else:
-                    # "none" — JavBus has no series / label / studio for
-                    # this code. We can't categorise it, but we can still
-                    # pull the keeper video out of its wrapper in place.
-                    listing_kind = listing_name = None
-                    target_path = None
-                    target_id = None
-                    taken = None
-
-                # Folder children with an extractable keeper → flatten.
-                # Order matters: flatten BEFORE the already_organized
-                # skip, so an in-place wrapper (target == folder_id) still
-                # gets unwrapped instead of short-circuiting out.
-                if kind == "folder" and keeper is not None:
-                    if status == "ok" and target_id is not None:
-                        flatten_target_id = self._folder_param(str(target_id))
-                        flat_taken = taken
-                    elif status == "ok":
-                        # dry_run + target doesn't exist yet: preview only,
-                        # the helper short-circuits the real move.
-                        flatten_target_id = 0
-                        flat_taken = set()
-                    else:
-                        # Uncategorised: extract into the folder being
-                        # organised so the video stops being buried.
-                        flatten_target_id = self._folder_param(str(folder_id))
-                        flat_taken = inplace_taken
-                    flatten = await self._extract_keeper_to_target(
-                        child,
-                        keeper,
-                        code,
-                        flatten_target_id,
-                        flat_taken,
-                        extras_count=extras_count,
-                        dry_run=dry_run,
-                    )
-                    if flatten is not None:
-                        summary["flattened"] += 1
-                        event = {
-                            **base_event,
-                            "action": "flatten",
-                            "code": code,
-                            "listing_kind": listing_kind,
-                            "listing_name": listing_name,
-                            "target_path": target_path,
-                            "target_name": flatten["target_name"],
-                            "extras_count": flatten["extras_count"],
-                        }
-                        if status == "ok" and target_id is None:
-                            event["would_create"] = True
-                        if status != "ok":
-                            event["uncategorized"] = True
-                        yield event
-                        continue
-                    # Extract failed (move errored) — fall through to the
-                    # move-as-is / skip paths below.
-
-                # From here we need a resolved target to move into.
-                # Uncategorised items (no keeper to flatten, or flatten
-                # declined) have nowhere categorised to go, so they stay
-                # put — same outcome as the old ``no_listing`` skip.
                 if status != "ok":
+                    # Uncategorised file / video-less wrapper: nowhere
+                    # categorised to go, so it stays put.
                     summary["skipped"] += 1
-                    yield {
-                        **base_event,
-                        "action": "skip",
-                        "code": code,
-                        "reason": "no_listing",
-                    }
+                    yield {**base_event, "action": "skip",
+                           "code": code, "reason": "no_listing"}
                     continue
+
+                listing_kind, listing_name = resolved  # type: ignore[misc]
+                target_path = f"{kind_base_path(listing_kind)}/{listing_name}"
+                target_id, taken = await self._resolve_target_id(
+                    target_path, target_cache, dry_run=dry_run
+                )
 
                 # Same-folder no-op: child already lives at the resolved
-                # target. Reached for file children and for wrappers
-                # whose flatten declined. ``target_id is None`` (dry_run,
-                # target doesn't exist) naturally fails this check.
+                # target. ``target_id is None`` (dry_run, target doesn't
+                # exist) naturally fails this check.
                 if target_id is not None and str(target_id) == str(folder_id):
                     summary["skipped"] += 1
                     yield {
@@ -1343,11 +1350,7 @@ class PCloudService:
                     continue
 
                 # dry_run + target doesn't exist yet → report as
-                # `would_create` so the UI can flag it without an actual
-                # id. Live mode never sees this branch because
-                # ensure_path always returns an id. We end up here for
-                # file children, and for folder children whose flatten
-                # attempt found no extractable video.
+                # `would_create` so the UI can flag it without an actual id.
                 if target_id is None:
                     summary["moved"] += 1
                     yield {
@@ -1410,8 +1413,12 @@ class PCloudService:
                 logger.warning(
                     "pcloud organize failed for %s: %s", child.name, exc
                 )
+                seq += 1
                 yield {
-                    **base_event,
+                    "type": "progress",
+                    "current": seq,
+                    "kind": kind,
+                    "source": child.name,
                     "action": "error",
                     "code": code,
                     "reason": str(exc),

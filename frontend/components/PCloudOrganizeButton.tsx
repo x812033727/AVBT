@@ -61,7 +61,6 @@ const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = 
 const REASON_LABEL: Record<string, string> = {
   no_code: "無法辨識番號",
   no_listing: "JavBus 查無系列 / 發行商 / 製作商",
-  multi_video: "內有多支大檔(多部作品 / 分集),為免誤刪未自動展平",
   // legacy — kept so old finished jobs still render their reason
   no_tracked_match: "無追蹤對應",
   already_organized: "已在目標資料夾",
@@ -270,8 +269,13 @@ export default function PCloudOrganizeButton({
   }, [open]);
 
   const busy = job?.status === "running";
+  // A single folder child can fan out into several extraction events, so
+  // events.length may exceed total (which counts direct children) — clamp
+  // so the bar / label never reads above 100%.
   const percent =
-    job && job.total ? Math.round((job.events.length / job.total) * 100) : 0;
+    job && job.total
+      ? Math.min(100, Math.round((job.events.length / job.total) * 100))
+      : 0;
   const recent = job ? job.events.slice(-10).reverse() : [];
   const processing = job?.processing ?? null;
 
@@ -329,15 +333,16 @@ export default function PCloudOrganizeButton({
             </div>
 
             <p className="text-xs text-white/50">
-              掃此資料夾的直接子項目。子資料夾會「鑽進去」(遞迴最多 6 層)找出主影片：
-              取最大支改名為 <span className="font-mono">&lt;番號&gt;.&lt;副檔名&gt;</span>,
+              掃此資料夾的直接子項目。子資料夾會「鑽進去」(遞迴最多 6 層)把每支影片
+              都挖出來,各自依番號改名為 <span className="font-mono">&lt;番號&gt;.&lt;副檔名&gt;</span>,
               依 JavBus 查到的 <span className="font-mono">系列 → 發行商 → 製作商</span>{" "}
-              順序搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>,
-              原本的包裝資料夾(含 sample / nfo / 種子等)送進回收桶。
-              資料夾名沒番號也會鑽進去借裡面影片的番號。
+              順序搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>;
+              同番號的重複 / 低畫質版本只留最大那支,其餘連同 sample / nfo / 種子
+              隨包裝資料夾送進回收桶。資料夾名沒番號也會鑽進去借裡面影片的番號,
+              一個資料夾裡有多部不同番號作品也會分別取出。
               {" "}
               <span className="text-amber-300/70">JavBus 查無分類時,影片照樣從子資料夾「原地取出」</span>,
-              不會卡在裡面。一個資料夾裡有兩支以上大檔(多部作品 / 分集)會略過不動,以免誤刪。
+              不會卡在裡面;查不到或搬移失敗的那支會保留,不會誤刪。
               {" "}
               <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
             </p>
@@ -363,7 +368,11 @@ export default function PCloudOrganizeButton({
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-white/60">
                   <span>
-                    {job.events.length} / {job.total}{job.total > 0 ? ` (${percent}%)` : ""}
+                    {/* events can exceed total (one folder → many
+                        extractions), so show "已處理 N" rather than a
+                        possibly-odd "N / total". */}
+                    已處理 {job.events.length}
+                    {job.total > 0 ? ` / 共 ${job.total} 項 (${percent}%)` : ""}
                     {job.dry_run && " ・ 預覽模式"}
                   </span>
                   <span>

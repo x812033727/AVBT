@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import EpisodeFinderButton from "@/components/EpisodeFinderButton";
 import PCloudCleanupButton from "@/components/PCloudCleanupButton";
 import PCloudOrganizeButton from "@/components/PCloudOrganizeButton";
 import PCloudMoveModal from "@/components/PCloudMoveModal";
@@ -322,6 +323,13 @@ function FilesPanel({
           ))}
         </div>
         <div className="ml-auto flex gap-2">
+          <EpisodeFinderButton
+            apiBase="/api/pcloud"
+            folder_id={currentParent}
+            folder_name={currentName}
+            disabled={atRoot}
+            onDone={onRefresh}
+          />
           <PCloudOrganizeButton
             folder_id={currentParent}
             folder_name={currentName}

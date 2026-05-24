@@ -293,7 +293,7 @@ async def episodes_scan_stream(payload: dict = Body(...)):
     async def gen():
         try:
             async for event in episode_finder.walk_for_episodes(
-                folder_id, max_depth=max_depth, cap=cap
+                pikpak_service, folder_id, max_depth=max_depth, cap=cap
             ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
@@ -318,6 +318,7 @@ async def episodes_process_stream(payload: dict = Body(...)):
     async def gen():
         try:
             async for event in episode_finder.process_trash_and_strip(
+                pikpak_service,
                 file_ids_to_trash=file_ids,
                 parent_ids_touched=parent_ids,
                 auto_strip=auto_strip,

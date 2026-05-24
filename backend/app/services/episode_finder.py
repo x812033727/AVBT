@@ -1,4 +1,9 @@
-"""Recursive episode (分集) search for a PikPak folder tree.
+"""Recursive episode (分集) search for a cloud folder tree.
+
+Provider-agnostic: the caller hands in the cloud-storage service
+(PikPak or pCloud) and this walks/trashes/renames through it — both
+expose the same ``list_all_files`` / ``trash_files`` / ``rename_file``
+surface (see ``_CloudFS``).
 
 Walks ``root_id`` BFS, lists each folder in parallel under a small
 concurrency cap (matches ``pikpak_presence._LIST_CONCURRENCY``), and
@@ -36,18 +41,40 @@ import asyncio
 import logging
 import re
 from collections import deque
-from typing import AsyncIterator
+from typing import AsyncIterator, Protocol
 
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
 from .pikpak import (
     _build_video_rename_plan,
     _canonical_video_name,
     _part_marker_index,
-    pikpak_service,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+class _CloudFS(Protocol):
+    """The slice of a cloud-storage service this module needs. Both
+    ``PikPakService`` and ``PCloudService`` satisfy it structurally, so
+    the same walk / trash / strip logic drives either provider — the
+    only thing that differs is which service object the router hands in.
+    """
+
+    async def list_all_files(
+        self, parent_id: str, *, cap: int = ...
+    ) -> tuple[list, bool]: ...
+    async def trash_files(self, ids: list[str]) -> dict: ...
+    async def rename_file(self, file_id: str, new_name: str) -> dict: ...
+
+
+# PikPak tags folders ``drive#folder``; pCloud tags them ``folder``.
+# Normalise so the recursion / classification logic is provider-agnostic.
+_FOLDER_KINDS = frozenset({"drive#folder", "folder"})
+
+
+def _is_folder(child) -> bool:
+    return getattr(child, "kind", "") in _FOLDER_KINDS
 
 
 _LIST_CONCURRENCY = 4
@@ -81,19 +108,22 @@ def _resolve_code(name: str) -> str:
 
 
 async def walk_for_episodes(
+    service: _CloudFS,
     root_id: str,
     *,
     max_depth: int = 8,
     cap: int = 20000,
 ) -> AsyncIterator[dict]:
     """BFS walk from ``root_id``; yield NDJSON-shaped events for episodes
-    found in every visited folder. See module docstring for event shapes."""
+    found in every visited folder. See module docstring for event shapes.
+
+    ``service`` is the cloud-storage service (PikPak or pCloud) to walk."""
     sem = asyncio.Semaphore(_LIST_CONCURRENCY)
 
     async def _list(parent_id: str) -> list:
         async with sem:
             try:
-                children, _partial = await pikpak_service.list_all_files(parent_id)
+                children, _partial = await service.list_all_files(parent_id)
                 return children
             except Exception as exc:  # noqa: BLE001
                 logger.debug("list_all_files(%s) failed: %s", parent_id, exc)
@@ -140,7 +170,7 @@ async def walk_for_episodes(
                 # Queue subfolders for the next BFS layer.
                 if depth < max_depth:
                     for c in children:
-                        if c.kind == "drive#folder":
+                        if _is_folder(c):
                             child_path = (
                                 f"{folder_path}/{c.name}" if folder_path else c.name
                             )
@@ -156,7 +186,7 @@ async def walk_for_episodes(
                 )
 
                 for c in children:
-                    if c.kind == "drive#folder" or not is_video(c.name):
+                    if _is_folder(c) or not is_video(c.name):
                         continue
                     files_seen += 1
                     canonical = _is_canonical_part(c.name)
@@ -230,6 +260,7 @@ async def walk_for_episodes(
 
 
 async def process_trash_and_strip(
+    service: _CloudFS,
     *,
     file_ids_to_trash: list[str],
     parent_ids_touched: list[str],
@@ -237,16 +268,18 @@ async def process_trash_and_strip(
 ) -> AsyncIterator[dict]:
     """Trash the user-selected files, then (optionally) strip ``_N``
     markers from any code that ended up as a singleton in the touched
-    parent folders."""
+    parent folders.
+
+    ``service`` is the cloud-storage service (PikPak or pCloud)."""
     trashed = 0
     failed = 0
 
     total = len(file_ids_to_trash)
     if total:
-        # PikPak supports batch trash — send all at once but emit progress
-        # per file by faking a step count. (The API is all-or-nothing.)
+        # Batch trash — send all at once but emit progress per file by
+        # faking a step count. (The API is all-or-nothing.)
         try:
-            await pikpak_service.trash_files(file_ids_to_trash)
+            await service.trash_files(file_ids_to_trash)
             trashed = total
             for i, fid in enumerate(file_ids_to_trash, start=1):
                 yield {
@@ -276,7 +309,7 @@ async def process_trash_and_strip(
     strip_step = 0
     for parent_id in affected:
         try:
-            children, _ = await pikpak_service.list_all_files(parent_id)
+            children, _ = await service.list_all_files(parent_id)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "warn", "message": f"重新列出失敗: {exc}"}
             continue
@@ -317,7 +350,7 @@ async def process_trash_and_strip(
                 continue
 
             try:
-                await pikpak_service.rename_file(child.id, target)
+                await service.rename_file(child.id, target)
                 renamed += 1
                 taken.discard(src_name)
                 taken.add(target)

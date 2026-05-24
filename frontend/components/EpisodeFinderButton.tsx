@@ -39,11 +39,15 @@ export default function EpisodeFinderButton({
   folder_name,
   disabled,
   onDone,
+  apiBase = "/api/pikpak",
 }: {
   folder_id: string;
   folder_name: string;
   disabled?: boolean;
   onDone?: () => void;
+  // Provider endpoint root. Defaults to PikPak; pass "/api/pcloud" to
+  // drive the pCloud episode finder (same NDJSON contract).
+  apiBase?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -112,7 +116,7 @@ export default function EpisodeFinderButton({
     abortRef.current = ctrl;
     try {
       await streamNdjson(
-        "/api/pikpak/files/episodes/scan/stream",
+        `${apiBase}/files/episodes/scan/stream`,
         { folder_id },
         (ev) => {
           if (ev.type === "scan_progress") {
@@ -209,7 +213,7 @@ export default function EpisodeFinderButton({
     abortRef.current = ctrl;
     try {
       await streamNdjson(
-        "/api/pikpak/files/episodes/process/stream",
+        `${apiBase}/files/episodes/process/stream`,
         {
           file_ids_to_trash: ids,
           parent_ids_touched: fallbackParents,

@@ -27,6 +27,7 @@ from ..schemas import (
     MissingCodesResult,
     MissingSummary,
     MissingSummaryItem,
+    MovieDetail,
     MovieListItem,
 )
 from ..scrapers import javbus as scraper
@@ -72,54 +73,130 @@ def _compute_extras(
     return out
 
 
-async def _extras_expected_set(
+# Per-call ceiling on detail-page membership probes (see
+# ``_owned_listing_members``). A listing's folder should only ever hold a
+# handful of works the listing walk missed; this just stops a folder that
+# accidentally collected many unrelated codes from issuing a detail fetch
+# for each one.
+_MEMBERSHIP_PROBE_CAP = 50
+
+
+def _detail_belongs_to(detail: MovieDetail, kind: str, slug: str) -> bool:
+    """Whether a work's own detail page places it in ``kind``/``slug``.
+
+    JavBus's listing index occasionally omits works that still carry the
+    tag on their detail page (e.g. DAM-043 keeps series 回胴録 / 11pb but
+    is absent from /series/11pb even with existmag=all). The detail page
+    is then the only authoritative source of membership."""
+    if kind == "series":
+        return bool(detail.series and detail.series.id == slug)
+    if kind == "studio":
+        return bool(detail.studio and detail.studio.id == slug)
+    if kind == "label":
+        return bool(detail.label and detail.label.id == slug)
+    if kind == "director":
+        return bool(detail.director and detail.director.id == slug)
+    if kind == "star":
+        return any(a.id == slug for a in detail.actresses)
+    if kind == "genre":
+        return any(g.id == slug for g in detail.genres)
+    return False
+
+
+def _detail_to_list_item(detail: MovieDetail) -> MovieListItem:
+    base = settings.javbus_base_url.rstrip("/")
+    return MovieListItem(
+        code=detail.code,
+        title=detail.title,
+        cover=detail.cover,
+        detail_url=f"{base}/{detail.code}",
+        date=detail.release_date,
+    )
+
+
+async def _owned_listing_members(
     kind: str,
     slug: str,
     name: str,
-    uncensored: bool,
-    base_expected: set[str],
+    base_items: list[MovieListItem],
     *,
+    uncensored: bool,
     refresh: bool = False,
-) -> set[str]:
-    """Return ``base_expected`` augmented with codes that exist in this
-    listing's catalog but have no current magnet on JavBus.
+) -> list[MovieListItem]:
+    """Owned works the magnet-only listing walk missed but that genuinely
+    belong to this listing, so they can be folded into the catalog.
 
-    The default listing walk uses the ``existmag=mag`` cookie so only
-    works with active magnets show up — fine for missing-codes (we can't
-    download magnet-less ones anyway) but wrong for extras: a user can
-    perfectly well own a file for a work whose magnets have aged off
-    JavBus. Without this fixup, every such file gets flagged as 多餘.
+    A held work can be absent from the default (existmag=mag) walk for
+    two reasons:
 
-    Skipped entirely when PikPak's presence index sees no candidate
-    extras under this listing's folder — saves one JavBus round-trip
-    per refresh in the common case. When candidates do exist, the
-    full-catalog walk is cached separately for an hour so repeat calls
-    are free.
-    """
+      1. its magnets aged off JavBus — it still shows in the existmag=all
+         full catalog;
+      2. JavBus dropped it from the listing index entirely, even though
+         its own detail page keeps the tag (the 回胴録 / DAM-043 case).
+
+    Only codes physically held under the listing's folder and absent from
+    ``base_items`` are probed, so the work is bounded by what the user
+    owns. Case 1 is confirmed cheaply against the full catalog (one cached
+    walk); the remainder are confirmed against their detail page, which is
+    the only source for case 2. Returned items are appended to the catalog
+    so they count toward the total / present set instead of being flagged
+    多餘.
+
+    Skipped entirely (no JavBus round-trip) when the folder holds nothing
+    beyond the listed works — the common case."""
     roots = _expected_roots(kind, slug, name)
     found = presence_index.codes_under(*roots)
-    candidates = {c for c in found if c not in base_expected}
+    base = {normalize_code(it.code) or it.code for it in base_items}
+    candidates = [c for c in found if c not in base]
     if not candidates:
-        return base_expected
+        return []
+
+    members: list[MovieListItem] = []
+    claimed: set[str] = set()
+
+    # Pass 1: the existmag=all full catalog explains held works whose only
+    # problem is an aged-off magnet — one cached walk covers all of them.
     try:
         full_items, _ = await fetch_all_listing_codes(
             kind, slug, uncensored=uncensored, refresh=refresh,
             with_magnets_only=False,
         )
     except Exception as exc:  # noqa: BLE001
-        # Network / geo-block: prefer not flagging false extras over a
-        # hard failure. Leave the base set unchanged and log so the
-        # user can correlate if they complain about stale flags.
+        # Network / geo-block: fall back to the detail probe rather than
+        # hard-failing the whole missing computation.
         logger.warning(
-            "extras full-catalog walk failed for %s/%s: %s — keeping "
-            "magnet-only expected set", kind, slug, exc,
+            "full-catalog walk failed for %s/%s: %s — detail probe only",
+            kind, slug, exc,
         )
-        return base_expected
-    augmented = set(base_expected)
+        full_items = []
+    full_by_code: dict[str, MovieListItem] = {}
     for it in full_items:
-        c = normalize_code(it.code) or it.code
-        augmented.add(c)
-    return augmented
+        full_by_code.setdefault(normalize_code(it.code) or it.code, it)
+    for c in candidates:
+        hit = full_by_code.get(c)
+        if hit is not None:
+            members.append(hit)
+            claimed.add(c)
+
+    # Pass 2: detail-page probe for the rest. JavBus dropped these from
+    # the listing, so only each work's own page can confirm membership.
+    rest = [c for c in candidates if c not in claimed]
+    if len(rest) > _MEMBERSHIP_PROBE_CAP:
+        logger.warning(
+            "%s/%s: %d held codes missing from the listing exceeds probe "
+            "cap %d — verifying first %d",
+            kind, slug, len(rest), _MEMBERSHIP_PROBE_CAP, _MEMBERSHIP_PROBE_CAP,
+        )
+        rest = rest[:_MEMBERSHIP_PROBE_CAP]
+    for c in rest:
+        try:
+            detail = await scraper.fetch_detail(c, refresh=refresh)
+        except Exception:  # noqa: BLE001
+            continue
+        if detail and detail.title and _detail_belongs_to(detail, kind, slug):
+            members.append(_detail_to_list_item(detail))
+
+    return members
 
 
 logger = logging.getLogger(__name__)
@@ -289,14 +366,24 @@ async def missing_for_listing(
         kind, slug, uncensored=uncensored, refresh=refresh
     )
     presence = await presence_index.get(force=refresh)
-    present_codes, missing, expected = _split_present_missing(items, presence)
 
-    # Pull display name from DB if available.
+    # Pull display name from DB if available — needed to resolve the
+    # listing's archive folder before reconciling held works.
     name = ""
     async with SessionLocal() as session:
         row = await session.get(TrackedListing, (kind, slug))
         if row:
             name = row.name or ""
+
+    # Fold in owned works the magnet-only walk missed but that belong here
+    # (aged-off magnets / listing-index gaps). They then count toward the
+    # total and present set instead of looking like 多餘.
+    if items:
+        items = items + await _owned_listing_members(
+            kind, slug, name, items, uncensored=uncensored, refresh=refresh
+        )
+
+    present_codes, missing, expected = _split_present_missing(items, presence)
 
     # Display-side dedup: when the same code is missing from multiple
     # tracked listings (e.g. ABC-001 features star A and is also a
@@ -320,14 +407,10 @@ async def missing_for_listing(
     # Only flag extras when we actually got a JavBus catalog to compare
     # against. If the listing fetch returned nothing (network, geo-block,
     # invalid slug…) every file in the folder would otherwise look like
-    # an extra. The extras-expected set augments ``expected`` with
-    # magnet-less catalog entries so old works the user owns offline
-    # aren't false-flagged.
+    # an extra. ``expected`` already includes the reconciled held works
+    # (see ``_owned_listing_members``) so they aren't false-flagged.
     if items:
-        extras_expected = await _extras_expected_set(
-            kind, slug, name, uncensored, expected, refresh=refresh
-        )
-        extras = _compute_extras(kind, slug, name, extras_expected)
+        extras = _compute_extras(kind, slug, name, expected)
     else:
         extras = []
 
@@ -365,18 +448,21 @@ async def _summary_item(
             total=0, missing_count=0, extras_count=0, pages_scanned=0,
             expected_root=expected_root, error=str(exc),
         )
+    # Fold in owned works the magnet-only walk missed but that belong here
+    # (see _owned_listing_members) so the total and extras match the
+    # per-listing /missing-codes view.
+    if items:
+        items = items + await _owned_listing_members(
+            row.kind, row.id, row.name or "", items,
+            uncensored=bool(row.uncensored),
+        )
     _, missing, expected = _split_present_missing(items, presence)
     if owned is not None:
         missing = [m for m in missing if m.code in owned]
     # See note in missing_for_listing: skip extras when we got no
     # listing data, otherwise every file in the folder appears extra.
     if items:
-        extras_expected = await _extras_expected_set(
-            row.kind, row.id, row.name or "", bool(row.uncensored), expected,
-        )
-        extras = _compute_extras(
-            row.kind, row.id, row.name or "", extras_expected
-        )
+        extras = _compute_extras(row.kind, row.id, row.name or "", expected)
     else:
         extras = []
     return MissingSummaryItem(

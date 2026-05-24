@@ -332,6 +332,35 @@ async def _bypass_age_gate(cli: httpx.AsyncClient, target_url: str) -> bool:
         return False
 
 
+def _cookie_header_with(cli: httpx.AsyncClient, overrides: dict[str, str]) -> str:
+    """Build an explicit ``Cookie`` request header from the client jar
+    with ``overrides`` applied on top.
+
+    We deliberately do NOT pass ``cookies=overrides`` to the request.
+    httpx merges request cookies into the jar keyed by (name, domain,
+    path), so when the jar already holds the same name carrying a domain
+    — and JavBus's own ``Set-Cookie`` gives ``existmag`` one — the
+    override is emitted as a *second* ``existmag=…`` rather than
+    replacing the first. PHP then reads the last duplicate and silently
+    ignores our override, so an ``existmag=all`` full-catalog walk gets
+    served the magnet-only listing. Magnet-less works the user owns then
+    look like they're absent from the catalog and get false-flagged as
+    多餘 (extras).
+
+    An explicit ``Cookie`` header is sent verbatim — cookielib's
+    ``add_cookie_header`` skips the jar entirely when the request already
+    carries one — so exactly one value per name reaches the server while
+    every other jar cookie (age gate / session) is preserved.
+    """
+    pairs: dict[str, str] = {}
+    for c in cli.cookies.jar:
+        if c.name in overrides:
+            continue
+        pairs[c.name] = c.value or ""
+    pairs.update(overrides)
+    return "; ".join(f"{k}={v}" for k, v in pairs.items())
+
+
 async def _fetch(
     cli: httpx.AsyncClient,
     url: str,
@@ -339,7 +368,16 @@ async def _fetch(
     referer: str | None = None,
     cookies: dict[str, str] | None = None,
 ) -> str:
-    headers = {"Referer": referer} if referer else None
+    def build_headers() -> dict[str, str] | None:
+        # Rebuilt per attempt so a cookie the server set on an earlier
+        # response (429 Set-Cookie, age-gate bypass) is reflected in the
+        # explicit header.
+        h: dict[str, str] = {}
+        if referer:
+            h["Referer"] = referer
+        if cookies:
+            h["Cookie"] = _cookie_header_with(cli, cookies)
+        return h or None
 
     # Up to 4 attempts on 429. Backoff doubles: 4s, 8s, 16s. The rate
     # limiter is entered once per attempt so each retry respects both
@@ -348,7 +386,7 @@ async def _fetch(
     resp = None
     for attempt in range(4):
         async with _limiter:
-            resp = await cli.get(url, headers=headers, cookies=cookies)
+            resp = await cli.get(url, headers=build_headers())
         if resp.status_code == 404:
             return ""
         if resp.status_code == 429:
@@ -376,7 +414,7 @@ async def _fetch(
                 "請在 .env 設定 HTTP_PROXY 或改用鏡像站 (JAVBUS_BASE_URL)。"
             )
         async with _limiter:
-            resp = await cli.get(url, headers=headers, cookies=cookies)
+            resp = await cli.get(url, headers=build_headers())
         resp.raise_for_status()
     return resp.text
 
@@ -499,9 +537,11 @@ async def fetch_listing(
     prefix = f"/uncensored/{kind}" if uncensored else f"/{kind}"
     url = f"{base}{prefix}/{slug}/{max(1, page)}"
 
-    # Per-request cookies merge into the shared client's jar, so passing
-    # ``existmag=all`` overrides the shared ``existmag=mag`` for THIS
-    # request only — no need to maintain a second AsyncClient.
+    # ``existmag=all`` shows the full catalog; the shared client's
+    # default ``existmag=mag`` filters to works that still have magnets.
+    # When overriding, ``_fetch`` sends an explicit Cookie header (see
+    # ``_cookie_header_with``) so JavBus can't be served a duplicate
+    # ``existmag`` and silently keep the magnet-only filter.
     cookies = None if with_magnets_only else {"existmag": "all"}
     html = await _fetch(_get_client(), url, cookies=cookies)
     if not html:

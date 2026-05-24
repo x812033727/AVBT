@@ -6,7 +6,7 @@ import { streamNdjson } from "@/lib/api";
 type Progress = {
   current: number;
   kind: "file" | "folder";
-  action: "rename" | "skip" | "error";
+  action: "rename" | "flatten" | "skip" | "error";
   source: string;
   target: string | null;
   reason: string | null;
@@ -23,6 +23,7 @@ type Result = {
 
 const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = {
   rename: { text: "✎ 改名", cls: "text-blue-300" },
+  flatten: { text: "📤 取出主檔", cls: "text-sky-300" },
   skip: { text: "⏭ 略過", cls: "text-white/50" },
   error: { text: "✗ 失敗", cls: "text-red-300" },
 };
@@ -98,7 +99,11 @@ export default function PCloudCleanupButton({
     setDryRun(true);
   }
 
-  const percent = total ? Math.round((progress.length / total) * 100) : 0;
+  // A wrapper folder can fan out into several extraction events, so
+  // progress.length may exceed total (direct children) — clamp at 100%.
+  const percent = total
+    ? Math.min(100, Math.round((progress.length / total) * 100))
+    : 0;
   const recent = progress.slice(-10).reverse();
 
   return (
@@ -137,9 +142,17 @@ export default function PCloudCleanupButton({
             </div>
 
             <p className="text-xs text-white/50">
-              只動此資料夾的直接子項目。檔案改名為{" "}
-              <span className="font-mono">番號.ext</span>，資料夾改名為{" "}
-              <span className="font-mono">番號</span>。pCloud 不做攤平。
+              整理此資料夾的內容(就地,不分類)。檔案改名為{" "}
+              <span className="font-mono">番號.ext</span>;子資料夾會「鑽進去」
+              (遞迴最多 6 層)把主影片取出到這層、改名{" "}
+              <span className="font-mono">番號.ext</span>,再把空殼包裝資料夾
+              (含 sample / nfo / 種子)送進回收桶。
+              {" "}
+              <span className="text-amber-300/70">
+                只有整支大檔都成功取出才會刪資料夾,取不出來的會原封不動保留
+              </span>
+              。要再依番號分到 <span className="font-mono">AVBT/&lt;類別&gt;/</span>{" "}
+              請改用「歸類」。
             </p>
 
             <label className="flex items-center gap-2 text-sm">
@@ -162,11 +175,13 @@ export default function PCloudCleanupButton({
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs text-white/60">
                   <span>
-                    {progress.length} / {total} ({percent}%)
+                    已處理 {progress.length}
+                    {total > 0 ? ` / 共 ${total} 項 (${percent}%)` : ""}
                     {result?.dry_run && " ・ 預覽模式"}
                   </span>
                   <span>
                     改名 {progress.filter((p) => p.action === "rename").length} ／
+                    取出 {progress.filter((p) => p.action === "flatten").length} ／
                     略過 {progress.filter((p) => p.action === "skip").length} ／
                     失敗 {progress.filter((p) => p.action === "error").length}
                   </span>
@@ -226,6 +241,9 @@ export default function PCloudCleanupButton({
                   )}
                 </div>
                 <div className="text-blue-300">✎ 改名 {result.renamed}</div>
+                {result.flattened > 0 && (
+                  <div className="text-sky-300">📤 取出主檔 {result.flattened}</div>
+                )}
                 <div className="text-white/60">⏭ 略過 {result.skipped}</div>
                 {result.errors > 0 && (
                   <div className="text-red-300">✗ 失敗 {result.errors}</div>

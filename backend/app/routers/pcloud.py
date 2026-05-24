@@ -196,9 +196,11 @@ async def create_folder(
 async def cleanup_folder_stream(payload: dict = Body(...)):
     """Stream NDJSON cleanup events for the direct children of a folder.
 
-    Body: ``{folder_id: str, dry_run: bool=True}``. Only renames items
-    whose name encodes a recognisable JAV code; folders are not
-    flattened (pCloud isn't a BT download target).
+    Body: ``{folder_id: str, dry_run: bool=True}``. Files are renamed to
+    ``<code>.<ext>``; wrapper folders are walked recursively and their
+    main video pulled out into this folder, then the empty wrapper is
+    trashed. Stays within the folder (no AVBT category sorting — that's
+    ``organize``).
     """
     folder_id = str(payload.get("folder_id") or "0").strip() or "0"
     dry_run = bool(payload.get("dry_run", True))

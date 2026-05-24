@@ -12,6 +12,7 @@ const TABS = [
   { href: "/missing", label: "缺漏" },
   { href: "/pikpak", label: "PikPak" },
   { href: "/pcloud", label: "pCloud" },
+  { href: "/duplicates", label: "重複" },
   { href: "/history", label: "紀錄" },
   { href: "/settings", label: "設定" },
 ];

@@ -836,17 +836,25 @@ class PCloudService:
     async def cleanup_folder_stream(
         self, folder_id: str, *, dry_run: bool = True
     ) -> AsyncIterator[dict]:
-        """Walk every direct child of ``folder_id`` and normalise BT-noise
-        filenames to ``<JAV_CODE>.<ext>``.
+        """Tidy every direct child of ``folder_id`` *in place*:
 
-        Unlike the PikPak counterpart this does NOT try to flatten
-        wrapper folders or recurse — pCloud isn't a torrent destination,
-        so the only useful pass is renaming pre-existing files. Folders
-        whose name carries a recognisable code get renamed to just the
-        code; everything else gets skipped.
+        - **Files** get their BT-noise name normalised to
+          ``<JAV_CODE>.<ext>`` (multi-file groups → ``<canon>_N.<ext>``).
+        - **Wrapper folders** are flattened: we walk the folder's subtree
+          (recursively, up to :data:`_ORGANIZE_MAX_DEPTH`), pull each
+          distinct work's main video OUT into ``folder_id`` renamed
+          ``<code>.<ext>``, and trash the now-empty wrapper. This is the
+          "我把整個 <番號>/ 資料夾丟進來,影片卻埋在裡面" case — cleanup now
+          lifts the video out instead of leaving it nested.
 
-        Reuses PikPak's multipart-rename helpers so multi-file groups
-        sharing a canonical name end up as ``<canon>_N.<ext>``.
+        Unlike the ``organize`` pass this stays within ``folder_id`` (no
+        JavBus, no AVBT/<類別>/<名稱>/ categorisation) — it just makes the
+        folder's own contents flat and cleanly named. Use ``organize`` to
+        additionally sort into category folders.
+
+        For safety the wrapper is only trashed when **every** substantial
+        (≥ ``_JUNK_BYTES``) video was successfully extracted; if some
+        couldn't be placed or a move failed, the wrapper is left intact.
         """
         try:
             children = await self.list_files(folder_id)
@@ -863,7 +871,7 @@ class PCloudService:
         summary = {
             "total": len(children),
             "renamed": 0,
-            "flattened": 0,  # always 0 for pCloud — kept for UI compat
+            "flattened": 0,
             "skipped": 0,
             "errors": 0,
             "dry_run": dry_run,
@@ -876,24 +884,103 @@ class PCloudService:
             "folder_id": folder_id,
         }
 
+        # Monotonic key — a wrapper can fan out into several extractions,
+        # so the per-child index is no longer unique.
+        seq = 0
+        here = self._folder_param(str(folder_id))
+
         for idx, child in enumerate(children, start=1):
             await asyncio.sleep(0.02)
             kind = "folder" if child.kind == "folder" else "file"
             code = extract_jav_code(child.name)
             code_full = extract_jav_code_full(child.name) or code
-            base_event = {
-                "type": "progress",
-                "current": idx,
-                "kind": kind,
-                "source": child.name,
-            }
-
-            if not code:
-                summary["skipped"] += 1
-                yield {**base_event, "action": "skip", "target": None, "reason": "no_code"}
-                continue
 
             try:
+                # ---- Folder children: flatten the wrapper in place ----
+                if kind == "folder":
+                    videos, _ = await self._collect_videos_in_subtree(child.id)
+                    if videos:
+                        # Group by base code (video's own, falling back to
+                        # the wrapper name's). Extract the largest of each
+                        # group out to THIS folder, renamed to its full
+                        # code; trash the wrapper only if nothing
+                        # substantial is left behind.
+                        groups: dict[str, list[PCloudFile]] = {}
+                        for v in videos:
+                            vcode = extract_jav_code(v.name) or code
+                            if vcode:
+                                groups.setdefault(vcode, []).append(v)
+                        substantial_total = sum(
+                            1 for v in videos
+                            if v.size is not None and v.size >= _JUNK_BYTES
+                        )
+
+                        if groups:
+                            substantial_done = 0
+                            extracted_any = False
+                            move_failed = False
+                            for gcode, gvids in groups.items():
+                                keeper = max(
+                                    gvids, key=lambda v: int(v.size or 0)
+                                )
+                                kcode = (
+                                    extract_jav_code_full(keeper.name)
+                                    or code_full or gcode
+                                )
+                                seq += 1
+                                ev = {
+                                    "type": "progress",
+                                    "current": seq,
+                                    "kind": "folder",
+                                    "source": child.name,
+                                }
+                                final_name = await self._move_keeper_to_target(
+                                    keeper, kcode, here, taken, dry_run=dry_run
+                                )
+                                if final_name is None:
+                                    move_failed = True
+                                    summary["errors"] += 1
+                                    yield {**ev, "action": "error",
+                                           "target": None, "reason": "搬移失敗"}
+                                    continue
+                                extracted_any = True
+                                if keeper.size is not None and keeper.size >= _JUNK_BYTES:
+                                    substantial_done += 1
+                                summary["flattened"] += 1
+                                yield {**ev, "action": "flatten",
+                                       "target": final_name, "reason": None}
+
+                            # Trash only when every substantial video was
+                            # pulled out — never delete a work we couldn't
+                            # place (orphan / dup / multi-part remainder).
+                            if (
+                                extracted_any
+                                and not move_failed
+                                and substantial_done == substantial_total
+                                and not dry_run
+                            ):
+                                await self._trash_folder(child)
+                            continue
+                        # No video carried a resolvable code → fall through
+                        # to the plain folder-rename below.
+
+                # ---- Files, and video-less folders: normalise the name ----
+                if not code:
+                    seq += 1
+                    summary["skipped"] += 1
+                    yield {"type": "progress", "current": seq, "kind": kind,
+                           "source": child.name, "action": "skip",
+                           "target": None, "reason": "no_code"}
+                    continue
+
+                seq += 1
+                base_event = {
+                    "type": "progress",
+                    "current": seq,
+                    "kind": kind,
+                    "source": child.name,
+                }
+
                 if kind == "file":
                     if child.name in multipart_plan:
                         target = multipart_plan[child.name]
@@ -931,7 +1018,10 @@ class PCloudService:
             except Exception as exc:  # noqa: BLE001
                 summary["errors"] += 1
                 logger.warning("pcloud cleanup failed for %s: %s", child.name, exc)
-                yield {**base_event, "action": "error", "target": None, "reason": str(exc)}
+                seq += 1
+                yield {"type": "progress", "current": seq, "kind": kind,
+                       "source": child.name, "action": "error",
+                       "target": None, "reason": str(exc)}
 
         yield {"type": "done", "result": summary}
 

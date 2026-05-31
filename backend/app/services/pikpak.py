@@ -292,6 +292,28 @@ def _is_invalid_token_error(exc: BaseException) -> bool:
     return any(m in msg for m in _INVALID_TOKEN_MARKERS)
 
 
+# PikPak's batch file operations (trash / move) cap how many file ids may
+# ride in a single request; past the cap the server rejects the whole call
+# with "Count of operating files is exceeded". We split large id lists into
+# chunks under this cap. The exact cap isn't published and has shifted over
+# time, so this is just a safe default — ``_run_batch`` also halves and
+# retries any chunk the server still refuses, so correctness doesn't hinge
+# on the value being exactly right.
+_BATCH_OP_LIMIT = 100
+
+
+def _chunked(items: list, size: int):
+    """Yield ``items`` in consecutive slices of at most ``size``."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _is_count_exceeded_error(exc: BaseException) -> bool:
+    """True when PikPak rejected a batch op for carrying too many file ids
+    in one request (the "Count of operating files is exceeded" error)."""
+    return "operating files" in str(exc).lower()
+
+
 class PikPakService:
     def __init__(self) -> None:
         self._client: Optional[PikPakApi] = None
@@ -666,11 +688,42 @@ class PikPakService:
 
         return files, False
 
+    async def _run_batch(self, ids: list[str], call) -> dict:
+        """Apply a PikPak batch op across ``ids`` in chunks small enough to
+        stay under the server's per-request file-count cap. ``call(client,
+        chunk)`` builds the awaitable for one request.
+
+        If the server still rejects a chunk with "Count of operating files
+        is exceeded", split that chunk in half and retry, so the whole set
+        is processed regardless of the exact (unpublished) cap. Other
+        errors propagate unchanged.
+
+        Returns the last chunk's response — callers ignore the body and the
+        single-chunk path is identical to a plain ``_call``. An empty
+        ``ids`` is a no-op that issues no request."""
+        last: dict = {}
+        pending = list(_chunked(list(ids), _BATCH_OP_LIMIT))
+        while pending:
+            chunk = pending.pop(0)
+            try:
+                resp = await self._call(lambda c, ch=chunk: call(c, ch))
+            except Exception as exc:  # noqa: BLE001
+                if len(chunk) > 1 and _is_count_exceeded_error(exc):
+                    mid = len(chunk) // 2
+                    pending[:0] = [chunk[:mid], chunk[mid:]]
+                    continue
+                raise
+            if isinstance(resp, dict):
+                last = resp
+        return last
+
     async def trash_files(self, ids: list[str]) -> dict:
-        return await self._call(lambda c: c.delete_to_trash(ids))
+        return await self._run_batch(ids, lambda c, ch: c.delete_to_trash(ch))
 
     async def move_files(self, ids: list[str], to_parent_id: str) -> dict:
-        return await self._call(lambda c: c.file_batch_move(ids, to_parent_id))
+        return await self._run_batch(
+            ids, lambda c, ch: c.file_batch_move(ch, to_parent_id)
+        )
 
     async def rename_file(self, file_id: str, new_name: str) -> dict:
         return await self._call(lambda c: c.file_rename(file_id, new_name))

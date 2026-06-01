@@ -99,6 +99,25 @@ class PCloudTransfer(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class AuthAccount(Base):
+    """The single admin account that gates the whole site.
+
+    This is intentionally single-row: setup creates row id=1 once and
+    refuses to create a second. There is no registration / multi-user —
+    all data tables stay global. Password is stored as a PBKDF2-SHA256
+    digest (see services/auth.py), never in plaintext.
+    """
+    __tablename__ = "auth_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    username: Mapped[str] = mapped_column(String(64))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class OfflineTaskLog(Base):
     __tablename__ = "offline_task_log"
 

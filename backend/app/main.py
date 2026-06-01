@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import backup, collection, compare, img, javbus, pcloud, pikpak, tracked
+from .routers import auth, backup, collection, compare, img, javbus, pcloud, pikpak, tracked
 from .scrapers import javbus as scraper
+from .services.auth import require_auth
 from .services import archiver, log_cleanup, notify, tracker
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
@@ -59,13 +60,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(javbus.router)
-app.include_router(pikpak.router)
-app.include_router(pcloud.router)
-app.include_router(compare.router)
-app.include_router(collection.router)
-app.include_router(tracked.router)
-app.include_router(backup.router)
+# Public: the frontend hits these before it has a token.
+app.include_router(auth.router)
+
+# Protected: every data/route below requires a valid login token.
+# NB: img.router stays PUBLIC — browser <img src> tags can't carry an
+# Authorization header, so gating the image proxy would break every
+# thumbnail on the site. Backup IS protected (it dumps user data); the
+# frontend downloads it via an authenticated fetch instead of a raw link.
+_guard = [Depends(require_auth)]
+app.include_router(javbus.router, dependencies=_guard)
+app.include_router(pikpak.router, dependencies=_guard)
+app.include_router(pcloud.router, dependencies=_guard)
+app.include_router(compare.router, dependencies=_guard)
+app.include_router(collection.router, dependencies=_guard)
+app.include_router(tracked.router, dependencies=_guard)
+app.include_router(backup.router, dependencies=_guard)
 app.include_router(img.router)
 
 

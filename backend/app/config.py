@@ -158,6 +158,14 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 
+    # ----- 登入門禁 -----
+    # 用來簽 JWT 的密鑰。留空時啟動會自動產生一組並寫入
+    # data/auth_secret.txt(沿用 PikPak token 的持久化模式),讓 token
+    # 在重啟後仍有效。多台部署共用同一把密鑰時可在此明確指定。
+    auth_secret: str = ""
+    # 登入 token 的有效期(小時)。預設 30 天。
+    auth_token_ttl_hours: int = 720
+
     # ----- pCloud: PikPak → pCloud 遠端傳輸 -----
     # 帳密 / token 任一即可。token 優先;若無 token 但有帳密,啟動時
     # 自動換 token 並寫入 data/pcloud_token.txt。

@@ -1,6 +1,57 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
+// ---------- auth token (single-account login gate) ----------
+
+const TOKEN_KEY = "avbt_token";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/**
+ * Token expired / missing on a protected call: drop it and bounce to
+ * /login. Skipped for /api/auth/* (those report errors to their own
+ * callers) and when already sitting on a public page (avoids a loop).
+ */
+function handleUnauthorized(path: string): void {
+  if (typeof window === "undefined") return;
+  if (path.startsWith("/api/auth/")) return;
+  clearToken();
+  const p = window.location.pathname;
+  if (p !== "/login" && p !== "/setup") {
+    window.location.href = "/login";
+  }
+}
+
 /**
  * Route a remote image through our backend proxy. JavBus' image CDN has
  * hot-link protection that blocks browser-direct requests, so the
@@ -21,11 +72,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init.headers || {}),
     },
     cache: "no-store",
   });
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
     const text = await res.text();
     let msg = text || `${res.status} ${res.statusText}`;
     try {
@@ -47,6 +100,40 @@ export const api = {
   del: <T>(p: string) => request<T>(p, { method: "DELETE" }),
 };
 
+/**
+ * Download a protected endpoint as a file. A plain <a href> link can't
+ * carry the Authorization header, so we fetch with the token, turn the
+ * response into a blob, and trigger a download from that. Honors the
+ * server's Content-Disposition filename when present.
+ */
+export async function downloadAuthed(
+  path: string,
+  fallbackName = "download"
+): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { ...authHeaders() },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `${res.status} ${res.statusText}`);
+  }
+  let filename = fallbackName;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename="?([^"]+)"?/);
+  if (m) filename = m[1];
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** POST + read newline-delimited JSON events. Invokes onEvent for each. */
 export async function streamNdjson(
   path: string,
@@ -56,11 +143,12 @@ export async function streamNdjson(
 ): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
     signal,
   });
   if (!res.ok || !res.body) {
+    if (res.status === 401) handleUnauthorized(path);
     const text = await res.text().catch(() => "");
     throw new Error(text || `${res.status} ${res.statusText}`);
   }

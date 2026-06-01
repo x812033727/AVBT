@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { clearToken } from "@/lib/api";
 
 const TABS = [
   { href: "/", label: "首頁" },
@@ -47,6 +48,11 @@ export default function Navbar() {
     return () => window.removeEventListener("keydown", onKey);
   }, [pathname, router]);
 
+  function logout() {
+    clearToken();
+    router.push("/login");
+  }
+
   return (
     <header className="border-b border-white/10 bg-panel/60 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3">
@@ -73,12 +79,21 @@ export default function Navbar() {
             );
           })}
         </nav>
-        <span
-          className="ml-auto hidden items-center gap-1 rounded-md border border-white/10 px-2 py-0.5 text-[10px] font-mono text-white/40 md:inline-flex"
-          title="任何頁面按下後跳到搜尋"
-        >
-          {isMac ? "⌘" : "Ctrl"}+K
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <span
+            className="hidden items-center gap-1 rounded-md border border-white/10 px-2 py-0.5 text-[10px] font-mono text-white/40 md:inline-flex"
+            title="任何頁面按下後跳到搜尋"
+          >
+            {isMac ? "⌘" : "Ctrl"}+K
+          </span>
+          <button
+            onClick={logout}
+            className="rounded-md px-3 py-1.5 text-sm text-white/60 transition hover:bg-white/5 hover:text-white"
+            title="登出"
+          >
+            登出
+          </button>
+        </div>
       </div>
     </header>
   );

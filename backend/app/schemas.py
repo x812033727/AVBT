@@ -486,3 +486,33 @@ class EpisodeItem(BaseModel):
     parent_id: str
     parent_path: str
     size: Optional[int] = None
+
+
+# ---------- Auth (single-account login gate) ----------
+
+class AuthStatus(BaseModel):
+    needs_setup: bool
+
+
+class SetupIn(BaseModel):
+    username: str
+    password: str
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class TokenOut(BaseModel):
+    token: str
+    username: str
+
+
+class MeOut(BaseModel):
+    username: str
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str

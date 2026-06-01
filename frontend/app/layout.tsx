@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Navbar from "@/components/Navbar";
+import AuthGate from "@/components/AuthGate";
 import ToastProvider from "@/components/Toast";
 import "./globals.css";
 
@@ -13,8 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-Hant">
       <body className="min-h-screen bg-ink text-white/90">
         <ToastProvider>
-          <Navbar />
-          <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
+          <AuthGate>{children}</AuthGate>
         </ToastProvider>
       </body>
     </html>

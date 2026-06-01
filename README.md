@@ -94,6 +94,24 @@ PCLOUD_DEFAULT_FOLDER=/From PikPak
 NEXT_PUBLIC_API_BASE=http://localhost:8000
 ```
 
+## 登入
+
+本站採**單一帳號門禁**保護整個網站（沿用個人單人使用的定位，沒有註冊、沒有多使用者）：
+
+- **首次開站**：開啟前端會被導向 `/setup`，設定一組管理員帳號與密碼（密碼以 PBKDF2-SHA256 雜湊後存進 SQLite，不存明文）。
+- **之後登入**：在 `/login` 輸入帳密，前端取得 JWT 存於 `localStorage`，後續所有 API 請求自動帶 `Authorization: Bearer` header。右上角「登出」可清除登入狀態。
+- **修改密碼**：在「設定」頁的「登入密碼」區塊修改。
+- **保護範圍**：除了影像代理 `/api/img/proxy`（瀏覽器 `<img>` 無法帶 header）與健康檢查 `/api/health` 外，所有 `/api/*` 都需登入。
+
+相關環境變數（皆可選，見 `backend/.env.example`）：
+
+```
+AUTH_SECRET=             # 簽 JWT 的密鑰；留空自動產生並寫入 data/auth_secret.txt
+AUTH_TOKEN_TTL_HOURS=720 # token 有效期（小時），預設 30 天
+```
+
+> 忘記密碼時，刪除 `backend/data/avbt.db` 中的 `auth_account` 資料列（或整個 DB）後重啟，即可重新於 `/setup` 設定。
+
 ## 注意
 
 - 本工具僅作為個人本機使用，不提供公開部署

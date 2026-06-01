@@ -40,6 +40,14 @@ _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 # without the prefix — e.g. the series listing for 60b shows MIUM-1098,
 # not 300MIUM-1098 — so keeping them on the PikPak side meant the
 # presence index never matched. Strip every leading digit cluster.
+#
+# The detail PAGE for these labels, however, often lives only under the
+# prefixed id (``/259LUXU-1543``); the stripped code 404s. Series
+# resolution (archiver / reorganize / pCloud organize) therefore goes
+# through ``scraper.fetch_detail_resolved``, which falls back to a JavBus
+# search to recover the prefixed id when the bare code's detail is empty —
+# so these works still get archived under their series instead of stranded
+# in the fallback bucket.
 KNOWN_NUMERIC_PREFIXES: frozenset[str] = frozenset()
 
 VIDEO_EXTS = {

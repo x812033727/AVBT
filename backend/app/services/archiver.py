@@ -97,7 +97,7 @@ async def resolve_listing_loose(
     detail = _detail_cache.get(code)
     if detail is None:
         try:
-            detail = await scraper.fetch_detail(code)
+            detail = await scraper.fetch_detail_resolved(code)
         except Exception as exc:  # noqa: BLE001
             logger.debug("fetch_detail(%s) failed: %s", code, exc)
             return None
@@ -136,7 +136,7 @@ async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     detail = _detail_cache.get(code)
     if detail is None:
         try:
-            detail = await scraper.fetch_detail(code)
+            detail = await scraper.fetch_detail_resolved(code)
         except Exception as exc:  # noqa: BLE001
             logger.debug("fetch_detail(%s) failed: %s", code, exc)
             return None

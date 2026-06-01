@@ -190,7 +190,7 @@ async def _owned_listing_members(
         rest = rest[:_MEMBERSHIP_PROBE_CAP]
     for c in rest:
         try:
-            detail = await scraper.fetch_detail(c, refresh=refresh)
+            detail = await scraper.fetch_detail_resolved(c, refresh=refresh)
         except Exception:  # noqa: BLE001
             continue
         if detail and detail.title and _detail_belongs_to(detail, kind, slug):

@@ -493,14 +493,27 @@ def _parse_listing(html: str, page: int) -> SearchResult:
     return SearchResult(items=items, page=page, has_next=has_next, total_pages=total_pages)
 
 
-async def search(keyword: str, page: int = 1, uncensored: bool = False) -> SearchResult:
-    """Search by code / keyword."""
+async def search(
+    keyword: str,
+    page: int = 1,
+    uncensored: bool = False,
+    *,
+    with_magnets_only: bool = True,
+) -> SearchResult:
+    """Search by code / keyword.
+
+    ``with_magnets_only`` mirrors :func:`fetch_listing`: the default
+    ``existmag=mag`` filter only returns works that still have magnets.
+    Pass ``False`` to walk the full catalog (``existmag=all``) — used when
+    resolving a code's canonical id, where a work whose magnets have aged
+    off JavBus must still surface so its detail-page id can be read."""
     keyword = keyword.strip()
     base = settings.javbus_base_url.rstrip("/")
     prefix = "/uncensored/search" if uncensored else "/search"
     url = f"{base}{prefix}/{keyword}/{max(1, page)}"
 
-    html = await _fetch(_get_client(), url)
+    cookies = None if with_magnets_only else {"existmag": "all"}
+    html = await _fetch(_get_client(), url, cookies=cookies)
     if not html:
         return SearchResult(items=[], page=page, has_next=False)
 
@@ -769,6 +782,104 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
                 pending = _detail_inflight.pop(code, None)
             if pending is not None:
                 pending.set()
+
+
+# Codes whose detail page is empty AND whose search lookup found no
+# matching canonical id. Cached (with a TTL) so the periodic sweep /
+# organize / archive passes don't re-search the same unresolvable name
+# every cycle. Only *stable* misses are recorded — a search that errored
+# out (network / 429) is treated as transient and retried next time.
+_unresolved_cache: dict[str, float] = {}
+_UNRESOLVED_TTL = 1800.0
+
+
+def _norm_code(code: str) -> str:
+    # Local import mirrors the existing ``clean_listing_name`` pattern —
+    # jav_code is stdlib-only at import time, so this can't cycle.
+    from ..services.jav_code import normalize_code
+
+    return normalize_code(code) or (code or "").strip().upper()
+
+
+def _code_from_url(url: str) -> str:
+    """Last path segment of a JavBus detail URL (the real page id, which
+    keeps the numeric prefix even when the listing shows it stripped)."""
+    if not url:
+        return ""
+    tail = url.split("?", 1)[0].split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    return tail.strip()
+
+
+async def _search_canonical_code(code: str) -> str | None:
+    """Find JavBus's canonical identifier for a code whose detail page
+    doesn't serve directly.
+
+    Some amateur lines are indexed only under a numeric-prefixed id
+    (``259LUXU-1543``); a prefix-stripped code (``LUXU-1543``) 404s on the
+    detail page but still surfaces via search. Returns the first search
+    hit whose normalized code equals ``code`` — so we never grab an
+    unrelated work — preferring the hit's detail-page id (which keeps the
+    numeric prefix). Returns ``None`` on no match."""
+    want = _norm_code(code)
+    if not want:
+        return None
+    now = time.monotonic()
+    ts = _unresolved_cache.get(want)
+    if ts is not None and now - ts < _UNRESOLVED_TTL:
+        return None
+    try:
+        # Full catalog: a held work whose magnets aged off JavBus must
+        # still surface so we can read its (prefixed) detail-page id.
+        result = await search(code, with_magnets_only=False)
+    except Exception as exc:  # noqa: BLE001
+        # Transient (network / geo-block / 429) — don't poison the cache.
+        logger.debug("canonical search for %s failed: %s", code, exc)
+        return None
+    for it in result.items:
+        cand = _code_from_url(it.detail_url) or it.code
+        if cand and (_norm_code(cand) == want or _norm_code(it.code) == want):
+            return cand
+    # Stable miss: JavBus answered but has nothing matching. Remember so
+    # repeat passes skip the search. Prune opportunistically.
+    if len(_unresolved_cache) > 1000:
+        cutoff = now - _UNRESOLVED_TTL
+        for k in [k for k, v in _unresolved_cache.items() if v < cutoff]:
+            _unresolved_cache.pop(k, None)
+    _unresolved_cache[want] = now
+    return None
+
+
+async def fetch_detail_resolved(code: str, *, refresh: bool = False) -> MovieDetail:
+    """:func:`fetch_detail` with an amateur-label numeric-prefix fallback.
+
+    JavBus indexes some amateur lines (``259LUXU``, ``200GANA``,
+    ``300MIUM`` …) only under their numeric-prefixed id.
+    ``extract_jav_code`` deliberately strips that prefix so the presence
+    index matches the listing, but the stripped code (``LUXU-1543``) then
+    can't reach the detail page (``/259LUXU-1543``). When the direct fetch
+    comes back empty, search JavBus for the canonical id and fetch that
+    instead, caching the result under the queried code so repeat lookups
+    (the archiver re-resolves on every pass) skip the search.
+
+    Callers that resolve a code to its listing membership — the archiver,
+    the reorganize sweep, pCloud organize, the missing detail-probe and
+    the download queue — use this so these labels get archived under
+    their series instead of stranded in the fallback bucket. Falls back to
+    the (empty) direct result when no canonical id matches, so a genuinely
+    unknown code behaves exactly as before."""
+    detail = await fetch_detail(code, refresh=refresh)
+    if detail.title:
+        return detail
+    real = await _search_canonical_code(code)
+    if not real or real.strip().upper() == (code or "").strip().upper():
+        return detail
+    alt = await fetch_detail(real, refresh=refresh)
+    if alt.title:
+        # Cache under the queried code too so the next resolve of the same
+        # stripped code is a straight cache hit, not another search.
+        _detail_cache_put((code or "").strip().upper(), alt)
+        return alt
+    return detail
 
 
 def _parse_detail(html: str, code: str) -> MovieDetail:

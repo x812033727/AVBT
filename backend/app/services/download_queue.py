@@ -296,7 +296,7 @@ class DownloadQueue:
 
         # ---- code branch (tracker / bulk / wishlist) ----
         try:
-            detail = await scraper.fetch_detail(job.code)
+            detail = await scraper.fetch_detail_resolved(job.code)
         except Exception as exc:  # noqa: BLE001
             return JobResult(
                 code=job.code,

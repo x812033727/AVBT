@@ -44,9 +44,25 @@ def _safe_code(code: str) -> str:
     return _SAFE_CODE.sub("", code.strip())[:64]
 
 
-# Delegate to the shared helper so missing-code services can compute the
+# Delegate to the shared helpers so missing-code services can compute the
 # same path without importing the archiver (which would cycle).
-from .jav_code import safe_folder_name as _safe_name  # noqa: E402
+from .jav_code import (  # noqa: E402
+    extract_jav_code_full,
+    safe_folder_name as _safe_name,
+)
+
+
+def _archive_leaf(code: str) -> str:
+    """Canonical folder/file leaf for an archived code.
+
+    Strips the numeric BT/maker prefix (``259LUXU-1543`` → ``LUXU-1543``)
+    so amateur-label folders match the rest of the system's stripped
+    convention — the presence index, listing codes and the reorganize
+    sweep all key off the prefix-stripped form. Keeps any trailing A/B/C
+    variant letter (``extract_jav_code_full``) so distinct variants don't
+    collide on the same folder. Falls back to char-sanitising the raw code
+    when extraction finds nothing parseable."""
+    return _safe_code(extract_jav_code_full(code) or code)
 
 
 # A small per-pass cache so two completed tasks with the same code don't
@@ -177,7 +193,7 @@ async def _resolve_archive_path_by_code(code: str) -> str:
     Used by reorganize (no OfflineTaskLog row context at all) and by
     ``_resolve_archive_path`` when the row's tracked_* snapshot is empty
     (manual submits, rows that predate the snapshot columns)."""
-    safe_code = _safe_code(code)
+    safe_code = _archive_leaf(code)
     resolved = await resolve_listing_for_code(code)
     if resolved is None:
         return f"{settings.pikpak_archive_folder}/{safe_code}"
@@ -194,7 +210,7 @@ async def _resolve_archive_path(row: OfflineTaskLog) -> str:
     directly without an external HTTP call. Slow path: delegate to
     ``_resolve_archive_path_by_code`` which hits JavBus."""
     code = row.code
-    safe_code = _safe_code(code)
+    safe_code = _archive_leaf(code)
 
     snap_kind = (row.tracked_kind or "").strip()
     snap_slug = (row.tracked_slug or "").strip()

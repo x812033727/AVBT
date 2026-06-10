@@ -160,6 +160,43 @@ export default function TrackedPage() {
     }
   }, []);
 
+  // Refresh just ONE row's 缺漏 badge from /missing-codes after a single
+  // 立即檢查. We deliberately avoid re-fetching /missing-summary here (it
+  // re-walks every tracked listing — minutes); this one listing's catalog
+  // is already warm from the check we just ran, so it's cheap. Unlike the
+  // done-event patch in patchRowFromEvent, this gives the badge an
+  // accurate, deduped total / missing_count / extras_count — the patch
+  // alone can't supply `total` (so a "未取得列表" row stays stuck) and
+  // no-ops on rows that have no summary entry yet (e.g. just手動新增).
+  const refreshRowMissing = useCallback(async (it: TrackedListing) => {
+    const key = `${it.kind}:${it.id}`;
+    try {
+      const res = await api.get<MissingCodesResult>(
+        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/missing-codes`,
+      );
+      setMissing((prev) => {
+        const next = new Map(prev ?? []);
+        next.set(key, {
+          kind: res.kind,
+          id: res.id,
+          name: res.name,
+          total: res.total,
+          missing_count: res.missing.length,
+          extras_count: res.extras.length,
+          pages_scanned: res.pages_scanned,
+          expected_root: res.expected_root,
+          error: "",
+        });
+        return next;
+      });
+      // Reuse the same payload for the (collapsed) detail panel so a later
+      // expand renders instantly without another round-trip.
+      setDetails((m) => new Map(m).set(key, res));
+    } catch {
+      /* keep the existing badge / detail on failure */
+    }
+  }, []);
+
   useEffect(() => {
     loadMissing(false);
   }, [loadMissing]);
@@ -265,6 +302,10 @@ export default function TrackedPage() {
     setCheckingPhase("page 1…");
     setLastCheck(null);
     let finalResult: CheckListingResult | null = null;
+    // Tracked separately from finalResult: TS can't see the callback's
+    // assignment, so finalResult narrows to null in this outer scope and
+    // reading finalResult.error here would be a `never` access.
+    let checkErrored = false;
     try {
       // Stream the per-phase events so the button label can update from
       // "page 1…" → "掃描缺漏…" → "完成" instead of just showing a static
@@ -291,6 +332,7 @@ export default function TrackedPage() {
             };
             const missingCount = event.missing_count;
             const errMsg = event.error;
+            checkErrored = Boolean(errMsg);
             if (errMsg) {
               setCheckingPhase("失敗");
             } else if (typeof missingCount === "number") {
@@ -313,13 +355,21 @@ export default function TrackedPage() {
         },
       );
       if (finalResult) setLastCheck(finalResult);
-      // Clear cached detail for this row so re-opening shows fresh data
-      // (the row's missing-codes detail panel re-fetches on expand).
-      setDetails((m) => {
-        const next = new Map(m);
-        next.delete(key);
-        return next;
-      });
+      // Refresh just this row's 缺漏 badge (+ detail cache) from
+      // /missing-codes so the count actually shows after a check. The
+      // done-event patch can't supply `total` and no-ops on rows with no
+      // summary entry, which left the badge blank / stuck. On error / no
+      // result there's nothing fresh to show — drop any stale detail so a
+      // later expand re-fetches instead.
+      if (finalResult && !checkErrored) {
+        await refreshRowMissing(it);
+      } else {
+        setDetails((m) => {
+          const next = new Map(m);
+          next.delete(key);
+          return next;
+        });
+      }
     } catch (e: any) {
       if (e.name !== "AbortError") setError(e.message);
       setCheckingPhase("失敗");

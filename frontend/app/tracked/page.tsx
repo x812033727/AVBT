@@ -215,6 +215,27 @@ export default function TrackedPage() {
     prevScanRef.current = cur;
   }, [trackerStatus?.scan_in_progress, loadMissing]);
 
+  // Flip the periodic background-scan loop on/off (tracker.state.enabled).
+  // The same toggle lives on /settings; surfaced here too so the user can
+  // pause/resume scheduled scanning right where they manage tracked items.
+  async function toggleBackgroundScan(enabled: boolean) {
+    // Optimistic flip for instant feedback, then reconcile with the
+    // server response; on failure revert and surface the error. The
+    // status poll loop would also eventually correct a stale value.
+    setTrackerStatus((prev) => (prev ? { ...prev, enabled } : prev));
+    try {
+      const res = await api.post<TrackerStatus>("/api/tracked/status/toggle", {
+        enabled,
+      });
+      setTrackerStatus(res);
+    } catch (e: any) {
+      setTrackerStatus((prev) =>
+        prev ? { ...prev, enabled: !enabled } : prev,
+      );
+      toast.error(e.message || "切換背景掃描失敗");
+    }
+  }
+
   function keyOf(it: TrackedListing) {
     return `${it.kind}:${it.id}`;
   }
@@ -442,25 +463,43 @@ export default function TrackedPage() {
             </button>
           ))}
         </div>
-        {filtered.length > 0 && (
-          <div className="ml-auto flex gap-2">
-            <button
-              className="btn-ghost"
-              onClick={openBatchMissingSummary}
-              disabled={missingLoading || batchModalMode !== null}
-              title="重新掃 PikPak 資料夾並重算缺漏"
-            >
-              重算缺漏
-            </button>
-            <button
-              className="btn-ghost"
-              onClick={openBatchCheckAll}
-              disabled={!!checkingKey || batchModalMode !== null}
-            >
-              全部立即檢查
-            </button>
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          <label
+            className="flex items-center gap-1.5 text-xs text-white/60"
+            title={
+              trackerStatus
+                ? `開啟後每 ${trackerStatus.interval_seconds} 秒自動檢查所有追蹤項目的新作品 / 缺漏；關閉只停掉排程，手動「立即檢查」仍可用`
+                : "背景排程掃描"
+            }
+          >
+            <input
+              type="checkbox"
+              checked={trackerStatus?.enabled ?? false}
+              onChange={(e) => toggleBackgroundScan(e.target.checked)}
+              disabled={!trackerStatus}
+            />
+            背景掃描
+          </label>
+          {filtered.length > 0 && (
+            <div className="flex gap-2">
+              <button
+                className="btn-ghost"
+                onClick={openBatchMissingSummary}
+                disabled={missingLoading || batchModalMode !== null}
+                title="重新掃 PikPak 資料夾並重算缺漏"
+              >
+                重算缺漏
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={openBatchCheckAll}
+                disabled={!!checkingKey || batchModalMode !== null}
+              >
+                全部立即檢查
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {error && (

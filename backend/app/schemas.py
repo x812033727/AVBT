@@ -498,10 +498,13 @@ class DashboardStats(BaseModel):
 
 class VideoCountItem(BaseModel):
     """One lookup: ``file_id`` wins when set (pre-archive task content),
-    else ``code`` resolves through the presence index (post-archive)."""
+    else ``code`` resolves through the presence index (post-archive).
+    ``provider="pcloud"`` counts the code's transferred files instead
+    (code-only — pCloud has no task file ids)."""
     key: str
     file_id: str = ""
     code: str = ""
+    provider: str = "pikpak"  # "pikpak" | "pcloud"
 
 
 class VideoCountRequest(BaseModel):

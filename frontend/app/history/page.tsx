@@ -159,6 +159,15 @@ export default function HistoryListPage() {
     }
   }
 
+  // 已歸檔列自動查詢:走番號 → presence 索引,不打任務 API,成本低。
+  // 未歸檔列(要打 PikPak 任務查詢)維持手動「查」。
+  useEffect(() => {
+    if (!data) return;
+    const archivedRows = data.items.filter((it) => it.archived && it.code);
+    if (archivedRows.length) fetchCounts(archivedRows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
   function toggleRow(id: number, on: boolean) {
     setSelected((prev) => {
       const next = new Set(prev);

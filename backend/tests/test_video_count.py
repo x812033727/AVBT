@@ -160,3 +160,73 @@ async def test_count_for_code_falls_back_to_task(monkeypatch):
     assert res["ok"] is True
     assert res["video_count"] == 1
     assert res["source"] == "task"
+
+
+# ---------- pCloud (transfer-record based) ----------
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
+
+import app.database as db  # noqa: E402
+from app.models import PCloudTransfer  # noqa: E402
+
+
+async def _seed_transfers(tmp_path, monkeypatch, rows):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", future=True)
+    monkeypatch.setattr(db, "engine", engine)
+    await db.init_db()
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(vc, "SessionLocal", maker)
+    async with maker() as session:
+        session.add_all(rows)
+        await session.commit()
+    return engine
+
+
+async def test_count_for_code_pcloud_multi_part(tmp_path, monkeypatch):
+    engine = await _seed_transfers(
+        tmp_path,
+        monkeypatch,
+        [
+            PCloudTransfer(
+                pikpak_file_id="a", pikpak_name="ABC-123_1.mp4",
+                pcloud_file_id=11, pcloud_folder_path="/From PikPak", status="done",
+            ),
+            PCloudTransfer(
+                pikpak_file_id="b", pikpak_name="ABC-123_2.mp4",
+                pcloud_file_id=12, pcloud_folder_path="/From PikPak", status="done",
+            ),
+            # Retried transfer of the same file → same pcloud_file_id, must dedupe.
+            PCloudTransfer(
+                pikpak_file_id="b", pikpak_name="ABC-123_2.mp4",
+                pcloud_file_id=12, pcloud_folder_path="/From PikPak", status="done",
+            ),
+            # Different code sharing the label prefix — must not count.
+            PCloudTransfer(
+                pikpak_file_id="c", pikpak_name="ABC-999.mp4",
+                pcloud_file_id=13, pcloud_folder_path="/From PikPak", status="done",
+            ),
+            # Failed transfer — must not count.
+            PCloudTransfer(
+                pikpak_file_id="d", pikpak_name="ABC-123_3.mp4",
+                pcloud_file_id=14, pcloud_folder_path="/From PikPak", status="failed",
+            ),
+            # Non-video — must not count.
+            PCloudTransfer(
+                pikpak_file_id="e", pikpak_name="ABC-123.jpg",
+                pcloud_file_id=15, pcloud_folder_path="/From PikPak", status="done",
+            ),
+        ],
+    )
+    res = await vc.count_for_code_pcloud("ABC-123")
+    await engine.dispose()
+    assert res["ok"] is True
+    assert res["video_count"] == 2
+    assert res["source"] == "transfer"
+    assert res["entries"] == [{"path": "/From PikPak", "video_count": 2}]
+
+
+async def test_count_for_code_pcloud_not_transferred(tmp_path, monkeypatch):
+    engine = await _seed_transfers(tmp_path, monkeypatch, [])
+    res = await vc.count_for_code_pcloud("ZZZ-999")
+    await engine.dispose()
+    assert res["ok"] is False

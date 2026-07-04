@@ -18,6 +18,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
   const [data, setData] = useState<MovieDetail | null>(null);
   const [sentHashes, setSentHashes] = useState<Set<string>>(new Set());
   const [cloudCount, setCloudCount] = useState<VideoCountResult | null>(null);
+  const [pcloudCount, setPcloudCount] = useState<VideoCountResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingMsg, setSavingMsg] = useState<string | null>(null);
 
@@ -38,13 +39,21 @@ export default function MoviePage({ params }: { params: { code: string } }) {
       }
     })();
     // Best-effort: how many video files does this code actually have on
-    // PikPak? Independent of the detail fetch — never blocks the page.
+    // each cloud? Independent of the detail fetch — never blocks the page.
     api
       .post<VideoCountResponse>("/api/pikpak/files/video-count", {
-        items: [{ key: code, code }],
+        items: [
+          { key: "pikpak", code },
+          { key: "pcloud", code, provider: "pcloud" },
+        ],
       })
       .then((r) => {
-        if (alive && r.results[0]?.ok) setCloudCount(r.results[0]);
+        if (!alive) return;
+        for (const res of r.results) {
+          if (!res.ok) continue;
+          if (res.key === "pikpak") setCloudCount(res);
+          else if (res.key === "pcloud") setPcloudCount(res);
+        }
       })
       .catch(() => {});
     return () => {
@@ -123,26 +132,15 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             <RefInfo k="製作商" kind="studio" ref={data.studio} />
             <RefInfo k="發行商" kind="label" ref={data.label} />
             <RefInfo k="系列" kind="series" ref={data.series} />
-            {cloudCount && (
+            {(cloudCount || pcloudCount) && (
               <>
                 <dt className="text-white/40">雲端影片</dt>
-                <dd
-                  title={
-                    (cloudCount.entries.length
-                      ? cloudCount.entries
-                          .map((e) => `${e.path}(${e.video_count})`)
-                          .join("\n")
-                      : cloudCount.video_names.join("\n")) || undefined
-                  }
-                >
-                  {cloudCount.video_count > 1 ? (
-                    <span className="text-amber-300">
-                      {cloudCount.video_count} 部(分集)
-                    </span>
-                  ) : cloudCount.video_count === 1 ? (
-                    <span>1 部(單一影片)</span>
-                  ) : (
-                    <span className="text-white/50">下載中(尚無影片檔)</span>
+                <dd className="space-x-2">
+                  {cloudCount && (
+                    <CloudCountLabel label="PikPak" result={cloudCount} />
+                  )}
+                  {pcloudCount && (
+                    <CloudCountLabel label="pCloud" result={pcloudCount} />
                   )}
                 </dd>
               </>
@@ -266,5 +264,31 @@ function RefInfo({
         )}
       </dd>
     </>
+  );
+}
+
+function CloudCountLabel({
+  label,
+  result,
+}: {
+  label: string;
+  result: VideoCountResult;
+}) {
+  const tip =
+    (result.entries.length
+      ? result.entries.map((e) => `${e.path}(${e.video_count})`).join("\n")
+      : result.video_names.join("\n")) +
+    (result.source === "transfer" ? "\n(依轉存紀錄計算)" : "");
+  return (
+    <span title={tip.trim() || undefined}>
+      <span className="text-white/40">{label} </span>
+      {result.video_count > 1 ? (
+        <span className="text-amber-300">{result.video_count} 部(分集)</span>
+      ) : result.video_count === 1 ? (
+        <span className="text-white/80">1 部(單一影片)</span>
+      ) : (
+        <span className="text-white/50">下載中</span>
+      )}
+    </span>
   );
 }

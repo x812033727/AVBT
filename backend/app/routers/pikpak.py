@@ -261,17 +261,25 @@ async def files_video_count(payload: VideoCountRequest):
     async def resolve(item) -> dict:
         async with sem:
             try:
+                if item.provider == "pcloud":
+                    if item.file_id:
+                        return {"ok": False, "error": "pCloud 只支援以番號查詢"}
+                    return await video_count_svc.count_for_code_pcloud(item.code)
                 if item.file_id:
                     return await video_count_svc.count_for_file_id(item.file_id)
                 return await video_count_svc.count_for_code(item.code)
             except Exception as exc:  # noqa: BLE001 — one bad item must not fail the batch
                 return {"ok": False, "error": str(exc)}
 
+    def target_of(item) -> tuple[str, str, str]:
+        kind, value = ("f", item.file_id) if item.file_id else ("c", item.code.strip().upper())
+        return (item.provider, kind, value)
+
     # Dedupe identical targets so a page of rows for the same code costs
     # one PikPak round-trip.
-    unique: dict[tuple[str, str], asyncio.Task] = {}
+    unique: dict[tuple[str, str, str], asyncio.Task] = {}
     for item in payload.items:
-        target = ("f", item.file_id) if item.file_id else ("c", item.code.strip().upper())
+        target = target_of(item)
         if target not in unique:
             unique[target] = asyncio.create_task(resolve(item))
     try:
@@ -283,8 +291,7 @@ async def files_video_count(payload: VideoCountRequest):
 
     results = []
     for item in payload.items:
-        target = ("f", item.file_id) if item.file_id else ("c", item.code.strip().upper())
-        res = unique[target].result()
+        res = unique[target_of(item)].result()
         results.append(VideoCountResult(key=item.key, **res))
     return VideoCountResponse(results=results)
 

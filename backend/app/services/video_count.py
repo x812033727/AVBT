@@ -9,6 +9,11 @@ keys:
 - ``count_for_code`` — a JAV code, resolved through the presence index
   to the archived folder(s). Falls back to the newest offline-task
   file_id when the presence index has no path for the code.
+- ``count_for_code_pcloud`` — a JAV code on the pCloud side. There is
+  no pCloud presence index, and transfer destination folders mix many
+  works, so this counts DONE rows in the pcloud_transfer table instead
+  (one row = one file that reached pCloud). DB-only — may overcount if
+  files were later deleted on pCloud, hence source="transfer".
 """
 
 from __future__ import annotations
@@ -18,8 +23,8 @@ import logging
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import OfflineTaskLog
-from .jav_code import is_video, normalize_code
+from ..models import OfflineTaskLog, PCloudTransfer
+from .jav_code import extract_jav_code, is_video, normalize_code
 from .pikpak import pikpak_service
 from .pikpak_presence import presence_index
 
@@ -179,3 +184,63 @@ async def count_for_code(code: str) -> dict:
     if not result.get("ok"):
         return {"ok": False, "error": "PikPak 上找不到此番號(任務檔案已搬移)"}
     return result
+
+
+async def count_for_code_pcloud(code: str) -> dict:
+    """Count videos of a code that were transferred to pCloud.
+
+    Based purely on ``pcloud_transfer`` DONE rows — the destination
+    folders mix many works, so listing them can't isolate one code.
+    A later manual delete on pCloud isn't visible here."""
+    code = normalize_code(code) or (code or "").strip().upper()
+    if not code:
+        return {"ok": False, "error": "無效番號"}
+
+    # Coarse SQL prefilter on the label part, exact match in Python via
+    # extract_jav_code (handles prefixes / squished / variant forms).
+    label = code.split("-", 1)[0]
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(
+                    PCloudTransfer.pikpak_name,
+                    PCloudTransfer.pikpak_file_id,
+                    PCloudTransfer.pcloud_file_id,
+                    PCloudTransfer.pcloud_folder_path,
+                )
+                .where(
+                    PCloudTransfer.status == "done",
+                    PCloudTransfer.pikpak_name.like(f"%{label}%"),
+                )
+                .order_by(PCloudTransfer.finished_at.desc())
+            )
+        ).all()
+
+    seen: set[str] = set()
+    video_names: list[str] = []
+    per_folder: dict[str, int] = {}
+    for name, pikpak_file_id, pcloud_file_id, folder_path in rows:
+        if not is_video(name or ""):
+            continue
+        if extract_jav_code(name or "") != code:
+            continue
+        # Retried transfers create duplicate rows for the same file.
+        dedupe_key = str(pcloud_file_id or "") or f"pk:{pikpak_file_id}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        if len(video_names) < _MAX_NAMES:
+            video_names.append(name)
+        per_folder[folder_path or ""] = per_folder.get(folder_path or "", 0) + 1
+
+    if not seen:
+        return {"ok": False, "error": "尚未轉存到 pCloud"}
+    return {
+        "ok": True,
+        "video_count": len(seen),
+        "video_names": video_names,
+        "entries": [
+            {"path": path, "video_count": n} for path, n in sorted(per_folder.items())
+        ],
+        "source": "transfer",
+    }

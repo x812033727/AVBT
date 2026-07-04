@@ -7,8 +7,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
-from typing import Any, AsyncIterator, NamedTuple
+from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
@@ -417,7 +418,7 @@ async def check_listing_stream(
     yield {"type": "start", "kind": kind, "id": listing_id}
 
     yield {"type": "progress", "phase": "page1",
-           "message": f"檢查 JavBus 第 1 頁…"}
+           "message": "檢查 JavBus 第 1 頁…"}
     p = await _check_listing_phase1(kind, listing_id, force=force)
 
     if p.not_found:

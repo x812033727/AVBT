@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 
@@ -49,7 +49,6 @@ from .pikpak import (
     _uniquify_target,
     pikpak_service,
 )
-
 
 logger = logging.getLogger(__name__)
 

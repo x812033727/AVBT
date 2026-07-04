@@ -1,8 +1,6 @@
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
-
 
 # ---------- JavBus ----------
 
@@ -18,7 +16,7 @@ class SearchResult(BaseModel):
     items: list[MovieListItem]
     page: int
     has_next: bool
-    total_pages: Optional[int] = None
+    total_pages: int | None = None
 
 
 class Magnet(BaseModel):
@@ -67,10 +65,10 @@ class MovieDetail(BaseModel):
     cover: str = ""
     release_date: str = ""
     duration: str = ""
-    studio: Optional[LinkRef] = None
-    label: Optional[LinkRef] = None
-    director: Optional[LinkRef] = None
-    series: Optional[LinkRef] = None
+    studio: LinkRef | None = None
+    label: LinkRef | None = None
+    director: LinkRef | None = None
+    series: LinkRef | None = None
     actresses: list[ActressRef] = Field(default_factory=list)
     genres: list[GenreRef] = Field(default_factory=list)
     samples: list[str] = Field(default_factory=list)
@@ -101,7 +99,7 @@ class HistoryItem(BaseModel):
     phase: str = ""
     message: str = ""
     archived: bool = False
-    archived_at: Optional[datetime] = None
+    archived_at: datetime | None = None
     created_at: datetime
 
 
@@ -124,7 +122,7 @@ class TrackedListingIn(BaseModel):
 
 class TrackedListingOut(TrackedListingIn):
     last_seen_code: str = ""
-    last_checked_at: Optional[datetime] = None
+    last_checked_at: datetime | None = None
     last_error: str = ""
     new_count: int = 0
     created_at: datetime
@@ -146,16 +144,16 @@ class CollectionOut(CollectionIn):
 # ---------- PikPak ----------
 
 class PikPakLogin(BaseModel):
-    username: Optional[str] = None
-    password: Optional[str] = None
-    encoded_token: Optional[str] = None  # 直接貼 token 就不用帳密
+    username: str | None = None
+    password: str | None = None
+    encoded_token: str | None = None  # 直接貼 token 就不用帳密
     remember: bool = True
 
 
 class OfflineSubmit(BaseModel):
     magnet: str
     code: str = ""
-    folder: Optional[str] = None
+    folder: str | None = None
     force: bool = False  # send even if this btih hash is already in the log
 
 
@@ -165,13 +163,13 @@ class SendAllOptions(BaseModel):
     hd_only: bool = True
     subtitle_only: bool = False
     skip_sent: bool = True
-    folder: Optional[str] = None
+    folder: str | None = None
     # File-size filters in megabytes; 0 / None = unbounded
-    min_size_mb: Optional[float] = None
-    max_size_mb: Optional[float] = None
+    min_size_mb: float | None = None
+    max_size_mb: float | None = None
     # Soft upper bound: prefer magnets at or below this size, but fall
     # back to oversized candidates when nothing fits. 0 / None = no soft cap.
-    prefer_max_size_mb: Optional[float] = None
+    prefer_max_size_mb: float | None = None
 
 
 class SendAllResult(BaseModel):
@@ -187,105 +185,44 @@ class PikPakFile(BaseModel):
     id: str
     name: str
     kind: str
-    size: Optional[int] = None
-    parent_id: Optional[str] = None
-    created_time: Optional[str] = None
-    thumbnail_link: Optional[str] = None
+    size: int | None = None
+    parent_id: str | None = None
+    created_time: str | None = None
+    thumbnail_link: str | None = None
 
 
 class PikPakTask(BaseModel):
     id: str
     name: str
     phase: str
-    progress: Optional[int] = None
-    file_id: Optional[str] = None
-    file_size: Optional[int] = None
-    message: Optional[str] = None
-    created_time: Optional[str] = None
+    progress: int | None = None
+    file_id: str | None = None
+    file_size: int | None = None
+    message: str | None = None
+    created_time: str | None = None
 
 
 class PikPakQuota(BaseModel):
     used: int = 0
     limit: int = 0
-    expire: Optional[str] = None
+    expire: str | None = None
 
 
 # ---------- pCloud ----------
-
-class PCloudLogin(BaseModel):
-    username: Optional[str] = None
-    password: Optional[str] = None
-    # ``access_token`` lets the user paste a pCloud-issued token instead
-    # of supplying username + password. Token wins when both are set.
-    access_token: Optional[str] = None
-    remember: bool = True
-
+# (login/status/transfer schemas live in the second pCloud block below)
 
 class PCloudFile(BaseModel):
     id: str
     name: str
     kind: str  # "folder" | "file"
-    size: Optional[int] = None
-    parent_id: Optional[str] = None
-    created_time: Optional[str] = None
+    size: int | None = None
+    parent_id: str | None = None
+    created_time: str | None = None
 
 
 class PCloudQuota(BaseModel):
     used: int = 0
     limit: int = 0
-
-
-# ----- transfer queue (PikPak → pCloud via savefilefromurl) -----
-
-class PCloudTransferRequest(BaseModel):
-    """Enqueue body. Exactly one of ``pikpak_file_ids`` (single/multi-file
-    mode) and ``pikpak_folder_id`` (recursive folder mode) should be set.
-    ``folder`` is the destination path on pCloud — auto-created if it
-    doesn't exist. Empty string = use ``pcloud_default_folder``."""
-    pikpak_file_ids: list[str] = Field(default_factory=list)
-    pikpak_folder_id: str = ""
-    folder: str = ""
-    delete_source: bool = False
-    # Only used in recursive folder mode. Mirror PikPak's subfolder tree
-    # under the destination instead of flattening everything into one
-    # bucket.
-    preserve_subfolders: bool = True
-
-
-class PCloudTransferOut(BaseModel):
-    id: int
-    parent_id: Optional[int] = None
-    pikpak_file_id: str
-    pikpak_name: str
-    pikpak_size: int = 0
-    pikpak_path: str = ""
-    pcloud_folder_id: int = 0
-    pcloud_folder_path: str = ""
-    pcloud_upload_id: int = 0
-    pcloud_file_id: int = 0
-    status: str
-    message: str = ""
-    bytes_downloaded: int = 0
-    delete_source: bool = False
-    created_at: datetime
-    updated_at: datetime
-    finished_at: Optional[datetime] = None
-
-
-class PCloudTransferPage(BaseModel):
-    items: list[PCloudTransferOut]
-    total: int
-    pending: int
-    running: int
-    done: int
-    failed: int
-
-
-class PCloudEnqueueResult(BaseModel):
-    enqueued: int
-    transfer_ids: list[int] = Field(default_factory=list)
-    folder_path: str = ""
-    folder_id: int = 0
 
 
 # ---------- Missing-codes / presence index ----------
@@ -329,7 +266,7 @@ class MissingSummaryItem(BaseModel):
 
 class MissingSummary(BaseModel):
     built_at: datetime
-    presence_built_at: Optional[datetime] = None
+    presence_built_at: datetime | None = None
     items: list[MissingSummaryItem] = Field(default_factory=list)
 
 
@@ -342,12 +279,12 @@ class AggregatedMissingItem(BaseModel):
 
 class AggregatedMissing(BaseModel):
     built_at: datetime
-    presence_built_at: Optional[datetime] = None
+    presence_built_at: datetime | None = None
     items: list[AggregatedMissingItem] = Field(default_factory=list)
 
 
 class PresenceStatus(BaseModel):
-    built_at: Optional[datetime] = None
+    built_at: datetime | None = None
     size: int = 0
     last_error: str = ""
     ttl_seconds: int = 0
@@ -384,9 +321,9 @@ class ReorganizeOptions(BaseModel):
 # ---------- pCloud ----------
 
 class PCloudLogin(BaseModel):
-    username: Optional[str] = None
-    password: Optional[str] = None
-    access_token: Optional[str] = None
+    username: str | None = None
+    password: str | None = None
+    access_token: str | None = None
 
 
 class PCloudStatus(BaseModel):
@@ -412,7 +349,7 @@ class PCloudFolderEntry(BaseModel):
 class PCloudFolderListing(BaseModel):
     folder_id: int
     path: str
-    parent_folder_id: Optional[int] = None
+    parent_folder_id: int | None = None
     entries: list[PCloudFolderEntry] = Field(default_factory=list)
 
 
@@ -435,7 +372,7 @@ class PCloudTransferRequest(BaseModel):
 
 class PCloudTransferOut(BaseModel):
     id: int
-    parent_id: Optional[int] = None
+    parent_id: int | None = None
     pikpak_file_id: str
     pikpak_name: str
     pikpak_size: int = 0
@@ -450,7 +387,7 @@ class PCloudTransferOut(BaseModel):
     delete_source: bool = False
     created_at: datetime
     updated_at: datetime
-    finished_at: Optional[datetime] = None
+    finished_at: datetime | None = None
 
 
 class PCloudTransferPage(BaseModel):
@@ -479,7 +416,7 @@ class EpisodeItem(BaseModel):
     marker_index: int = 0
     parent_id: str
     parent_path: str
-    size: Optional[int] = None
+    size: int | None = None
 
 
 # ---------- Auth (single-account login gate) ----------

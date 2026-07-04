@@ -25,7 +25,6 @@ from ..config import all_kind_paths, settings
 from .jav_code import normalize_code
 from .pikpak import PikPakError, pikpak_service
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -218,7 +217,7 @@ class PikPakPresenceIndex:
         codes: set[str] = set()
         leaves_total = 0
         unrecognized_count = 0
-        for name_dir, leaves in zip(targets, leaf_lists):
+        for name_dir, leaves in zip(targets, leaf_lists, strict=True):
             if isinstance(leaves, Exception):
                 continue
             parent = f"{root_path}/{name_dir.name}"

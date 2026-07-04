@@ -115,13 +115,18 @@ async def _backfill_tracked_actresses() -> None:
         ).first()
         if not exists:
             return
+        # quiet_ticks / last_missing_count are NOT NULL on freshly
+        # created tables (ORM default is Python-side only), so supply
+        # them explicitly — the legacy table predates those columns.
         await conn.exec_driver_sql(
             """
             INSERT INTO tracked_listing
               (kind, id, name, avatar, uncensored, auto_send,
-               last_seen_code, last_checked_at, last_error, new_count, created_at)
+               last_seen_code, last_checked_at, last_error, new_count,
+               quiet_ticks, last_missing_count, created_at)
             SELECT 'star', id, name, avatar, uncensored, auto_send,
-                   last_seen_code, last_checked_at, last_error, new_count, created_at
+                   last_seen_code, last_checked_at, last_error, new_count,
+                   0, 0, created_at
             FROM tracked_actresses
             WHERE NOT EXISTS (
                 SELECT 1 FROM tracked_listing

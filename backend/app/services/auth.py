@@ -15,7 +15,7 @@ import hmac
 import logging
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jwt
@@ -98,7 +98,7 @@ def verify_password(password: str, stored: str) -> bool:
 # ----- tokens -----
 
 def create_token(username: str) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": username,
         "iat": now,

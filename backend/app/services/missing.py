@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
-from typing import Any, AsyncIterator
 
 from sqlalchemy import select
 

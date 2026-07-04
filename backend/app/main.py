@@ -8,8 +8,8 @@ from .config import cors_origin_list
 from .database import init_db
 from .routers import auth, backup, collection, compare, img, javbus, pcloud, pikpak, tracked
 from .scrapers import javbus as scraper
-from .services.auth import require_auth
 from .services import archiver, log_cleanup, notify, tracker
+from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue

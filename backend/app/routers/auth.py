@@ -41,8 +41,8 @@ async def setup(payload: SetupIn, session: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=400, detail=f"密碼至少 {_MIN_PASSWORD_LEN} 個字元")
     try:
         await auth_service.create_account(session, username, payload.password)
-    except ValueError:
-        raise HTTPException(status_code=409, detail="帳號已設定,請改用登入")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="帳號已設定,請改用登入") from exc
     return TokenOut(token=auth_service.create_token(username), username=username)
 
 

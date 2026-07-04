@@ -23,8 +23,9 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 import httpx
 
@@ -32,7 +33,6 @@ from ..config import kind_base_path, settings
 from ..schemas import PCloudFile, PCloudQuota
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
 from .pikpak import _build_video_rename_plan, _uniquify_target
-
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class PCloudError(RuntimeError):
     """
 
     result: int = 0
-    payload: Optional[dict] = None
+    payload: dict | None = None
 
 
 TOKEN_FILE = Path("data/pcloud_token.json")
@@ -97,10 +97,10 @@ def _to_pcloud_file(item: dict) -> PCloudFile:
 
 class PCloudService:
     def __init__(self) -> None:
-        self._auth: Optional[str] = None
+        self._auth: str | None = None
         self._host: str = PCLOUD_HOSTS[0]
         self._username: str = ""
-        self._userid: Optional[int] = None
+        self._userid: int | None = None
         self._lock = asyncio.Lock()
 
     # ---------- token persistence ----------
@@ -174,7 +174,7 @@ class PCloudService:
         method: str,
         params: dict[str, Any] | None = None,
         *,
-        auth: Optional[str] = None,
+        auth: str | None = None,
     ) -> dict:
         """One pCloud HTTP call. Returns the parsed JSON body or raises
         :class:`PCloudError` when ``result != 0``.
@@ -282,7 +282,7 @@ class PCloudService:
         ``2297``) on the userinfo call when TFA is required. We translate
         those into a clearer Chinese message pointing at the cause.
         """
-        first_error: Optional[PCloudError] = None
+        first_error: PCloudError | None = None
         user_lower = username.strip().lower()
         for host in PCLOUD_HOSTS:
             host_label = "US" if "eapi" not in host else "EU"
@@ -356,8 +356,8 @@ class PCloudService:
                 )
             )
 
-            data: Optional[dict] = None
-            last_attempt_error: Optional[PCloudError] = None
+            data: dict | None = None
+            last_attempt_error: PCloudError | None = None
             for kind, params in attempts:
                 logger.info(
                     "pCloud login attempt user=%s host=%s method=%s pw_len=%d",
@@ -556,7 +556,7 @@ class PCloudService:
         # the longest possible lifetime: 1 year hard cap, with each API
         # call sliding the inactivity window forward.
         MAX_TTL = 31_536_000
-        first_error: Optional[PCloudError] = None
+        first_error: PCloudError | None = None
         for host in PCLOUD_HOSTS:
             try:
                 data = await self._raw_request(host, "userinfo", auth=token)
@@ -655,9 +655,9 @@ class PCloudService:
 
     async def login(
         self,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        access_token: Optional[str] = None,
+        username: str | None = None,
+        password: str | None = None,
+        access_token: str | None = None,
     ) -> dict:
         """Explicit login. Caller can supply either username+password OR
         a raw access token (e.g. from pCloud's developer page). Token
@@ -889,7 +889,7 @@ class PCloudService:
         seq = 0
         here = self._folder_param(str(folder_id))
 
-        for idx, child in enumerate(children, start=1):
+        for _idx, child in enumerate(children, start=1):
             await asyncio.sleep(0.02)
             kind = "folder" if child.kind == "folder" else "file"
             code = extract_jav_code(child.name)
@@ -1056,10 +1056,10 @@ class PCloudService:
     async def _resolve_target_id(
         self,
         target_path: str,
-        target_cache: dict[str, tuple[Optional[int], set[str]]],
+        target_cache: dict[str, tuple[int | None, set[str]]],
         *,
         dry_run: bool,
-    ) -> tuple[Optional[int], set[str]]:
+    ) -> tuple[int | None, set[str]]:
         """Resolve ``target_path`` to ``(folder_id, sibling_names)``,
         memoised in ``target_cache``. ``dry_run`` uses read-only
         :meth:`lookup_path` (returns ``(None, set())`` when the folder
@@ -1078,7 +1078,7 @@ class PCloudService:
 
     async def _resolve_listing_with_retry(
         self, code: str, timeout: float
-    ) -> tuple[str, Optional[tuple[str, str]]]:
+    ) -> tuple[str, tuple[str, str] | None]:
         """Two-attempt JavBus lookup wrapping :func:`resolve_listing_loose`.
 
         Returns ``(status, resolved)``:
@@ -1100,7 +1100,7 @@ class PCloudService:
                     resolve_listing_loose(code), timeout=timeout
                 )
                 return ("ok", resolved) if resolved is not None else ("none", None)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if attempt == 1:
                     logger.info(
                         "pCloud organize: JavBus timeout for %s, "
@@ -1118,7 +1118,7 @@ class PCloudService:
         taken: set[str],
         *,
         dry_run: bool,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Move ``keeper`` to ``target_folder_id`` renamed ``<code>.<ext>``.
 
         Returns the final name on success, or ``None`` if the move call
@@ -1221,7 +1221,7 @@ class PCloudService:
         # Per-run cache: target path → (target_id, taken_names). Avoids
         # re-walking ``lookup_path`` and re-listing siblings for every
         # child that maps to the same tracked listing.
-        target_cache: dict[str, tuple[Optional[int], set[str]]] = {}
+        target_cache: dict[str, tuple[int | None, set[str]]] = {}
 
         # Names already present at ``folder_id`` itself — the collision
         # set for uncategorised in-place flattens (video pulled out of a
@@ -1541,13 +1541,13 @@ class PCloudService:
             meta = data.get("metadata") or {}
             try:
                 parent_id = int(meta.get("folderid", 0))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
                 raise PCloudError(
                     f"pCloud 無法建立或解析資料夾: {seg} (path={path})"
-                )
+                ) from exc
         return parent_id
 
-    async def lookup_path(self, path: str) -> Optional[int]:
+    async def lookup_path(self, path: str) -> int | None:
         """Read-only twin of :meth:`ensure_path`.
 
         Walks ``/a/b/c`` segment-by-segment and returns the leaf folder

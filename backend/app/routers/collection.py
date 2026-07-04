@@ -267,7 +267,7 @@ async def send_by_codes_stream(payload: dict = Body(...)):
     options_data = {k: v for k, v in payload.items() if k != "codes"}
     try:
         options = SendAllOptions(**options_data)
-    except Exception:
+    except Exception:  # noqa: BLE001 — bad options fall back to defaults
         options = SendAllOptions()
 
     async def gen():

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 
-
 # Video extensions that BT release tools often append directly into the
 # folder name itself (``SACE022MP4`` rather than ``SACE-022/SACE022.mp4``).
 # Treated as part of the noise so the code extractor can see past it.

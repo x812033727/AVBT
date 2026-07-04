@@ -18,8 +18,9 @@ import asyncio
 import logging
 import random
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -48,6 +49,8 @@ def _safe_code(code: str) -> str:
 # same path without importing the archiver (which would cycle).
 from .jav_code import (  # noqa: E402
     extract_jav_code_full,
+)
+from .jav_code import (  # noqa: E402
     safe_folder_name as _safe_name,
 )
 
@@ -654,8 +657,8 @@ async def _flatten_swept_wrappers(
     PikPakFile stub from the post-move metadata — _resolve_folder_winner
     only reads .id / .name / .kind, so a fresh server fetch is
     unnecessary. Returns the count of wrappers actually flattened."""
-    from .reorganize import _resolve_folder_winner
     from ..schemas import PikPakFile
+    from .reorganize import _resolve_folder_winner
 
     flattened = 0
     for folder_id, parent_id, code, leaf in wrappers:

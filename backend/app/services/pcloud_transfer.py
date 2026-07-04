@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import func, select, update
 
@@ -50,8 +49,8 @@ class PCloudTransferQueue:
     def __init__(self) -> None:
         self._wakeup = asyncio.Event()
         self._stop = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self._poll_task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
+        self._poll_task: asyncio.Task | None = None
         self._inflight: set[int] = set()
 
     # ---------- lifecycle ----------
@@ -130,7 +129,7 @@ class PCloudTransferQueue:
         pcloud_folder_id: int,
         pcloud_folder_path: str,
         delete_source: bool,
-        parent_id: Optional[int] = None,
+        parent_id: int | None = None,
     ) -> list[int]:
         """Insert one row per file. ``files`` items look like
         ``{file_id, name, size, source_path}``. Returns the new DB ids."""
@@ -220,7 +219,7 @@ class PCloudTransferQueue:
                 continue
             try:
                 await asyncio.wait_for(self._wakeup.wait(), timeout=30.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     async def _claim_pending(self, limit: int) -> list[int]:

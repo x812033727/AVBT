@@ -16,10 +16,9 @@ from ..schemas import (
     TrackedListingIn,
     TrackedListingOut,
 )
+from ..scrapers import javbus as scraper
 from ..services import missing as missing_svc
 from ..services import tracker
-from ..scrapers import javbus as scraper
-from ..scrapers.javbus import LISTING_KINDS
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 
@@ -198,7 +197,7 @@ async def upsert_tracked(
                 resolved_name = await scraper.fetch_listing_title(
                     kind, slug, uncensored=payload.uncensored
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 — title fetch is best-effort
                 resolved_name = ""
             if not resolved_name:
                 resolved_name = slug
@@ -222,8 +221,9 @@ async def upsert_tracked(
     # pass [] here — nothing new since baseline) with the catalog's
     # missing-from-PikPak set, and pushes both into the global queue.
     if auto_send_just_enabled:
-        from ..services.tracker import _enqueue_auto_send  # local: avoid cycles
         import asyncio
+
+        from ..services.tracker import _enqueue_auto_send  # local: avoid cycles
         asyncio.create_task(_enqueue_auto_send(kind, slug, []))
 
     # The tracked-listing set changed (or its display name did); drop

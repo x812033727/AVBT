@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -470,7 +471,7 @@ async def offline_download_bulk(items: list[OfflineSubmit]):
     other in-flight jobs. Returns one ``PikPakTask`` per input item,
     using ``phase`` to surface the queue outcome (PENDING / DUPLICATE /
     ERROR)."""
-    jobs: list[tuple[OfflineSubmit, "asyncio.Future"]] = []
+    jobs: list[tuple[OfflineSubmit, asyncio.Future]] = []
     for it in items:
         job = Job(
             code=it.code,

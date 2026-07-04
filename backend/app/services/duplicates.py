@@ -22,12 +22,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from .jav_code import extract_jav_code
 from .pcloud import pcloud_service
 from .pikpak import pikpak_service
-
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,7 @@ async def _walk_codes(
         results = await asyncio.gather(
             *[_list(fid) for fid, _p, _d in layer], return_exceptions=True
         )
-        for (folder_id, folder_path, depth), res in zip(layer, results):
+        for (folder_id, folder_path, depth), res in zip(layer, results, strict=True):
             folders_done += 1
             if isinstance(res, Exception):
                 # A failure listing the root (depth 0) is almost always a

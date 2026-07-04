@@ -60,7 +60,7 @@ class RateLimiter:
         self._last = 0.0
         self._lock = asyncio.Lock()
 
-    async def __aenter__(self) -> "RateLimiter":
+    async def __aenter__(self) -> RateLimiter:
         await self._sem.acquire()
         async with self._lock:
             wait = self._last + self._cur - time.monotonic()
@@ -163,7 +163,7 @@ def _get_client() -> httpx.AsyncClient:
     return _shared_client
 
 
-from ..schemas import (
+from ..schemas import (  # noqa: E402 — after module-level client setup
     ActressRef,
     GenreRef,
     LinkRef,
@@ -599,7 +599,7 @@ async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) ->
             return ""
         from ..services.jav_code import clean_listing_name  # avoid cycle
         return clean_listing_name(_parse_listing_title(html))
-    except Exception:
+    except Exception:  # noqa: BLE001 — listing title is best-effort
         return ""
 
 

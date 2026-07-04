@@ -66,7 +66,7 @@ async def walk_listing(
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for page, res in zip(batch_pages, results):
+        for page, res in zip(batch_pages, results, strict=True):
             if isinstance(res, BaseException):
                 logger.warning(
                     "fetch_listing(%s/%s p=%d) failed: %s", kind, slug, page, res

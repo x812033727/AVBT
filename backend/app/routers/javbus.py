@@ -3,8 +3,6 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from ..scrapers import javbus as scraper
-from ..scrapers.javbus import JavbusBlocked
 from ..schemas import (
     MovieDetail,
     SearchResult,
@@ -12,6 +10,8 @@ from ..schemas import (
     SendAllResult,
     StarProfile,
 )
+from ..scrapers import javbus as scraper
+from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
 
 router = APIRouter(prefix="/api/javbus", tags=["javbus"])

@@ -34,9 +34,10 @@ import asyncio
 import logging
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Literal
 
 from sqlalchemy import insert, select
 
@@ -94,14 +95,14 @@ class Job:
     # Used by /api/pikpak/offline where the caller already has a magnet.
     direct_magnet: str = ""
     force: bool = False
-    folder: Optional[str] = None
+    folder: str | None = None
     # Snapshot of the tracked listing context at enqueue time. When all
     # three are populated, the archiver can route this code to the
     # right kind/name folder without a JavBus fetch_detail call.
     tracked_kind: str = ""
     tracked_slug: str = ""
     tracked_name: str = ""
-    on_sent: Optional[Callable[[str], Awaitable[None]]] = None
+    on_sent: Callable[[str], Awaitable[None]] | None = None
     enqueued_at: datetime = field(default_factory=datetime.utcnow)
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
 

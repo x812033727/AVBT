@@ -11,8 +11,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 from pikpakapi import PikPakApi
 
@@ -316,7 +317,7 @@ def _is_count_exceeded_error(exc: BaseException) -> bool:
 
 class PikPakService:
     def __init__(self) -> None:
-        self._client: Optional[PikPakApi] = None
+        self._client: PikPakApi | None = None
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
         self._username: str = ""
@@ -366,7 +367,7 @@ class PikPakService:
         kwargs.setdefault("token_refresh_callback", self._on_token_refresh)
         return kwargs
 
-    async def _on_token_refresh(self, client: "PikPakApi", **_: Any) -> None:
+    async def _on_token_refresh(self, client: PikPakApi, **_: Any) -> None:
         try:
             token = getattr(client, "encoded_token", "") or ""
             if token:
@@ -393,7 +394,7 @@ class PikPakService:
         self._clear_token()
 
     async def _ensure(
-        self, username: Optional[str] = None, password: Optional[str] = None
+        self, username: str | None = None, password: str | None = None
     ) -> PikPakApi:
         async with self._lock:
             # Explicit credentials → force re-login
@@ -441,7 +442,7 @@ class PikPakService:
             self._folder_cache.clear()
             return self._client
 
-    async def _drop_for_relogin(self, current: Optional[PikPakApi]) -> None:
+    async def _drop_for_relogin(self, current: PikPakApi | None) -> None:
         """Forget the cached client + stored token so the next ``_ensure``
         forces a fresh login from env credentials. Only acts when the
         passed-in client is still the one we have cached — protects
@@ -471,7 +472,7 @@ class PikPakService:
             if timeout > 0:
                 try:
                     return await asyncio.wait_for(op(c), timeout=timeout)
-                except asyncio.TimeoutError as exc:
+                except TimeoutError as exc:
                     raise PikPakError(
                         f"PikPak API 逾時 ({timeout:.0f}s)"
                     ) from exc
@@ -492,7 +493,7 @@ class PikPakService:
             return await _run(client)
 
     async def login(
-        self, username: Optional[str] = None, password: Optional[str] = None
+        self, username: str | None = None, password: str | None = None
     ) -> dict:
         client = await self._ensure(username, password)
         return {
@@ -544,7 +545,7 @@ class PikPakService:
             expire=quota.get("expires_at") or quota.get("expire"),
         )
 
-    async def folder_id(self, name: Optional[str]) -> str:
+    async def folder_id(self, name: str | None) -> str:
         if not name:
             return ""
         if name in self._folder_cache:
@@ -557,7 +558,7 @@ class PikPakService:
         self._folder_cache[name] = folder_id or ""
         return self._folder_cache[name]
 
-    async def lookup_folder_id(self, name: Optional[str]) -> str:
+    async def lookup_folder_id(self, name: str | None) -> str:
         """Like ``folder_id`` but does NOT auto-create missing segments.
         Returns ``""`` when the path doesn't exist."""
         if not name:

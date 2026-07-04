@@ -387,10 +387,6 @@ export type CheckListingResult = {
   error: string;
 };
 
-// Legacy aliases.
-export type TrackedActress = TrackedListing;
-export type CheckActressResult = CheckListingResult;
-
 export const TRACKED_LABELS: Record<TrackedKind, string> = {
   star: "女優",
   studio: "製作商",

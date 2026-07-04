@@ -11,7 +11,7 @@ import {
   type HistoryPage,
   type PikPakStatus,
   type PikPakTask,
-  type TrackedActress,
+  type TrackedListing,
   type TrackerStatus,
 } from "@/lib/api";
 
@@ -42,7 +42,7 @@ type Stats = {
   archiver: ArchiverStatus | null;
   tracker: TrackerStatus | null;
   collection: CollectionItem[];
-  tracked: TrackedActress[];
+  tracked: TrackedListing[];
   tasks: PikPakTask[];
   history: HistoryPage | null;
 };
@@ -67,7 +67,7 @@ export default function DashboardPage() {
       api.get<ArchiverStatus>("/api/pikpak/archiver"),
       api.get<TrackerStatus>("/api/tracked/status"),
       api.get<CollectionItem[]>("/api/collection"),
-      api.get<TrackedActress[]>("/api/tracked"),
+      api.get<TrackedListing[]>("/api/tracked"),
       api.get<PikPakTask[]>("/api/pikpak/tasks"),
       api.get<HistoryPage>("/api/collection/history?limit=10"),
     ]).then((rs) => {

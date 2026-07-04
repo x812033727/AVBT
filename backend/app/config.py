@@ -11,11 +11,6 @@ class Settings(BaseSettings):
     pikpak_password: str = ""
     pikpak_download_folder: str = "AVBT"
 
-    # pCloud credentials (optional). When set, the pCloud service uses
-    # these to re-login automatically if its cached auth token gets
-    # invalidated; otherwise the user must log in once via /settings.
-    pcloud_username: str = ""
-    pcloud_password: str = ""
     # Per-call HTTP timeout for pCloud API requests; same role as
     # ``pikpak_api_timeout_seconds``. 0 disables.
     pcloud_api_timeout_seconds: float = 60.0
@@ -82,8 +77,8 @@ class Settings(BaseSettings):
     pikpak_label_folder: str = ""
     pikpak_director_folder: str = ""
 
-    # Actress tracker: every N seconds, check JavBus for new works of
-    # every TrackedActress row.
+    # Listing tracker: every N seconds, check JavBus for new works of
+    # every TrackedListing row.
     tracker_enabled: bool = True
     tracker_interval_seconds: int = 3600  # 1 hour
     tracker_auto_send_hd_only: bool = True
@@ -156,6 +151,34 @@ class Settings(BaseSettings):
     # `{"content": "..."}` which is compatible with Discord webhooks.
     webhook_url: str = ""
 
+    # ----- Telegram 通知(選用) -----
+    # 兩者皆設定時,通知會同時發到 webhook 與 Telegram。
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # 各事件的預設開關(可在設定頁調整,調整值存 DB 並優先於這裡)。
+    notify_tracked_new: bool = True
+    notify_archive_done: bool = True
+    notify_archive_failed: bool = True
+    # PikPak 不穩時失敗通知可能很吵,預設關閉。
+    notify_download_failed: bool = False
+
+    # 允許的前端來源(CORS),逗號分隔。含 "*" 時視為全開(此時
+    # 瀏覽器規範強制 allow_credentials=False)。
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # 圖片代理白名單:逗號分隔的域名後綴(".javbus.com" 匹配所有子網
+    # 域;寫完整域名則精確匹配)。留空時由 javbus_base_url 派生並附上
+    # 常見 JavBus 圖片 CDN。代理是無認證端點,白名單 + DNS 私有位址
+    # 檢查防止它被當開放代理 / SSRF 跳板。
+    img_proxy_allowed_hosts: str = ""
+
+    # ----- 自動資料庫備份 -----
+    # 每隔 N 小時把 SQLite 用 online-backup API 複製到
+    # data/backups/avbt-<timestamp>.db,保留最新 keep 份。
+    auto_backup_enabled: bool = True
+    auto_backup_interval_hours: int = 24
+    auto_backup_keep: int = 7
+
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 
     # ----- 登入門禁 -----
@@ -185,6 +208,45 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def cors_origin_list() -> list[str]:
+    """Parsed ``cors_origins``. ``*`` anywhere collapses to wildcard."""
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if "*" in origins:
+        return ["*"]
+    return origins
+
+
+# Image CDN suffixes JavBus covers/avatars are actually served from.
+# Suffix entries (leading dot) match any subdomain; bare entries match
+# the exact host.
+_IMG_PROXY_DEFAULT_SUFFIXES = (
+    ".javbus.com",
+    ".javbus22.com",
+    ".dmm.co.jp",
+    ".dmm.com",
+    ".buscdn.art",
+    ".buscdn.cloud",
+)
+
+
+def img_proxy_allowed_hosts() -> tuple[str, ...]:
+    """Host allowlist for the image proxy.
+
+    ``IMG_PROXY_ALLOWED_HOSTS`` entries are ADDED to the defaults (the
+    default list must keep working or every thumbnail breaks)."""
+    from urllib.parse import urlparse
+
+    hosts: list[str] = list(_IMG_PROXY_DEFAULT_SUFFIXES)
+    base_host = (urlparse(settings.javbus_base_url).hostname or "").lower()
+    if base_host:
+        hosts.append(base_host)
+    for entry in settings.img_proxy_allowed_hosts.split(","):
+        entry = entry.strip().lower()
+        if entry:
+            hosts.append(entry)
+    return tuple(dict.fromkeys(hosts))
 
 
 _TRACKED_KINDS = ("star", "series", "studio", "label", "director")

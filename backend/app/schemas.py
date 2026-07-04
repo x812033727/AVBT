@@ -138,12 +138,6 @@ class CheckListingResult(BaseModel):
     error: str = ""
 
 
-# Kept for backwards compat with old backup files.
-TrackedActressIn = TrackedListingIn
-TrackedActressOut = TrackedListingOut
-CheckActressResult = CheckListingResult
-
-
 class CollectionOut(CollectionIn):
     created_at: datetime
     updated_at: datetime

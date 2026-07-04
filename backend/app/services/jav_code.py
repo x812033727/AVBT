@@ -35,11 +35,11 @@ _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _SPLIT_RE = re.compile(r"(\d{0,4}[A-Z]{2,8})(\d{2,6})$", re.IGNORECASE)
 _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 
-# Numeric prefixes were once whitelisted as part of the canonical code
-# (300MIUM, 259LUXU, 200GANA, …). In practice JavBus catalogs these
-# without the prefix — e.g. the series listing for 60b shows MIUM-1098,
-# not 300MIUM-1098 — so keeping them on the PikPak side meant the
-# presence index never matched. Strip every leading digit cluster.
+# Numeric prefixes (300MIUM, 259LUXU, 200GANA, …) are ALWAYS stripped
+# from the canonical code: JavBus catalogs these without the prefix —
+# e.g. the series listing for 60b shows MIUM-1098, not 300MIUM-1098 —
+# so keeping them on the PikPak side meant the presence index never
+# matched.
 #
 # The detail PAGE for these labels, however, often lives only under the
 # prefixed id (``/259LUXU-1543``); the stripped code 404s. Series
@@ -48,7 +48,6 @@ _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 # search to recover the prefixed id when the bare code's detail is empty —
 # so these works still get archived under their series instead of stranded
 # in the fallback bucket.
-KNOWN_NUMERIC_PREFIXES: frozenset[str] = frozenset()
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",
@@ -99,8 +98,8 @@ def extract_jav_code(name: str) -> str | None:
     Pipeline: strip extension → scan for every code-like substring → take
     the LAST match (real codes sit at the tail of dirty BT names) →
     upper-case → re-insert a hyphen if the form was squished
-    (``483DAM043`` → ``483DAM-043``) → drop a leading digit cluster
-    unless it belongs to a known numeric-prefix label.
+    (``483DAM043`` → ``483DAM-043``) → drop any leading digit cluster
+    (``259LUXU-1543`` → ``LUXU-1543``).
     Returns None when nothing matches.
 
     A single trailing letter (``SDMM-14903C``, ``ABP-123A``) is allowed
@@ -120,7 +119,7 @@ def extract_jav_code(name: str) -> str | None:
             return None
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
-    if m and m.group(1) not in KNOWN_NUMERIC_PREFIXES:
+    if m:
         return m.group(2)
     return raw
 
@@ -171,7 +170,7 @@ def extract_jav_code_full(name: str) -> str | None:
             return None
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
-    if m and m.group(1) not in KNOWN_NUMERIC_PREFIXES:
+    if m:
         return m.group(2) + tail
     return raw + tail
 

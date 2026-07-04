@@ -454,12 +454,9 @@ async def _sweep_legacy_archive_stream() -> AsyncIterator[dict]:
         try:
             from . import missing as missing_svc  # avoid cycle
             await missing_svc.invalidate_all_caches_async(presence=True)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            pikpak_service._folder_cache.clear()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("legacy sweep: presence cache invalidation failed: %s", exc)
+        pikpak_service._folder_cache.clear()
 
     yield {
         "type": "done",
@@ -641,15 +638,12 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         try:
             from . import missing as missing_svc  # avoid cycle
             await missing_svc.invalidate_all_caches_async(presence=True)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("root sweep: presence cache invalidation failed: %s", exc)
         # Folder cache may now point at trashed/renamed wrappers; drop
         # so the next folder_id() relists. reorganize_stream does the
         # same after its mutating runs.
-        try:
-            pikpak_service._folder_cache.clear()
-        except Exception:  # noqa: BLE001
-            pass
+        pikpak_service._folder_cache.clear()
     return moved
 
 
@@ -866,8 +860,8 @@ async def archive_once() -> int:
             try:
                 from . import missing as missing_svc  # avoid cycle
                 await missing_svc.invalidate_all_caches_async(presence=True)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("archive: presence cache invalidation failed: %s", exc)
             for msg in notifications:
                 webhook_queue.enqueue_nowait(msg)
 

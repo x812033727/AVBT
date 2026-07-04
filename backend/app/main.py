@@ -22,7 +22,7 @@ from .routers import (
     notify as notify_router,
 )
 from .scrapers import javbus as scraper
-from .services import archiver, log_cleanup, notify, tracker
+from .services import archiver, auto_backup, log_cleanup, notify, tracker
 from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(archiver.run_loop()),
         asyncio.create_task(tracker.run_loop()),
         asyncio.create_task(log_cleanup.run_loop()),
+        asyncio.create_task(auto_backup.run_loop()),
     ]
     try:
         yield

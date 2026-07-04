@@ -26,26 +26,45 @@ async def run_walk(list_fn, *, max_depth=8, cap=20000):
     return result
 
 
-async def test_codes_collected_with_paths():
+async def test_codes_collected_with_paths_and_ids():
     tree = {
         "root": [item("d1", "女優", kind="folder"), item("f1", "ABP-123.mp4")],
         "d1": [item("f2", "kfa55.com@483DAM-043.mkv")],
     }
     res = await run_walk(tree_lister(tree))
     assert res["codes"] == {
-        "ABP-123": ["ABP-123.mp4"],
-        "DAM-043": ["女優/kfa55.com@483DAM-043.mkv"],
+        "ABP-123": [{"path": "ABP-123.mp4", "id": "f1", "is_folder": False}],
+        "DAM-043": [
+            {
+                "path": "女優/kfa55.com@483DAM-043.mkv",
+                "id": "f2",
+                "is_folder": False,
+            }
+        ],
     }
     assert res["partial"] is False
     assert res["items_seen"] == 3
 
 
-async def test_same_path_not_duplicated_same_code_two_paths():
+async def test_code_folders_are_flagged():
+    tree = {
+        "root": [item("d1", "DAM-043", kind="folder")],
+        "d1": [item("f1", "DAM-043.mp4")],
+    }
+    res = await run_walk(tree_lister(tree))
+    hits = res["codes"]["DAM-043"]
+    assert {h["id"]: h["is_folder"] for h in hits} == {"d1": True, "f1": False}
+
+
+async def test_same_code_two_paths():
     tree = {
         "root": [item("a", "ABP-123.mp4"), item("b", "ABP-123ch.mp4")],
     }
     res = await run_walk(tree_lister(tree))
-    assert sorted(res["codes"]["ABP-123"]) == ["ABP-123.mp4", "ABP-123ch.mp4"]
+    assert sorted(h["path"] for h in res["codes"]["ABP-123"]) == [
+        "ABP-123.mp4",
+        "ABP-123ch.mp4",
+    ]
 
 
 async def test_depth_cap_stops_recursion():
@@ -81,5 +100,5 @@ async def test_child_failure_is_skipped():
         raise RuntimeError("unreadable subfolder")
 
     res = await run_walk(list_fn)
-    assert res["codes"] == {"ABP-111": ["ABP-111.mp4"]}
+    assert [h["path"] for h in res["codes"]["ABP-111"]] == ["ABP-111.mp4"]
     assert res["partial"] is False

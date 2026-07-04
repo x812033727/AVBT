@@ -14,8 +14,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_session
 from ..models import CollectedMovie, OfflineTaskLog, TrackedListing
 from ..scrapers.javbus import extract_btih
+from ..services import auto_backup
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
+
+
+@router.get("/auto/status")
+async def auto_backup_status():
+    return await auto_backup.status()
+
+
+@router.post("/auto/run")
+async def auto_backup_run():
+    try:
+        dest = await auto_backup.run_backup()
+    except Exception as exc:  # noqa: BLE001 — surface as API error
+        raise HTTPException(status_code=500, detail=f"備份失敗: {exc}") from exc
+    return {"ok": True, "file": dest.name, "status": await auto_backup.status()}
 
 
 def _row_to_dict(row: Any, keys: list[str]) -> dict[str, Any]:

@@ -203,6 +203,8 @@ export type Magnet = {
   date: string;
   is_hd: boolean;
   has_subtitle: boolean;
+  /** 名稱偵測到的分集標記("CD2"、"-2"、"上集"…),空字串 = 看起來是單一影片 */
+  part_hint: string;
 };
 
 export type ActressRef = { name: string; id: string };
@@ -607,3 +609,20 @@ export type DashboardStats = {
   pcloud_transfers_by_status: Record<string, number>;
   built_at: string;
 };
+
+// ---------- Video count (分集 vs 單一影片) ----------
+
+export type VideoCountEntry = { path: string; video_count: number };
+
+export type VideoCountResult = {
+  key: string;
+  ok: boolean;
+  video_count: number;
+  video_names: string[];
+  entries: VideoCountEntry[];
+  source: string; // "task" | "presence"
+  partial: boolean;
+  error: string;
+};
+
+export type VideoCountResponse = { results: VideoCountResult[] };

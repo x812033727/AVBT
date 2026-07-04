@@ -26,6 +26,9 @@ class Magnet(BaseModel):
     date: str = ""
     is_hd: bool = False
     has_subtitle: bool = False
+    # Heuristic multipart marker found in the name ("CD2", "-2", "上集"…)
+    # — empty when the name looks like a single video. Display hint only.
+    part_hint: str = ""
 
 
 class ActressRef(BaseModel):
@@ -490,3 +493,36 @@ class DashboardStats(BaseModel):
     # PikPak → pCloud transfers
     pcloud_transfers_by_status: dict[str, int] = Field(default_factory=dict)
     built_at: datetime
+
+# ---------- Video count (分集 vs 單一影片) ----------
+
+class VideoCountItem(BaseModel):
+    """One lookup: ``file_id`` wins when set (pre-archive task content),
+    else ``code`` resolves through the presence index (post-archive)."""
+    key: str
+    file_id: str = ""
+    code: str = ""
+
+
+class VideoCountRequest(BaseModel):
+    items: list[VideoCountItem] = Field(..., min_length=1, max_length=20)
+
+
+class VideoCountEntry(BaseModel):
+    path: str = ""
+    video_count: int = 0
+
+
+class VideoCountResult(BaseModel):
+    key: str
+    ok: bool = False
+    video_count: int = 0
+    video_names: list[str] = Field(default_factory=list)
+    entries: list[VideoCountEntry] = Field(default_factory=list)
+    source: str = ""  # "task" | "presence"
+    partial: bool = False
+    error: str = ""
+
+
+class VideoCountResponse(BaseModel):
+    results: list[VideoCountResult] = Field(default_factory=list)

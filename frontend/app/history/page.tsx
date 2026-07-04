@@ -2,7 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, btih, type HistoryPage } from "@/lib/api";
+import {
+  api,
+  btih,
+  type HistoryItem,
+  type HistoryPage,
+  type VideoCountResponse,
+  type VideoCountResult,
+} from "@/lib/api";
 import { confirmDialog, toast } from "@/components/Toast";
 
 const PAGE_SIZE = 50;
@@ -40,6 +47,8 @@ export default function HistoryListPage() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [counts, setCounts] = useState<Record<number, VideoCountResult | "loading">>({});
+  const [counting, setCounting] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -100,6 +109,53 @@ export default function HistoryListPage() {
       load();
     } catch (e: any) {
       toast.error(e.message);
+    }
+  }
+
+  // 影片數查詢:已歸檔列用番號解析(歸檔時 wrapper 會被扁平化,
+  // file_id 已失效);未歸檔列直接查任務的 file_id。
+  function countEligible(it: HistoryItem): boolean {
+    return (it.archived && !!it.code) || !!it.file_id;
+  }
+
+  function countItemFor(it: HistoryItem) {
+    if (it.archived && it.code) return { key: String(it.id), code: it.code };
+    return { key: String(it.id), file_id: it.file_id };
+  }
+
+  async function fetchCounts(rows: HistoryItem[]) {
+    const targets = rows.filter((it) => countEligible(it) && !counts[it.id]);
+    if (!targets.length) return;
+    setCounting(true);
+    setCounts((prev) => {
+      const next = { ...prev };
+      for (const it of targets) next[it.id] = "loading";
+      return next;
+    });
+    try {
+      for (let i = 0; i < targets.length; i += 20) {
+        const chunk = targets.slice(i, i + 20);
+        const res = await api.post<VideoCountResponse>(
+          "/api/pikpak/files/video-count",
+          { items: chunk.map(countItemFor) }
+        );
+        setCounts((prev) => {
+          const next = { ...prev };
+          for (const r of res.results) next[Number(r.key)] = r;
+          return next;
+        });
+      }
+    } catch (e: any) {
+      toast.error(`影片數查詢失敗:${e.message}`);
+      setCounts((prev) => {
+        const next = { ...prev };
+        for (const it of targets) {
+          if (next[it.id] === "loading") delete next[it.id];
+        }
+        return next;
+      });
+    } finally {
+      setCounting(false);
     }
   }
 
@@ -273,6 +329,15 @@ export default function HistoryListPage() {
         <button type="submit" className="btn-ghost" disabled={loading}>
           {loading ? "讀取中…" : "刷新"}
         </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={counting || !data?.items.some((it) => countEligible(it) && !counts[it.id])}
+          onClick={() => data && fetchCounts(data.items)}
+          title="向 PikPak 查詢本頁每筆任務實際的影片檔數(分集/單一)"
+        >
+          {counting ? "查詢中…" : "查詢本頁影片數"}
+        </button>
         {data && (
           <div className="ml-auto text-xs text-white/50">
             共 {data.total} 筆,第 {page} / {Math.max(totalPages, 1)} 頁
@@ -310,6 +375,7 @@ export default function HistoryListPage() {
                 <th className="px-3 py-2">名稱 / 磁力</th>
                 <th className="w-28 px-3 py-2">狀態</th>
                 <th className="w-32 px-3 py-2">歸檔</th>
+                <th className="w-24 px-3 py-2">影片數</th>
                 <th className="w-16 px-3 py-2">操作</th>
               </tr>
             </thead>
@@ -368,6 +434,13 @@ export default function HistoryListPage() {
                     ) : (
                       <span className="text-white/30">—</span>
                     )}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <VideoCountCell
+                      state={counts[it.id]}
+                      eligible={countEligible(it)}
+                      onQuery={() => fetchCounts([it])}
+                    />
                   </td>
                   <td className="px-3 py-2">
                     <button
@@ -437,5 +510,62 @@ export default function HistoryListPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+function VideoCountCell({
+  state,
+  eligible,
+  onQuery,
+}: {
+  state: VideoCountResult | "loading" | undefined;
+  eligible: boolean;
+  onQuery: () => void;
+}) {
+  if (!eligible) return <span className="text-white/30">—</span>;
+  if (state === undefined) {
+    return (
+      <button
+        onClick={onQuery}
+        className="rounded border border-white/10 px-2 py-0.5 text-white/50 hover:bg-white/10"
+        title="向 PikPak 查詢實際影片檔數"
+      >
+        查
+      </button>
+    );
+  }
+  if (state === "loading") return <span className="text-white/40">…</span>;
+  if (!state.ok) {
+    return (
+      <span className="text-white/30" title={state.error}>
+        —
+      </span>
+    );
+  }
+  const tip =
+    state.video_names.join("\n") ||
+    state.entries.map((e) => `${e.path}(${e.video_count})`).join("\n") ||
+    undefined;
+  if (state.video_count > 1) {
+    return (
+      <span
+        className="rounded bg-amber-400/20 px-2 py-0.5 text-amber-200"
+        title={tip}
+      >
+        多集 {state.video_count}
+      </span>
+    );
+  }
+  if (state.video_count === 1) {
+    return (
+      <span className="text-white/60" title={tip}>
+        單一
+      </span>
+    );
+  }
+  return (
+    <span className="text-white/40" title="任務裡目前沒有影片檔(可能還在下載)">
+      0
+    </span>
   );
 }

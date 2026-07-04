@@ -5,12 +5,19 @@ import { useEffect, useState } from "react";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
 import { toast } from "@/components/Toast";
-import { api, imgProxy, type MovieDetail } from "@/lib/api";
+import {
+  api,
+  imgProxy,
+  type MovieDetail,
+  type VideoCountResponse,
+  type VideoCountResult,
+} from "@/lib/api";
 
 export default function MoviePage({ params }: { params: { code: string } }) {
   const code = decodeURIComponent(params.code);
   const [data, setData] = useState<MovieDetail | null>(null);
   const [sentHashes, setSentHashes] = useState<Set<string>>(new Set());
+  const [cloudCount, setCloudCount] = useState<VideoCountResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingMsg, setSavingMsg] = useState<string | null>(null);
 
@@ -30,6 +37,16 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         if (alive) setError(e.message);
       }
     })();
+    // Best-effort: how many video files does this code actually have on
+    // PikPak? Independent of the detail fetch — never blocks the page.
+    api
+      .post<VideoCountResponse>("/api/pikpak/files/video-count", {
+        items: [{ key: code, code }],
+      })
+      .then((r) => {
+        if (alive && r.results[0]?.ok) setCloudCount(r.results[0]);
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };
@@ -106,6 +123,30 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             <RefInfo k="製作商" kind="studio" ref={data.studio} />
             <RefInfo k="發行商" kind="label" ref={data.label} />
             <RefInfo k="系列" kind="series" ref={data.series} />
+            {cloudCount && (
+              <>
+                <dt className="text-white/40">雲端影片</dt>
+                <dd
+                  title={
+                    (cloudCount.entries.length
+                      ? cloudCount.entries
+                          .map((e) => `${e.path}(${e.video_count})`)
+                          .join("\n")
+                      : cloudCount.video_names.join("\n")) || undefined
+                  }
+                >
+                  {cloudCount.video_count > 1 ? (
+                    <span className="text-amber-300">
+                      {cloudCount.video_count} 部(分集)
+                    </span>
+                  ) : cloudCount.video_count === 1 ? (
+                    <span>1 部(單一影片)</span>
+                  ) : (
+                    <span className="text-white/50">下載中(尚無影片檔)</span>
+                  )}
+                </dd>
+              </>
+            )}
           </dl>
           {!!data.actresses.length && (
             <div className="flex flex-wrap gap-1">

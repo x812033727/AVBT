@@ -762,6 +762,20 @@ class PikPakService:
     async def download_url(self, file_id: str) -> str:
         return (await self.file_links(file_id))["download_url"]
 
+    async def file_meta(self, file_id: str) -> dict:
+        """Name/kind metadata for a single file id. Rides the same
+        files/{id} lookup as ``file_links`` — the response carries the
+        file object, which is all we need to tell a bare file from a
+        folder without listing its parent."""
+        resp = await self._call(lambda c: c.get_download_url(file_id))
+        if not isinstance(resp, dict):
+            return {}
+        return {
+            "id": resp.get("id", file_id) or file_id,
+            "name": resp.get("name", "") or "",
+            "kind": resp.get("kind", "") or "",
+        }
+
     async def search_files(self, keyword: str, parent_id: str = "") -> list[PikPakFile]:
         # PikPakAPI exposes file_list_search or similar; fall back to a
         # client-side filter if not available in the installed version.

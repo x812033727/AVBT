@@ -270,6 +270,14 @@ export default function MagnetTable({
                   <div className="mt-1 flex flex-wrap gap-1">
                     {m.is_hd && <span className="tag-hd">高清</span>}
                     {m.has_subtitle && <span className="tag-sub">字幕</span>}
+                    {m.part_hint && (
+                      <span
+                        className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-200"
+                        title={`名稱含分集標記:${m.part_hint}(僅供參考,實際檔案數以下載後為準)`}
+                      >
+                        可能分集
+                      </span>
+                    )}
                     {sent && (
                       <span className="rounded bg-emerald-400/20 px-2 py-0.5 text-xs text-emerald-200">
                         已送過

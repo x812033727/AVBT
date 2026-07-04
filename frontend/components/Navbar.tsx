@@ -7,6 +7,7 @@ import { clearToken } from "@/lib/api";
 
 const TABS = [
   { href: "/", label: "首頁" },
+  { href: "/dashboard", label: "統計" },
   { href: "/search", label: "搜尋" },
   { href: "/collection", label: "收藏" },
   { href: "/tracked", label: "追蹤" },

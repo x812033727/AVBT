@@ -5,6 +5,9 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: sqlite+aiosqlite:////app/data/avbt.db
+      # Frontend origins allowed by CORS. When serving through nginx or a
+      # non-localhost host, set CORS_ORIGINS in .env (comma-separated).
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     volumes:
       - ./backend/data:/app/data
     ports:

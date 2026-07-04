@@ -8,7 +8,7 @@ import {
   imgProxy,
   type SearchResult,
   type StarProfile,
-  type TrackedActress,
+  type TrackedListing,
 } from "@/lib/api";
 
 export default function StarPage({ params }: { params: { id: string } }) {
@@ -17,7 +17,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
   const [profile, setProfile] = useState<StarProfile | null>(null);
-  const [tracked, setTracked] = useState<TrackedActress | null>(null);
+  const [tracked, setTracked] = useState<TrackedListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,7 +30,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
       .then((p) => alive && setProfile(p))
       .catch(() => alive && setProfile(null));
     api
-      .get<TrackedActress>(`/api/tracked/star/${encodeURIComponent(id)}`)
+      .get<TrackedListing>(`/api/tracked/star/${encodeURIComponent(id)}`)
       .then((t) => alive && setTracked(t))
       .catch(() => alive && setTracked(null));
     return () => {
@@ -43,7 +43,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
       await api.del(`/api/tracked/star/${encodeURIComponent(id)}`);
       setTracked(null);
     } else {
-      const t = await api.post<TrackedActress>("/api/tracked", {
+      const t = await api.post<TrackedListing>("/api/tracked", {
         kind: "star",
         id,
         name: profile?.name || id,
@@ -57,7 +57,7 @@ export default function StarPage({ params }: { params: { id: string } }) {
 
   async function toggleAutoSend() {
     if (!tracked) return;
-    const t = await api.post<TrackedActress>("/api/tracked", {
+    const t = await api.post<TrackedListing>("/api/tracked", {
       ...tracked,
       auto_send: !tracked.auto_send,
     });

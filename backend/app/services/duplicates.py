@@ -22,12 +22,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from .jav_code import extract_jav_code
 from .pcloud import pcloud_service
 from .pikpak import pikpak_service
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,9 @@ async def _walk_codes(
 
     Yields ``{"kind": "progress", folders_done, items_seen, codes}`` every
     few folders, then a terminal ``{"kind": "result", codes, items_seen,
-    folders_done, partial}`` where ``codes`` is ``{code: [paths]}``.
+    folders_done, partial}`` where ``codes`` is
+    ``{code: [{path, id, is_folder}]}`` — ids are kept so the duplicates
+    page can trash selected hits without a second lookup.
     """
     sem = asyncio.Semaphore(_LIST_CONCURRENCY)
 
@@ -64,7 +65,7 @@ async def _walk_codes(
         async with sem:
             return await list_fn(parent_id)
 
-    codes: dict[str, list[str]] = {}
+    codes: dict[str, list[dict]] = {}
     queue: deque[tuple[str, str, int]] = deque([(root_id, "", 0)])
     folders_done = 0
     items_seen = 0
@@ -77,7 +78,7 @@ async def _walk_codes(
         results = await asyncio.gather(
             *[_list(fid) for fid, _p, _d in layer], return_exceptions=True
         )
-        for (folder_id, folder_path, depth), res in zip(layer, results):
+        for (folder_id, folder_path, depth), res in zip(layer, results, strict=True):
             folders_done += 1
             if isinstance(res, Exception):
                 # A failure listing the root (depth 0) is almost always a
@@ -99,11 +100,16 @@ async def _walk_codes(
                 code = extract_jav_code(child.name)
                 if code:
                     bucket = codes.setdefault(code, [])
-                    if (
-                        len(bucket) < _PATHS_PER_CODE_CAP
-                        and child_path not in bucket
+                    if len(bucket) < _PATHS_PER_CODE_CAP and all(
+                        h["path"] != child_path for h in bucket
                     ):
-                        bucket.append(child_path)
+                        bucket.append(
+                            {
+                                "path": child_path,
+                                "id": str(child.id),
+                                "is_folder": child.kind in folder_kinds,
+                            }
+                        )
                 if child.kind in folder_kinds and depth < max_depth:
                     queue.append((child.id, child_path, depth + 1))
                 if items_seen >= cap:
@@ -144,7 +150,8 @@ async def find_duplicates_stream(
       ``start``    { pikpak_folder_id, pcloud_folder_id }
       ``progress`` { side: "pikpak"|"pcloud", folders_done, items_seen, codes }
       ``error``    { side?, message }
-      ``done``     { result: { duplicates: [{code, pikpak_paths, pcloud_paths}],
+      ``done``     { result: { duplicates: [{code, pikpak_files, pcloud_files}],
+                               each file = {path, id, is_folder},
                                duplicate_count, pikpak_codes, pcloud_codes,
                                pikpak_items, pcloud_items,
                                pikpak_partial, pcloud_partial } }
@@ -197,15 +204,15 @@ async def find_duplicates_stream(
 
     pikpak = collected.get("pikpak", {})
     pcloud = collected.get("pcloud", {})
-    pikpak_codes: dict[str, list[str]] = pikpak.get("codes", {})
-    pcloud_codes: dict[str, list[str]] = pcloud.get("codes", {})
+    pikpak_codes: dict[str, list[dict]] = pikpak.get("codes", {})
+    pcloud_codes: dict[str, list[dict]] = pcloud.get("codes", {})
 
     shared = sorted(set(pikpak_codes) & set(pcloud_codes))
     duplicates = [
         {
             "code": code,
-            "pikpak_paths": pikpak_codes.get(code, []),
-            "pcloud_paths": pcloud_codes.get(code, []),
+            "pikpak_files": pikpak_codes.get(code, []),
+            "pcloud_files": pcloud_codes.get(code, []),
         }
         for code in shared
     ]

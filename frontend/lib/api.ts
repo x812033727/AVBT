@@ -203,6 +203,8 @@ export type Magnet = {
   date: string;
   is_hd: boolean;
   has_subtitle: boolean;
+  /** 名稱偵測到的分集標記("CD2"、"-2"、"上集"…),空字串 = 看起來是單一影片 */
+  part_hint: string;
 };
 
 export type ActressRef = { name: string; id: string };
@@ -386,10 +388,6 @@ export type CheckListingResult = {
   new_codes: string[];
   error: string;
 };
-
-// Legacy aliases.
-export type TrackedActress = TrackedListing;
-export type CheckActressResult = CheckListingResult;
 
 export const TRACKED_LABELS: Record<TrackedKind, string> = {
   star: "女優",
@@ -576,3 +574,55 @@ export type QueueStatus = {
     magnet_name: string;
   }[];
 };
+
+// ---------- Dashboard stats ----------
+
+export type TrendPoint = {
+  date: string; // YYYY-MM-DD
+  sent: number;
+  archived: number;
+};
+
+export type TopItem = { name: string; count: number };
+
+export type TrackedTopItem = {
+  kind: TrackedKind;
+  id: string;
+  name: string;
+  new_count: number;
+};
+
+export type DashboardStats = {
+  collection_total: number;
+  collection_by_status: Record<string, number>;
+  downloads_total: number;
+  downloads_by_phase: Record<string, number>;
+  archived_count: number;
+  archive_rate: number; // 0..1
+  trend: TrendPoint[];
+  tracked_total: number;
+  tracked_by_kind: Record<string, number>;
+  tracked_new_total: number;
+  tracked_top_new: TrackedTopItem[];
+  top_actresses: TopItem[];
+  top_genres: TopItem[];
+  pcloud_transfers_by_status: Record<string, number>;
+  built_at: string;
+};
+
+// ---------- Video count (分集 vs 單一影片) ----------
+
+export type VideoCountEntry = { path: string; video_count: number };
+
+export type VideoCountResult = {
+  key: string;
+  ok: boolean;
+  video_count: number;
+  video_names: string[];
+  entries: VideoCountEntry[];
+  source: string; // "task" | "presence"
+  partial: boolean;
+  error: string;
+};
+
+export type VideoCountResponse = { results: VideoCountResult[] };

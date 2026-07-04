@@ -41,7 +41,8 @@ import asyncio
 import logging
 import re
 from collections import deque
-from typing import AsyncIterator, Protocol
+from collections.abc import AsyncIterator
+from typing import Protocol
 
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
 from .pikpak import (
@@ -49,7 +50,6 @@ from .pikpak import (
     _canonical_video_name,
     _part_marker_index,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ async def walk_for_episodes(
             jobs = [_list(fid) for fid, _p, _d in layer]
             results = await asyncio.gather(*jobs, return_exceptions=True)
 
-            for (folder_id, folder_path, depth), res in zip(layer, results):
+            for (folder_id, folder_path, depth), res in zip(layer, results, strict=True):
                 folders_done += 1
                 if isinstance(res, Exception):
                     yield {

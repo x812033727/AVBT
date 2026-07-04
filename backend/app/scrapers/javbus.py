@@ -60,7 +60,7 @@ class RateLimiter:
         self._last = 0.0
         self._lock = asyncio.Lock()
 
-    async def __aenter__(self) -> "RateLimiter":
+    async def __aenter__(self) -> RateLimiter:
         await self._sem.acquire()
         async with self._lock:
             wait = self._last + self._cur - time.monotonic()
@@ -163,7 +163,7 @@ def _get_client() -> httpx.AsyncClient:
     return _shared_client
 
 
-from ..schemas import (
+from ..schemas import (  # noqa: E402 — after module-level client setup
     ActressRef,
     GenreRef,
     LinkRef,
@@ -599,7 +599,7 @@ async def fetch_listing_title(kind: str, slug: str, uncensored: bool = False) ->
             return ""
         from ..services.jav_code import clean_listing_name  # avoid cycle
         return clean_listing_name(_parse_listing_title(html))
-    except Exception:
+    except Exception:  # noqa: BLE001 — listing title is best-effort
         return ""
 
 
@@ -771,6 +771,7 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
                 gid=gid_m.group(1),
                 uc=uc_m.group(1),
                 img=img_m.group(1),
+                code=code,
             )
 
         if detail.title:
@@ -975,8 +976,10 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
 
 
 async def _fetch_magnets(
-    cli: httpx.AsyncClient, *, referer: str, gid: str, uc: str, img: str
+    cli: httpx.AsyncClient, *, referer: str, gid: str, uc: str, img: str, code: str = ""
 ) -> list[Magnet]:
+    from ..services.jav_code import detect_part_hint  # local: avoid cycle
+
     base = settings.javbus_base_url.rstrip("/")
     url = (
         f"{base}/ajax/uncledatoolsbyajax.php"
@@ -1014,6 +1017,7 @@ async def _fetch_magnets(
                 date=date,
                 is_hd=is_hd,
                 has_subtitle=has_subtitle,
+                part_hint=detect_part_hint(name, code),
             )
         )
     return magnets

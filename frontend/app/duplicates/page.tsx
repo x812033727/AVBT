@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CloudFolderPicker, {
   type CloudFolderSelection,
 } from "@/components/CloudFolderPicker";
-import { toast } from "@/components/Toast";
+import { confirmDialog, toast } from "@/components/Toast";
 import {
   api,
   streamNdjson,
@@ -12,10 +12,16 @@ import {
   type PikPakStatus,
 } from "@/lib/api";
 
+type DupFile = {
+  path: string;
+  id: string;
+  is_folder: boolean;
+};
+
 type DupRow = {
   code: string;
-  pikpak_paths: string[];
-  pcloud_paths: string[];
+  pikpak_files: DupFile[];
+  pcloud_files: DupFile[];
 };
 
 type DupResult = {
@@ -29,6 +35,8 @@ type DupResult = {
   pcloud_partial: boolean;
 };
 
+type Side = "pikpak" | "pcloud";
+
 export default function DuplicatesPage() {
   const [pikpakSel, setPikpakSel] = useState<CloudFolderSelection | null>(null);
   const [pcloudSel, setPcloudSel] = useState<CloudFolderSelection | null>(null);
@@ -37,6 +45,9 @@ export default function DuplicatesPage() {
     {}
   );
   const [result, setResult] = useState<DupResult | null>(null);
+  // Selected file entries, keyed "side:id".
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const [pikpakIn, setPikpakIn] = useState<boolean | null>(null);
   const [pcloudIn, setPcloudIn] = useState<boolean | null>(null);
@@ -58,6 +69,7 @@ export default function DuplicatesPage() {
     if (running) return;
     setRunning(true);
     setResult(null);
+    setSelected(new Set());
     setProgress({});
     try {
       await streamNdjson(
@@ -93,13 +105,99 @@ export default function DuplicatesPage() {
       .catch(() => toast.error("複製失敗"));
   }
 
+  function toggle(side: Side, id: string, on: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const key = `${side}:${id}`;
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  function selectAllOn(side: Side, on: boolean) {
+    if (!result) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const d of result.duplicates) {
+        const files = side === "pikpak" ? d.pikpak_files : d.pcloud_files;
+        for (const f of files) {
+          const key = `${side}:${f.id}`;
+          if (on) next.add(key);
+          else next.delete(key);
+        }
+      }
+      return next;
+    });
+  }
+
+  const counts = useMemo(() => {
+    let pikpak = 0;
+    let pcloud = 0;
+    for (const key of Array.from(selected)) {
+      if (key.startsWith("pikpak:")) pikpak++;
+      else pcloud++;
+    }
+    return { pikpak, pcloud };
+  }, [selected]);
+
+  async function deleteSelected(side: Side) {
+    if (!result) return;
+    const ids = Array.from(selected)
+      .filter((k) => k.startsWith(`${side}:`))
+      .map((k) => k.slice(side.length + 1));
+    if (!ids.length) return;
+    const label = side === "pikpak" ? "PikPak" : "pCloud";
+    const ok = await confirmDialog(
+      `把選取的 ${ids.length} 個項目移到 ${label} 垃圾桶？\n(只動 ${label} 這一側,另一邊的檔案保留)`
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await api.post(`/api/${side}/files/trash`, { ids });
+      toast.success(`已把 ${ids.length} 個項目移到 ${label} 垃圾桶`);
+      const removed = new Set(ids);
+      // Drop deleted entries locally; a code stops being a duplicate row
+      // only if one side no longer has any hit.
+      setResult((r) =>
+        r
+          ? {
+              ...r,
+              duplicates: r.duplicates
+                .map((d) => ({
+                  ...d,
+                  pikpak_files:
+                    side === "pikpak"
+                      ? d.pikpak_files.filter((f) => !removed.has(f.id))
+                      : d.pikpak_files,
+                  pcloud_files:
+                    side === "pcloud"
+                      ? d.pcloud_files.filter((f) => !removed.has(f.id))
+                      : d.pcloud_files,
+                }))
+                .filter((d) => d.pikpak_files.length && d.pcloud_files.length),
+            }
+          : r
+      );
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(`${side}:${id}`);
+        return next;
+      });
+    } catch (e: any) {
+      toast.error(`刪除失敗:${e.message}`);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-lg font-semibold text-white">跨雲重複番號比對</h1>
         <p className="mt-1 text-sm text-white/50">
-          各選一個資料夾，遞迴掃描整個子樹，列出在 PikPak 與 pCloud
-          兩邊都存在的番號。唯讀，不會搬移或刪除任何檔案。
+          各選一個資料夾,遞迴掃描整個子樹,列出在 PikPak 與 pCloud
+          兩邊都存在的番號。掃描為唯讀;勾選後可把其中一邊的重複檔移到該雲端的垃圾桶。
         </p>
       </div>
 
@@ -135,22 +233,69 @@ export default function DuplicatesPage() {
         </button>
         {(progress.pikpak || progress.pcloud) && (
           <div className="text-xs text-white/50">
-            {progress.pikpak && <div>PikPak：{progress.pikpak}</div>}
-            {progress.pcloud && <div>pCloud：{progress.pcloud}</div>}
+            {progress.pikpak && <div>PikPak:{progress.pikpak}</div>}
+            {progress.pcloud && <div>pCloud:{progress.pcloud}</div>}
           </div>
         )}
       </div>
 
-      {result && <ResultPanel result={result} onCopy={copyCodes} />}
+      {result && (
+        <ResultPanel
+          result={result}
+          selected={selected}
+          onToggle={toggle}
+          onSelectAll={selectAllOn}
+          onCopy={copyCodes}
+        />
+      )}
+
+      {(counts.pikpak > 0 || counts.pcloud > 0) && (
+        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-panel/95 px-4 py-3 shadow-lg backdrop-blur">
+          <span className="text-sm text-white/70">
+            已選 PikPak {counts.pikpak} ・ pCloud {counts.pcloud}
+          </span>
+          {counts.pikpak > 0 && (
+            <button
+              className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+              onClick={() => deleteSelected("pikpak")}
+              disabled={deleting}
+            >
+              刪除已選 PikPak 檔案
+            </button>
+          )}
+          {counts.pcloud > 0 && (
+            <button
+              className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+              onClick={() => deleteSelected("pcloud")}
+              disabled={deleting}
+            >
+              刪除已選 pCloud 檔案
+            </button>
+          )}
+          <button
+            className="btn-ghost text-sm"
+            onClick={() => setSelected(new Set())}
+            disabled={deleting}
+          >
+            清除選取
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 function ResultPanel({
   result,
+  selected,
+  onToggle,
+  onSelectAll,
   onCopy,
 }: {
   result: DupResult;
+  selected: Set<string>;
+  onToggle: (side: Side, id: string, on: boolean) => void;
+  onSelectAll: (side: Side, on: boolean) => void;
   onCopy: () => void;
 }) {
   return (
@@ -172,7 +317,7 @@ function ResultPanel({
           重複 {result.duplicate_count}
         </span>
         {(result.pikpak_partial || result.pcloud_partial) && (
-          <span className="text-amber-300/80">(已達掃描上限，結果為部分)</span>
+          <span className="text-amber-300/80">(已達掃描上限,結果為部分)</span>
         )}
         {result.duplicate_count > 0 && (
           <button
@@ -193,9 +338,25 @@ function ResultPanel({
           <table className="w-full text-sm">
             <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/40">
               <tr>
-                <th className="px-3 py-2 w-40">番號</th>
-                <th className="px-3 py-2">PikPak 路徑</th>
-                <th className="px-3 py-2">pCloud 路徑</th>
+                <th className="w-40 px-3 py-2">番號</th>
+                <th className="px-3 py-2">
+                  <span className="mr-2">PikPak 路徑</span>
+                  <button
+                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] normal-case text-white/50 hover:bg-white/10"
+                    onClick={() => onSelectAll("pikpak", true)}
+                  >
+                    全選
+                  </button>
+                </th>
+                <th className="px-3 py-2">
+                  <span className="mr-2">pCloud 路徑</span>
+                  <button
+                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] normal-case text-white/50 hover:bg-white/10"
+                    onClick={() => onSelectAll("pcloud", true)}
+                  >
+                    全選
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -205,10 +366,20 @@ function ResultPanel({
                     {d.code}
                   </td>
                   <td className="px-3 py-2">
-                    <PathList paths={d.pikpak_paths} />
+                    <FileList
+                      side="pikpak"
+                      files={d.pikpak_files}
+                      selected={selected}
+                      onToggle={onToggle}
+                    />
                   </td>
                   <td className="px-3 py-2">
-                    <PathList paths={d.pcloud_paths} />
+                    <FileList
+                      side="pcloud"
+                      files={d.pcloud_files}
+                      selected={selected}
+                      onToggle={onToggle}
+                    />
                   </td>
                 </tr>
               ))}
@@ -220,15 +391,37 @@ function ResultPanel({
   );
 }
 
-function PathList({ paths }: { paths: string[] }) {
-  if (!paths.length) return <span className="text-white/30">—</span>;
+function FileList({
+  side,
+  files,
+  selected,
+  onToggle,
+}: {
+  side: Side;
+  files: DupFile[];
+  selected: Set<string>;
+  onToggle: (side: Side, id: string, on: boolean) => void;
+}) {
+  if (!files.length) return <span className="text-white/30">—</span>;
   return (
     <ul className="space-y-0.5">
-      {paths.map((p, i) => (
-        <li key={i} className="break-all font-mono text-xs text-white/60">
-          {p}
-        </li>
-      ))}
+      {files.map((f) => {
+        const key = `${side}:${f.id}`;
+        return (
+          <li key={key} className="flex items-start gap-1.5">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={selected.has(key)}
+              onChange={(e) => onToggle(side, f.id, e.target.checked)}
+            />
+            <span className="break-all font-mono text-xs text-white/60">
+              {f.is_folder ? "📁 " : ""}
+              {f.path}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -4,11 +4,26 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import cors_origin_list
 from .database import init_db
-from .routers import auth, backup, collection, compare, img, javbus, pcloud, pikpak, tracked
+from .routers import (
+    auth,
+    backup,
+    collection,
+    compare,
+    img,
+    javbus,
+    pcloud,
+    pikpak,
+    stats,
+    tracked,
+)
+from .routers import (
+    notify as notify_router,
+)
 from .scrapers import javbus as scraper
+from .services import archiver, auto_backup, log_cleanup, notify, tracker
 from .services.auth import require_auth
-from .services import archiver, log_cleanup, notify, tracker
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue
@@ -31,6 +46,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(archiver.run_loop()),
         asyncio.create_task(tracker.run_loop()),
         asyncio.create_task(log_cleanup.run_loop()),
+        asyncio.create_task(auto_backup.run_loop()),
     ]
     try:
         yield
@@ -52,10 +68,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AVBT", version="0.1.0", lifespan=lifespan)
 
+_origins = cors_origin_list()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    # The CORS spec forbids credentials with a wildcard origin.
+    allow_credentials="*" not in _origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,6 +93,8 @@ app.include_router(pcloud.router, dependencies=_guard)
 app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)
+app.include_router(stats.router, dependencies=_guard)
+app.include_router(notify_router.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)
 app.include_router(img.router)
 

@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
 import { RowSkeleton } from "@/components/Skeleton";
 import { confirmDialog, toast } from "@/components/Toast";
-import { api, imgProxy, type CollectionItem } from "@/lib/api";
+import {
+  api,
+  imgProxy,
+  type CollectionItem,
+  type VideoCountResponse,
+  type VideoCountResult,
+} from "@/lib/api";
 
 const STATUS_TABS = [
   { value: "", label: "全部" },
@@ -26,6 +32,9 @@ export default function CollectionPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 影片數快取(key = code)。"loading" = 查詢中。
+  const [counts, setCounts] = useState<Record<string, VideoCountResult | "loading">>({});
+  const [counting, setCounting] = useState(false);
 
   async function load(s: string) {
     setError(null);
@@ -119,6 +128,46 @@ export default function CollectionPage() {
     }
   }
 
+  // 待看通常還沒下載;下載中/完成才可能有雲端檔案。
+  const countable = items.filter(
+    (i) => i.status !== "wishlist" && !counts[i.code]
+  );
+
+  async function fetchCounts() {
+    if (!countable.length) return;
+    setCounting(true);
+    setCounts((prev) => {
+      const next = { ...prev };
+      for (const it of countable) next[it.code] = "loading";
+      return next;
+    });
+    try {
+      for (let i = 0; i < countable.length; i += 20) {
+        const chunk = countable.slice(i, i + 20);
+        const res = await api.post<VideoCountResponse>(
+          "/api/pikpak/files/video-count",
+          { items: chunk.map((it) => ({ key: it.code, code: it.code })) }
+        );
+        setCounts((prev) => {
+          const next = { ...prev };
+          for (const r of res.results) next[r.key] = r;
+          return next;
+        });
+      }
+    } catch (e: any) {
+      toast.error(`影片數查詢失敗:${e.message}`);
+      setCounts((prev) => {
+        const next = { ...prev };
+        for (const it of countable) {
+          if (next[it.code] === "loading") delete next[it.code];
+        }
+        return next;
+      });
+    } finally {
+      setCounting(false);
+    }
+  }
+
   const wishlistCount = items.filter((i) => i.status === "wishlist").length;
   const allSelected = selected.size > 0 && selected.size === items.length;
 
@@ -134,6 +183,14 @@ export default function CollectionPage() {
             {t.label}
           </button>
         ))}
+        <button
+          onClick={fetchCounts}
+          disabled={counting || !countable.length}
+          className="btn-ghost disabled:opacity-50"
+          title="向 PikPak 查詢下載中/完成項目的實際影片檔數(分集/單一)"
+        >
+          {counting ? "查詢中…" : "查詢影片數"}
+        </button>
         <div className="ml-auto">
           <BulkSendButton
             streamPath="/api/collection/send-wishlist/stream"
@@ -256,6 +313,7 @@ export default function CollectionPage() {
               <div className="mt-1 flex flex-wrap gap-1 text-xs text-white/40">
                 {it.release_date && <span>{it.release_date}</span>}
                 {it.duration && <span>{it.duration}</span>}
+                <CountBadge state={counts[it.code]} />
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {it.actresses.map((a) => (
@@ -287,4 +345,33 @@ export default function CollectionPage() {
       </div>
     </div>
   );
+}
+
+function CountBadge({
+  state,
+}: {
+  state: VideoCountResult | "loading" | undefined;
+}) {
+  if (state === undefined) return null;
+  if (state === "loading") return <span className="text-white/30">…</span>;
+  if (!state.ok) return null;
+  const tip = state.video_names.join("\n") || undefined;
+  if (state.video_count > 1) {
+    return (
+      <span
+        className="rounded bg-amber-400/20 px-1.5 py-0.5 text-amber-200"
+        title={tip}
+      >
+        多集 {state.video_count}
+      </span>
+    );
+  }
+  if (state.video_count === 1) {
+    return (
+      <span className="text-white/50" title={tip}>
+        單一影片
+      </span>
+    );
+  }
+  return null;
 }

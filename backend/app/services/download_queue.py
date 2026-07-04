@@ -34,9 +34,10 @@ import asyncio
 import logging
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Literal, Optional
+from typing import Literal
 
 from sqlalchemy import insert, select
 
@@ -47,6 +48,7 @@ from ..schemas import OfflineSubmit, SendAllOptions
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import extract_btih, pick_best_magnet
 from .pikpak import pikpak_service
+from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
 
@@ -94,14 +96,14 @@ class Job:
     # Used by /api/pikpak/offline where the caller already has a magnet.
     direct_magnet: str = ""
     force: bool = False
-    folder: Optional[str] = None
+    folder: str | None = None
     # Snapshot of the tracked listing context at enqueue time. When all
     # three are populated, the archiver can route this code to the
     # right kind/name folder without a JavBus fetch_detail call.
     tracked_kind: str = ""
     tracked_slug: str = ""
     tracked_name: str = ""
-    on_sent: Optional[Callable[[str], Awaitable[None]]] = None
+    on_sent: Callable[[str], Awaitable[None]] | None = None
     enqueued_at: datetime = field(default_factory=datetime.utcnow)
     future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
 
@@ -284,6 +286,13 @@ class DownloadQueue:
     def _record(self, job: Job, result: JobResult) -> None:
         self._totals[result.status] = self._totals.get(result.status, 0) + 1
         self._recent.appendleft((datetime.utcnow(), job, result))
+        # One hook covers every failure path (fetch, submit, worker
+        # crash). Event is OFF by default — see notify_download_failed.
+        if result.status == "failed":
+            webhook_queue.enqueue_nowait(
+                f"❌ 下載送出失敗 `{job.code or result.magnet_name or '?'}`: {result.message}",
+                event="download_failed",
+            )
 
     # ---------- per-job processing ----------
 

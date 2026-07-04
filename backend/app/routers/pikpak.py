@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -17,8 +18,12 @@ from ..schemas import (
     PresenceStatus,
     ReorganizeOptions,
     SendAllOptions,
+    VideoCountRequest,
+    VideoCountResponse,
+    VideoCountResult,
 )
 from ..services import archiver, episode_finder
+from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
 from ..services.jav_code import extract_jav_code, is_video
 from ..services.pikpak import PikPakError, pikpak_service
@@ -243,6 +248,52 @@ async def folder_stats(parent_id: str = ""):
         "archived_count": archived_count,
         "partial": partial,
     }
+
+
+@router.post("/files/video-count", response_model=VideoCountResponse)
+async def files_video_count(payload: VideoCountRequest):
+    """Batch「這部有幾個影片檔?」lookup. Each item resolves by
+    ``file_id`` (pre-archive task content) or by ``code`` (post-archive,
+    via the presence index). Duplicated targets within one request are
+    resolved once; PikPak calls are throttled by a small semaphore."""
+    sem = asyncio.Semaphore(3)
+
+    async def resolve(item) -> dict:
+        async with sem:
+            try:
+                if item.provider == "pcloud":
+                    if item.file_id:
+                        return {"ok": False, "error": "pCloud 只支援以番號查詢"}
+                    return await video_count_svc.count_for_code_pcloud(item.code)
+                if item.file_id:
+                    return await video_count_svc.count_for_file_id(item.file_id)
+                return await video_count_svc.count_for_code(item.code)
+            except Exception as exc:  # noqa: BLE001 — one bad item must not fail the batch
+                return {"ok": False, "error": str(exc)}
+
+    def target_of(item) -> tuple[str, str, str]:
+        kind, value = ("f", item.file_id) if item.file_id else ("c", item.code.strip().upper())
+        return (item.provider, kind, value)
+
+    # Dedupe identical targets so a page of rows for the same code costs
+    # one PikPak round-trip.
+    unique: dict[tuple[str, str, str], asyncio.Task] = {}
+    for item in payload.items:
+        target = target_of(item)
+        if target not in unique:
+            unique[target] = asyncio.create_task(resolve(item))
+    try:
+        await asyncio.gather(*unique.values())
+    except asyncio.CancelledError:
+        for t in unique.values():
+            t.cancel()
+        raise
+
+    results = []
+    for item in payload.items:
+        res = unique[target_of(item)].result()
+        results.append(VideoCountResult(key=item.key, **res))
+    return VideoCountResponse(results=results)
 
 
 @router.get("/files/{file_id}/url")
@@ -470,7 +521,7 @@ async def offline_download_bulk(items: list[OfflineSubmit]):
     other in-flight jobs. Returns one ``PikPakTask`` per input item,
     using ``phase`` to surface the queue outcome (PENDING / DUPLICATE /
     ERROR)."""
-    jobs: list[tuple[OfflineSubmit, "asyncio.Future"]] = []
+    jobs: list[tuple[OfflineSubmit, asyncio.Future]] = []
     for it in items:
         job = Job(
             code=it.code,

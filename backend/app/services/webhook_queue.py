@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .notify import send_webhook
+from .notify import send_notification
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class WebhookQueue:
     def __init__(self, concurrency: int = 1, maxsize: int = 256) -> None:
         self._concurrency = max(1, concurrency)
-        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
+        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=maxsize)
         self._workers: list[asyncio.Task] = []
         self._started = False
         self._dropped = 0
@@ -50,13 +50,15 @@ class WebhookQueue:
         self._workers.clear()
         self._started = False
 
-    def enqueue_nowait(self, message: str) -> bool:
-        """Push without awaiting. Returns False when the queue is full
-        (message dropped, counter bumped). Safe to call from sync code."""
+    def enqueue_nowait(self, message: str, event: str = "generic") -> bool:
+        """Push without awaiting. ``event`` selects the per-event toggle
+        (see notify.EVENT_DEFAULTS); unknown events always deliver.
+        Returns False when the queue is full (message dropped, counter
+        bumped). Safe to call from sync code."""
         if not message:
             return False
         try:
-            self._queue.put_nowait(message)
+            self._queue.put_nowait((event, message))
             return True
         except asyncio.QueueFull:
             self._dropped += 1
@@ -75,9 +77,9 @@ class WebhookQueue:
 
     async def _worker(self, idx: int) -> None:
         while True:
-            msg = await self._queue.get()
+            event, msg = await self._queue.get()
             try:
-                await send_webhook(msg)
+                await send_notification(msg, event)
                 self._sent += 1
             except asyncio.CancelledError:
                 raise

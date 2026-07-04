@@ -14,7 +14,8 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jwt
@@ -97,7 +98,7 @@ def verify_password(password: str, stored: str) -> bool:
 # ----- tokens -----
 
 def create_token(username: str) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": username,
         "iat": now,
@@ -143,13 +144,46 @@ async def create_account(
     return account
 
 
+# ----- login throttle -----
+# Single account → a single global counter is enough. In-memory on
+# purpose: a restart clearing the lock is acceptable, and there's no
+# per-IP tracking to get wrong behind a reverse proxy.
+
+_LOCKOUT_THRESHOLD = 5
+_LOCKOUT_SECONDS = 60.0
+
+_failed_logins = 0
+_locked_until = 0.0
+
+
+def login_locked_for() -> float:
+    """Seconds until login unlocks (0 = not locked)."""
+    return max(0.0, _locked_until - time.monotonic())
+
+
+def _record_login_result(ok: bool) -> None:
+    global _failed_logins, _locked_until
+    if ok:
+        _failed_logins = 0
+        _locked_until = 0.0
+        return
+    _failed_logins += 1
+    if _failed_logins >= _LOCKOUT_THRESHOLD:
+        _locked_until = time.monotonic() + _LOCKOUT_SECONDS
+        _failed_logins = 0
+        logger.warning("連續登入失敗 %d 次,鎖定 %.0f 秒", _LOCKOUT_THRESHOLD, _LOCKOUT_SECONDS)
+
+
 async def verify_login(
     session: AsyncSession, username: str, password: str
 ) -> bool:
     account = await get_account(session)
     if account is None or account.username != username:
+        _record_login_result(False)
         return False
-    return verify_password(password, account.password_hash)
+    ok = verify_password(password, account.password_hash)
+    _record_login_result(ok)
+    return ok
 
 
 async def update_password(

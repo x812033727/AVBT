@@ -117,6 +117,8 @@ async def history(
     offset: int = Query(0, ge=0),
     code: str | None = None,
     archived: bool | None = None,
+    phase: str | None = None,
+    q: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
     stmt = select(OfflineTaskLog)
@@ -128,6 +130,14 @@ async def history(
     if archived is not None:
         stmt = stmt.where(OfflineTaskLog.archived == archived)
         count_stmt = count_stmt.where(OfflineTaskLog.archived == archived)
+    if phase:
+        stmt = stmt.where(OfflineTaskLog.phase == phase)
+        count_stmt = count_stmt.where(OfflineTaskLog.phase == phase)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        cond = OfflineTaskLog.name.like(like)
+        stmt = stmt.where(cond)
+        count_stmt = count_stmt.where(cond)
     stmt = stmt.order_by(OfflineTaskLog.created_at.desc()).limit(limit).offset(offset)
 
     rows = (await session.execute(stmt)).scalars().all()
@@ -159,6 +169,47 @@ async def delete_history(item_id: int, session: AsyncSession = Depends(get_sessi
     await session.delete(row)
     await session.commit()
     return {"ok": True}
+
+
+@router.post("/history/batch-delete")
+async def history_batch_delete(
+    ids: list[int] = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    if not ids:
+        return {"deleted": 0}
+    rows = (
+        await session.execute(select(OfflineTaskLog).where(OfflineTaskLog.id.in_(ids)))
+    ).scalars().all()
+    for r in rows:
+        await session.delete(r)
+    await session.commit()
+    return {"deleted": len(rows)}
+
+
+@router.post("/history/batch-rearchive")
+async def history_batch_rearchive(
+    ids: list[int] = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    """Flip selected rows back to un-archived so the archiver's next pass
+    re-resolves and re-moves them. Useful after a file was manually moved
+    back or landed in the wrong folder. Rows without a file can't be
+    archived and are skipped."""
+    if not ids:
+        return {"updated": 0}
+    rows = (
+        await session.execute(
+            select(OfflineTaskLog).where(
+                OfflineTaskLog.id.in_(ids), OfflineTaskLog.file_id != ""
+            )
+        )
+    ).scalars().all()
+    for r in rows:
+        r.archived = False
+        r.archived_at = None
+    await session.commit()
+    return {"updated": len(rows)}
 
 
 async def _wishlist_codes(status: str = "wishlist") -> list[str]:
@@ -255,6 +306,44 @@ async def batch_delete(
     return {"deleted": len(rows)}
 
 
+@router.post("/batch/add")
+async def batch_add(
+    items: list[CollectionIn] = Body(..., embed=True),
+    session: AsyncSession = Depends(get_session),
+):
+    """Bulk add-to-collection (missing page multi-select). Existing codes
+    are left untouched — this is add-only, not upsert."""
+    now = datetime.utcnow()
+    added = 0
+    skipped = 0
+    for item in items:
+        code = item.code.strip().upper()
+        if not code:
+            skipped += 1
+            continue
+        if await session.get(CollectedMovie, code):
+            skipped += 1
+            continue
+        session.add(
+            CollectedMovie(
+                code=code,
+                title=item.title,
+                cover=item.cover,
+                release_date=item.release_date,
+                duration=item.duration,
+                actresses=item.actresses,
+                genres=item.genres,
+                note=item.note,
+                status=item.status or "wishlist",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        added += 1
+    await session.commit()
+    return {"added": added, "skipped": skipped}
+
+
 @router.post("/send-by-codes/stream")
 async def send_by_codes_stream(payload: dict = Body(...)):
     """Stream-submit an arbitrary list of codes to PikPak using the same
@@ -267,7 +356,7 @@ async def send_by_codes_stream(payload: dict = Body(...)):
     options_data = {k: v for k, v in payload.items() if k != "codes"}
     try:
         options = SendAllOptions(**options_data)
-    except Exception:
+    except Exception:  # noqa: BLE001 — bad options fall back to defaults
         options = SendAllOptions()
 
     async def gen():

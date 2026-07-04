@@ -18,8 +18,9 @@ import asyncio
 import logging
 import random
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -48,6 +49,8 @@ def _safe_code(code: str) -> str:
 # same path without importing the archiver (which would cycle).
 from .jav_code import (  # noqa: E402
     extract_jav_code_full,
+)
+from .jav_code import (  # noqa: E402
     safe_folder_name as _safe_name,
 )
 
@@ -68,6 +71,12 @@ def _archive_leaf(code: str) -> str:
 # A small per-pass cache so two completed tasks with the same code don't
 # trigger two JavBus fetches.
 _detail_cache: dict[str, object] = {}
+
+# file_ids whose archive failure was already notified — the archive loop
+# retries every minute, so without this a permanently-stuck file would
+# push a notification per pass. Process-lifetime is fine (a restart
+# re-notifying once is acceptable).
+_failure_notified: set[str] = set()
 
 
 def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
@@ -454,12 +463,9 @@ async def _sweep_legacy_archive_stream() -> AsyncIterator[dict]:
         try:
             from . import missing as missing_svc  # avoid cycle
             await missing_svc.invalidate_all_caches_async(presence=True)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            pikpak_service._folder_cache.clear()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("legacy sweep: presence cache invalidation failed: %s", exc)
+        pikpak_service._folder_cache.clear()
 
     yield {
         "type": "done",
@@ -641,15 +647,12 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         try:
             from . import missing as missing_svc  # avoid cycle
             await missing_svc.invalidate_all_caches_async(presence=True)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("root sweep: presence cache invalidation failed: %s", exc)
         # Folder cache may now point at trashed/renamed wrappers; drop
         # so the next folder_id() relists. reorganize_stream does the
         # same after its mutating runs.
-        try:
-            pikpak_service._folder_cache.clear()
-        except Exception:  # noqa: BLE001
-            pass
+        pikpak_service._folder_cache.clear()
     return moved
 
 
@@ -660,8 +663,8 @@ async def _flatten_swept_wrappers(
     PikPakFile stub from the post-move metadata — _resolve_folder_winner
     only reads .id / .name / .kind, so a fresh server fetch is
     unnecessary. Returns the count of wrappers actually flattened."""
-    from .reorganize import _resolve_folder_winner
     from ..schemas import PikPakFile
+    from .reorganize import _resolve_folder_winner
 
     flattened = 0
     for folder_id, parent_id, code, leaf in wrappers:
@@ -859,6 +862,14 @@ async def archive_once() -> int:
             except Exception as exc:  # noqa: BLE001
                 state.last_error = f"move {row.file_id} failed: {exc}"
                 logger.warning("archive %s failed: %s", row.file_id, exc)
+                # The loop retries every minute — notify only the first
+                # failure per file so a stuck file can't spam the channel.
+                if row.file_id not in _failure_notified:
+                    _failure_notified.add(row.file_id)
+                    webhook_queue.enqueue_nowait(
+                        f"⚠️ 歸檔失敗 `{row.code}` ({row.name or row.file_id}): {exc}",
+                        event="archive_failed",
+                    )
 
         if moved:
             await session.commit()
@@ -866,10 +877,10 @@ async def archive_once() -> int:
             try:
                 from . import missing as missing_svc  # avoid cycle
                 await missing_svc.invalidate_all_caches_async(presence=True)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("archive: presence cache invalidation failed: %s", exc)
             for msg in notifications:
-                webhook_queue.enqueue_nowait(msg)
+                webhook_queue.enqueue_nowait(msg, event="archive_done")
 
     state.archived_total += moved
     return moved

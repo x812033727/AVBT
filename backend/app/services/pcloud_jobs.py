@@ -28,8 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -49,18 +49,18 @@ class OrganizeJob:
     dry_run: bool
     status: str  # running | done | error | cancelled
     started_at: str  # ISO 8601 UTC
-    finished_at: Optional[str] = None
+    finished_at: str | None = None
     total: int = 0
     events: list[dict] = field(default_factory=list)
     # The most recent "processing" heartbeat — `None` between items
     # (i.e. when the previous child's progress event has been emitted
     # and the next child hasn't started its first await).
-    processing: Optional[dict] = None
-    result: Optional[dict] = None
-    error: Optional[str] = None
+    processing: dict | None = None
+    result: dict | None = None
+    error: str | None = None
     # Internal: the asyncio.Task driving the work. Excluded from
     # serialisation — clients only ever see the public fields.
-    task: Optional[asyncio.Task] = field(default=None, repr=False)
+    task: asyncio.Task | None = field(default=None, repr=False)
 
     def to_public_dict(self, *, since: int = 0) -> dict[str, Any]:
         """Serialise to a JSON-safe shape for HTTP responses.
@@ -87,7 +87,7 @@ class OrganizeJob:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class OrganizeJobManager:
@@ -111,10 +111,10 @@ class OrganizeJobManager:
         self._jobs[job_id] = job
         return job
 
-    def get(self, job_id: str) -> Optional[OrganizeJob]:
+    def get(self, job_id: str) -> OrganizeJob | None:
         return self._jobs.get(job_id)
 
-    def active_for_folder(self, folder_id: str) -> Optional[OrganizeJob]:
+    def active_for_folder(self, folder_id: str) -> OrganizeJob | None:
         for job in self._jobs.values():
             if job.status == _STATUS_RUNNING and job.folder_id == folder_id:
                 return job
@@ -123,8 +123,8 @@ class OrganizeJobManager:
     def list_jobs(
         self,
         *,
-        folder_id: Optional[str] = None,
-        status: Optional[str] = None,
+        folder_id: str | None = None,
+        status: str | None = None,
     ) -> list[OrganizeJob]:
         jobs = list(self._jobs.values())
         if folder_id:

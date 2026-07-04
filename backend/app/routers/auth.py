@@ -41,13 +41,18 @@ async def setup(payload: SetupIn, session: AsyncSession = Depends(get_session)):
         raise HTTPException(status_code=400, detail=f"密碼至少 {_MIN_PASSWORD_LEN} 個字元")
     try:
         await auth_service.create_account(session, username, payload.password)
-    except ValueError:
-        raise HTTPException(status_code=409, detail="帳號已設定,請改用登入")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="帳號已設定,請改用登入") from exc
     return TokenOut(token=auth_service.create_token(username), username=username)
 
 
 @router.post("/login", response_model=TokenOut)
 async def login(payload: LoginIn, session: AsyncSession = Depends(get_session)):
+    locked = auth_service.login_locked_for()
+    if locked > 0:
+        raise HTTPException(
+            status_code=429, detail=f"登入失敗次數過多,請 {int(locked) + 1} 秒後再試"
+        )
     username = payload.username.strip()
     if not await auth_service.verify_login(session, username, payload.password):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")

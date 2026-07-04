@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 from ..schemas import SendAllOptions, SendAllResult
 from .download_queue import Job, JobResult, download_queue, new_batch_id

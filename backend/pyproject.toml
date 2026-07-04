@@ -1,0 +1,25 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "BLE", # blind except — matches the existing `# noqa: BLE001` usage
+]
+ignore = [
+    "B008", # FastAPI Depends()/Query() in defaults — framework idiom
+    "E501", # long lines: comment-heavy codebase, not worth a mass rewrap
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Make `app` importable when invoked as the bare `pytest` console script
+# (e.g. CI) — unlike `python -m pytest`, it does not put CWD on sys.path.
+pythonpath = ["."]

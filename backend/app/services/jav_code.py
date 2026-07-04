@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 
-
 # Video extensions that BT release tools often append directly into the
 # folder name itself (``SACE022MP4`` rather than ``SACE-022/SACE022.mp4``).
 # Treated as part of the noise so the code extractor can see past it.
@@ -35,11 +34,11 @@ _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _SPLIT_RE = re.compile(r"(\d{0,4}[A-Z]{2,8})(\d{2,6})$", re.IGNORECASE)
 _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 
-# Numeric prefixes were once whitelisted as part of the canonical code
-# (300MIUM, 259LUXU, 200GANA, …). In practice JavBus catalogs these
-# without the prefix — e.g. the series listing for 60b shows MIUM-1098,
-# not 300MIUM-1098 — so keeping them on the PikPak side meant the
-# presence index never matched. Strip every leading digit cluster.
+# Numeric prefixes (300MIUM, 259LUXU, 200GANA, …) are ALWAYS stripped
+# from the canonical code: JavBus catalogs these without the prefix —
+# e.g. the series listing for 60b shows MIUM-1098, not 300MIUM-1098 —
+# so keeping them on the PikPak side meant the presence index never
+# matched.
 #
 # The detail PAGE for these labels, however, often lives only under the
 # prefixed id (``/259LUXU-1543``); the stripped code 404s. Series
@@ -48,7 +47,6 @@ _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 # search to recover the prefixed id when the bare code's detail is empty —
 # so these works still get archived under their series instead of stranded
 # in the fallback bucket.
-KNOWN_NUMERIC_PREFIXES: frozenset[str] = frozenset()
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",
@@ -99,8 +97,8 @@ def extract_jav_code(name: str) -> str | None:
     Pipeline: strip extension → scan for every code-like substring → take
     the LAST match (real codes sit at the tail of dirty BT names) →
     upper-case → re-insert a hyphen if the form was squished
-    (``483DAM043`` → ``483DAM-043``) → drop a leading digit cluster
-    unless it belongs to a known numeric-prefix label.
+    (``483DAM043`` → ``483DAM-043``) → drop any leading digit cluster
+    (``259LUXU-1543`` → ``LUXU-1543``).
     Returns None when nothing matches.
 
     A single trailing letter (``SDMM-14903C``, ``ABP-123A``) is allowed
@@ -120,7 +118,7 @@ def extract_jav_code(name: str) -> str | None:
             return None
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
-    if m and m.group(1) not in KNOWN_NUMERIC_PREFIXES:
+    if m:
         return m.group(2)
     return raw
 
@@ -171,7 +169,7 @@ def extract_jav_code_full(name: str) -> str | None:
             return None
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
-    if m and m.group(1) not in KNOWN_NUMERIC_PREFIXES:
+    if m:
         return m.group(2) + tail
     return raw + tail
 
@@ -199,3 +197,77 @@ def normalize_code(s: str) -> str:
     """
     code = extract_jav_code(s or "")
     return code or ""
+
+
+# ---------- multi-part (分集) name heuristics ----------
+#
+# Used to flag magnets / file names that LOOK like one part of a
+# multi-part release before anything is downloaded. Heuristic only —
+# the magnet name doesn't have to reflect the torrent's real contents.
+#
+# ⚠️ A trailing ``-C`` / ``ch`` next to the code means Chinese SUBTITLE
+# in JAV release names, not "part C" — it must never fire, so the code-
+# anchored letter rule skips C entirely and subtitle tokens are stripped
+# before matching.
+
+_PART_GENERIC_RES = (
+    re.compile(r"\b(CD ?\d{1,2})\b"),
+    re.compile(r"\b(DIS[CK] ?\d{1,2})\b"),
+    re.compile(r"\b(P(?:AR)?T[ ._-]?\d{1,2})\b"),
+    re.compile(r"\b(VOL(?:UME)?\.? ?\d{1,3})\b"),  # weak: compilations also use Vol.N
+)
+_PART_CJK_RE = re.compile(r"([上中下](?:集|巻|卷)|[上中下]$)")
+
+
+def detect_part_hint(name: str, code: str | None = None) -> str:
+    """Return the multipart marker found in *name* ("CD2", "PART1",
+    "上集", "-2", "B", …) or '' when the name looks like a single video.
+
+    ``code`` anchors the tighter rules (``<code>-2`` / ``<code>B``); when
+    omitted it is derived via extract_jav_code. Mirrors the marker forms
+    ``_part_marker_index`` (services/pikpak.py) understands, plus the
+    generic CD/part/vol/上中下 tokens seen in BT release names."""
+    if not name:
+        return ""
+    stem = name
+    m = re.search(r"\.([A-Za-z0-9]{1,5})$", stem)
+    # An all-digit tail is a part marker (vol.3), not an extension.
+    if m and not m.group(1).isdigit():
+        stem = stem[: m.start()]
+    stem = stem.strip()
+    if not stem:
+        return ""
+    up = stem.upper()
+    code = (code or extract_jav_code(stem) or "").upper()
+
+    if code:
+        # Strip the Chinese-subtitle token glued to the code so it can't
+        # feed the code-anchored rules below (ABC-123-C / ABC-123CH).
+        up = re.sub(
+            rf"({re.escape(code)})(?:[-_ ]?CH|-C)(?=$|[^A-Z0-9])",
+            r"\1",
+            up,
+        )
+
+    for pat in _PART_GENERIC_RES:
+        m = pat.search(up)
+        if m:
+            return m.group(1)
+    m = _PART_CJK_RE.search(stem)
+    if m:
+        return m.group(1)
+
+    if code:
+        # <code>CD2 / <code>-2 / <code>_2 — the digit lookahead keeps
+        # resolution suffixes (-4K, -1080P) and dates from matching.
+        m = re.search(
+            rf"{re.escape(code)}(CD\d{{1,2}}|[-_][1-9])(?![0-9KP])", up
+        )
+        if m:
+            return m.group(1)
+        # <code>B — lone variant letter as part marker; C is excluded
+        # (subtitle collision).
+        m = re.search(rf"{re.escape(code)}([ABD-Z])(?=$|[^A-Z0-9])", up)
+        if m:
+            return m.group(1)
+    return ""

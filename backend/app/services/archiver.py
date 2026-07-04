@@ -72,6 +72,12 @@ def _archive_leaf(code: str) -> str:
 # trigger two JavBus fetches.
 _detail_cache: dict[str, object] = {}
 
+# file_ids whose archive failure was already notified — the archive loop
+# retries every minute, so without this a permanently-stuck file would
+# push a notification per pass. Process-lifetime is fine (a restart
+# re-notifying once is acceptable).
+_failure_notified: set[str] = set()
+
 
 def _detail_kinds(detail) -> dict[str, tuple[str, str]]:
     """From a MovieDetail, return {kind: (slug, name)} for whatever
@@ -856,6 +862,14 @@ async def archive_once() -> int:
             except Exception as exc:  # noqa: BLE001
                 state.last_error = f"move {row.file_id} failed: {exc}"
                 logger.warning("archive %s failed: %s", row.file_id, exc)
+                # The loop retries every minute — notify only the first
+                # failure per file so a stuck file can't spam the channel.
+                if row.file_id not in _failure_notified:
+                    _failure_notified.add(row.file_id)
+                    webhook_queue.enqueue_nowait(
+                        f"⚠️ 歸檔失敗 `{row.code}` ({row.name or row.file_id}): {exc}",
+                        event="archive_failed",
+                    )
 
         if moved:
             await session.commit()
@@ -866,7 +880,7 @@ async def archive_once() -> int:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("archive: presence cache invalidation failed: %s", exc)
             for msg in notifications:
-                webhook_queue.enqueue_nowait(msg)
+                webhook_queue.enqueue_nowait(msg, event="archive_done")
 
     state.archived_total += moved
     return moved

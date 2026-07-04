@@ -320,7 +320,7 @@ def _maybe_fire_new_codes_webhook(
         f"🆕 {label} {name} 有 {len(new_codes)} 部新作品: "
         f"{', '.join(new_codes)}"
     )
-    webhook_queue.enqueue_nowait(msg)
+    webhook_queue.enqueue_nowait(msg, event="tracked_new")
 
 
 async def _read_row_snapshot(kind: str, slug: str) -> dict:

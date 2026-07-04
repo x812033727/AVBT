@@ -18,6 +18,9 @@ from .routers import (
     stats,
     tracked,
 )
+from .routers import (
+    notify as notify_router,
+)
 from .scrapers import javbus as scraper
 from .services import archiver, log_cleanup, notify, tracker
 from .services.auth import require_auth
@@ -90,6 +93,7 @@ app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)
 app.include_router(stats.router, dependencies=_guard)
+app.include_router(notify_router.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)
 app.include_router(img.router)
 

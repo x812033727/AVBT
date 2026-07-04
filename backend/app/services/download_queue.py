@@ -48,6 +48,7 @@ from ..schemas import OfflineSubmit, SendAllOptions
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import extract_btih, pick_best_magnet
 from .pikpak import pikpak_service
+from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,13 @@ class DownloadQueue:
     def _record(self, job: Job, result: JobResult) -> None:
         self._totals[result.status] = self._totals.get(result.status, 0) + 1
         self._recent.appendleft((datetime.utcnow(), job, result))
+        # One hook covers every failure path (fetch, submit, worker
+        # crash). Event is OFF by default — see notify_download_failed.
+        if result.status == "failed":
+            webhook_queue.enqueue_nowait(
+                f"❌ 下載送出失敗 `{job.code or result.magnet_name or '?'}`: {result.message}",
+                event="download_failed",
+            )
 
     # ---------- per-job processing ----------
 

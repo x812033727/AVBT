@@ -20,3 +20,6 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Make `app` importable when invoked as the bare `pytest` console script
+# (e.g. CI) — unlike `python -m pytest`, it does not put CWD on sys.path.
+pythonpath = ["."]

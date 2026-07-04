@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .config import cors_origin_list
 from .database import init_db
 from .routers import auth, backup, collection, compare, img, javbus, pcloud, pikpak, tracked
 from .scrapers import javbus as scraper
@@ -52,10 +53,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AVBT", version="0.1.0", lifespan=lifespan)
 
+_origins = cors_origin_list()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=_origins,
+    # The CORS spec forbids credentials with a wildcard origin.
+    allow_credentials="*" not in _origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

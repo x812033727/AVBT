@@ -26,6 +26,19 @@ JavBus 磁力擷取 + PikPak 離線下載管理站。
   - 整個資料夾遞迴傳輸,可選保留子目錄結構
   - 傳輸佇列、進度追蹤、失敗重試、取消
   - 傳完自動把 PikPak 原檔移到垃圾桶(可選)
+- **儀表板統計頁** `/dashboard`:收藏 / 下載 / 歸檔率統計、近 30 天趨勢、
+  女優與類別 Top 10、追蹤新作排行、PikPak / pCloud 空間使用
+- **通知**:webhook(Discord 相容)+ **Telegram Bot** 雙管道;
+  追蹤新作 / 歸檔完成 / 歸檔失敗 / 下載失敗四種事件可在設定頁獨立開關
+- **分集資訊**:磁力名稱偵測分集標記顯示「可能分集」;影片頁與歷史頁
+  可查詢雲端實際影片檔數(「多集 N」/「單一影片」,PikPak 走歸檔資料夾、
+  pCloud 走轉存紀錄)
+- **批次操作**:收藏 / 缺漏 / 重複 / 歷史頁皆支援多選(批次送出、刪除、
+  改狀態、重新歸檔、重送磁力、跨雲刪重複檔)
+- **自動資料庫備份**:SQLite online-backup 定期快照到 `data/backups/`,
+  設定頁可查看狀態與立即備份
+- **安全**:單一帳號登入門禁(連續失敗鎖定)、圖片代理域名白名單 +
+  DNS 私有位址檢查、CORS 可配置
 
 ## 快速啟動
 
@@ -75,6 +88,19 @@ PCLOUD_PASSWORD=                  # 可選
 HTTP_PROXY=                       # 可選
 ```
 
+其他常用選項(完整清單見 `backend/.env.example`):
+
+```
+WEBHOOK_URL=                      # Discord 相容 webhook
+TELEGRAM_BOT_TOKEN=               # Telegram 通知(@BotFather 申請)
+TELEGRAM_CHAT_ID=                 # Telegram 目標 chat(@userinfobot 查詢)
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000  # 非 localhost 部署要改
+IMG_PROXY_ALLOWED_HOSTS=          # 圖片代理額外允許的域名後綴
+AUTO_BACKUP_ENABLED=true          # 自動資料庫備份
+AUTO_BACKUP_INTERVAL_HOURS=24
+AUTO_BACKUP_KEEP=7
+```
+
 pCloud(可選,若要用 PikPak → pCloud 傳輸):
 
 ```
@@ -111,6 +137,22 @@ AUTH_TOKEN_TTL_HOURS=720 # token 有效期（小時），預設 30 天
 ```
 
 > 忘記密碼時，刪除 `backend/data/avbt.db` 中的 `auth_account` 資料列（或整個 DB）後重啟，即可重新於 `/setup` 設定。
+
+## 開發
+
+```bash
+# 後端測試與 lint
+cd backend
+pip install -r requirements-dev.txt
+ruff check app tests && pytest
+
+# 前端 lint / 型別檢查 / 建置
+cd frontend
+npm run lint && npm run typecheck && npm run build
+```
+
+push / PR 會觸發 GitHub Actions CI(`.github/workflows/ci.yml`)跑上述全部檢查。
+專案結構與開發慣例見 `CLAUDE.md`。
 
 ## 注意
 

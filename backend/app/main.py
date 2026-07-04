@@ -6,7 +6,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import cors_origin_list
 from .database import init_db
-from .routers import auth, backup, collection, compare, img, javbus, pcloud, pikpak, tracked
+from .routers import (
+    auth,
+    backup,
+    collection,
+    compare,
+    img,
+    javbus,
+    pcloud,
+    pikpak,
+    stats,
+    tracked,
+)
 from .scrapers import javbus as scraper
 from .services import archiver, log_cleanup, notify, tracker
 from .services.auth import require_auth
@@ -78,6 +89,7 @@ app.include_router(pcloud.router, dependencies=_guard)
 app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)
+app.include_router(stats.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)
 app.include_router(img.router)
 

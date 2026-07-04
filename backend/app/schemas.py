@@ -447,3 +447,46 @@ class MeOut(BaseModel):
 class ChangePasswordIn(BaseModel):
     old_password: str
     new_password: str
+
+# ---------- Dashboard stats ----------
+
+class TrendPoint(BaseModel):
+    """One day of activity: offline tasks sent / files archived."""
+    date: str  # YYYY-MM-DD
+    sent: int = 0
+    archived: int = 0
+
+
+class TopItem(BaseModel):
+    name: str
+    count: int = 0
+
+
+class TrackedTopItem(BaseModel):
+    kind: str
+    id: str
+    name: str = ""
+    new_count: int = 0
+
+
+class DashboardStats(BaseModel):
+    # Collection
+    collection_total: int = 0
+    collection_by_status: dict[str, int] = Field(default_factory=dict)
+    # Offline downloads (offline_task_log)
+    downloads_total: int = 0
+    downloads_by_phase: dict[str, int] = Field(default_factory=dict)
+    archived_count: int = 0
+    archive_rate: float = 0.0  # archived / rows-with-file, 0..1
+    trend: list[TrendPoint] = Field(default_factory=list)
+    # Tracked listings
+    tracked_total: int = 0
+    tracked_by_kind: dict[str, int] = Field(default_factory=dict)
+    tracked_new_total: int = 0
+    tracked_top_new: list[TrackedTopItem] = Field(default_factory=list)
+    # Collection aggregations (Python-side over JSON columns)
+    top_actresses: list[TopItem] = Field(default_factory=list)
+    top_genres: list[TopItem] = Field(default_factory=list)
+    # PikPak → pCloud transfers
+    pcloud_transfers_by_status: dict[str, int] = Field(default_factory=dict)
+    built_at: datetime

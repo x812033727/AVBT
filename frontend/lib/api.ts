@@ -572,3 +572,38 @@ export type QueueStatus = {
     magnet_name: string;
   }[];
 };
+
+// ---------- Dashboard stats ----------
+
+export type TrendPoint = {
+  date: string; // YYYY-MM-DD
+  sent: number;
+  archived: number;
+};
+
+export type TopItem = { name: string; count: number };
+
+export type TrackedTopItem = {
+  kind: TrackedKind;
+  id: string;
+  name: string;
+  new_count: number;
+};
+
+export type DashboardStats = {
+  collection_total: number;
+  collection_by_status: Record<string, number>;
+  downloads_total: number;
+  downloads_by_phase: Record<string, number>;
+  archived_count: number;
+  archive_rate: number; // 0..1
+  trend: TrendPoint[];
+  tracked_total: number;
+  tracked_by_kind: Record<string, number>;
+  tracked_new_total: number;
+  tracked_top_new: TrackedTopItem[];
+  top_actresses: TopItem[];
+  top_genres: TopItem[];
+  pcloud_transfers_by_status: Record<string, number>;
+  built_at: string;
+};

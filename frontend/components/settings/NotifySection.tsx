@@ -8,12 +8,19 @@ const NOTIFY_EVENTS: { key: string; label: string; hint: string }[] = [
   { key: "archive_done", label: "歸檔完成", hint: "檔案自動歸檔到分類資料夾" },
   { key: "archive_failed", label: "歸檔失敗", hint: "同一檔案只通知第一次失敗" },
   { key: "download_failed", label: "下載送出失敗", hint: "PikPak 不穩時可能較吵，預設關閉" },
+  { key: "scraper_alert", label: "爬蟲異常告警", hint: "JavBus 疑似改版/封鎖時通知（每類每小時最多一次）" },
 ];
 
 type NotifySettings = {
   webhook_configured: boolean;
   telegram_configured: boolean;
   toggles: Record<string, boolean>;
+  queue?: {
+    pending: number;
+    sent: number;
+    failed: number;
+    dropped: number;
+  };
 };
 
 export default function NotifySection({
@@ -109,6 +116,18 @@ export default function NotifySection({
           >
             {busy ? "發送中…" : "發送測試通知"}
           </button>
+          {conf.queue && (
+            <div className="text-xs text-white/50">
+              本次啟動以來：已送 {conf.queue.sent} ・ 失敗 {conf.queue.failed} ・ 佇列中{" "}
+              {conf.queue.pending}
+              {conf.queue.dropped > 0 && (
+                <span className="text-amber-300">
+                  {" "}
+                  ・ 佇列滿丟棄 {conf.queue.dropped}
+                </span>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div className="text-sm text-white/40">載入中…</div>

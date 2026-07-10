@@ -24,7 +24,7 @@ from .routers import (
 )
 from .scrapers import javbus as scraper
 from .services import archiver, auto_backup, duplicate_scan, log_cleanup, notify, tracker
-from .services.auth import require_auth
+from .services.auth import apply_reset_sentinel, require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud import pcloud_service
 from .services.pcloud_transfer import pcloud_transfer_queue
@@ -38,6 +38,9 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Forgotten-password escape hatch: data/reset_password drops the
+    # admin account so /setup re-arms (see services/auth.py).
+    await apply_reset_sentinel()
     # Build the shared JavBus HTTP client before workers start — they
     # call into the scraper as soon as a job lands.
     await scraper.init_client()

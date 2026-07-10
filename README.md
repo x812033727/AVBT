@@ -136,7 +136,7 @@ AUTH_SECRET=             # 簽 JWT 的密鑰；留空自動產生並寫入 data/
 AUTH_TOKEN_TTL_HOURS=720 # token 有效期（小時），預設 30 天
 ```
 
-> 忘記密碼時，刪除 `backend/data/avbt.db` 中的 `auth_account` 資料列（或整個 DB）後重啟，即可重新於 `/setup` 設定。
+> 忘記密碼時,建立哨兵檔後重啟即可重設:`touch backend/data/reset_password && docker compose restart backend`,啟動時會清除管理員帳號並回到 `/setup` 重新設定(哨兵檔會自動刪除)。
 
 ## 開發
 

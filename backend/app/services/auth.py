@@ -33,10 +33,40 @@ logger = logging.getLogger(__name__)
 # Mirror services/pikpak.py's data/ persistence: a generated secret is
 # written here when AUTH_SECRET isn't set in the environment.
 _SECRET_FILE = Path("data/auth_secret.txt")
+# Self-service password reset for a forgotten password: whoever can
+# create this file already owns the data dir (same trust boundary as
+# editing the DB by hand, just without needing sqlite3). Checked once
+# at startup: account row is dropped, the file removed, and /setup
+# takes over again.
+_RESET_SENTINEL = Path("data/reset_password")
 _PBKDF2_ITERATIONS = 240_000
 _JWT_ALG = "HS256"
 
 _secret_cache: str | None = None
+
+
+async def apply_reset_sentinel() -> bool:
+    """Startup hook (called from lifespan, after init_db): if the reset
+    sentinel file exists, drop the admin account so /setup re-arms.
+    Returns True when a reset happened."""
+    if not _RESET_SENTINEL.exists():
+        return False
+    from ..database import SessionLocal  # local: avoid import cycle
+
+    async with SessionLocal() as session:
+        account = await get_account(session)
+        if account is not None:
+            await session.delete(account)
+            await session.commit()
+    try:
+        _RESET_SENTINEL.unlink()
+    except OSError:
+        # If the file can't be removed we'd reset again on every boot —
+        # scream, but don't block startup.
+        logger.error("無法刪除 %s,下次啟動會再次重設帳號!", _RESET_SENTINEL)
+    _set_pwd_changed_epoch(None)
+    logger.warning("偵測到 %s——管理員帳號已重設,請到 /setup 重新建立", _RESET_SENTINEL)
+    return True
 
 
 # ----- signing secret -----

@@ -94,6 +94,13 @@ export default function LoginPage() {
             {busy ? "登入中…" : "登入"}
           </button>
         </form>
+        <p className="text-center text-xs text-white/30">
+          忘記密碼?在伺服器上執行{" "}
+          <code className="rounded bg-white/5 px-1">
+            touch backend/data/reset_password
+          </code>{" "}
+          後重啟即可重新設定
+        </p>
       </div>
     </div>
   );

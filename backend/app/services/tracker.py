@@ -44,6 +44,9 @@ _CHECK_SEMAPHORE = asyncio.Semaphore(max(1, settings.tracker_check_concurrency))
 class TrackerState:
     def __init__(self) -> None:
         self.enabled: bool = settings.tracker_enabled
+        # Gate for the historical-missing part of auto_send. In-memory
+        # like ``enabled``: a restart falls back to the env default.
+        self.backfill_enabled: bool = settings.tracker_backfill_enabled
         self.last_run: datetime | None = None
         self.last_error: str = ""
         self.last_new_total: int = 0
@@ -61,6 +64,8 @@ class TrackerState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "backfill_enabled": self.backfill_enabled,
+            "backfill_batch_limit": settings.tracker_backfill_batch_limit,
             "interval_seconds": settings.tracker_interval_seconds,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_error": self.last_error,
@@ -121,12 +126,23 @@ async def _enqueue_auto_send(
                     "auto-send-missing %s/%s failed: %s", kind, slug, exc
                 )
                 result = None
-            if result and result.total:
+            if result and result.total and state.backfill_enabled:
+                limit = settings.tracker_backfill_batch_limit
+                added = 0
                 for m in result.missing:
-                    if m.code and m.code not in seen:
-                        seen.add(m.code)
-                        combined.append(m.code)
+                    if not m.code or m.code in seen:
+                        continue
+                    if limit > 0 and added >= limit:
+                        logger.info(
+                            "backfill %s/%s 截斷於 %d 筆(缺漏共 %d,其餘留給下輪)",
+                            kind, slug, limit, len(result.missing),
+                        )
+                        break
+                    seen.add(m.code)
+                    combined.append(m.code)
+                    added += 1
             if result is not None:
+                # Even with backfill off, keep the dashboard count fresh.
                 await _record_scan_result(kind, slug, len(result.missing))
 
     if not combined:
@@ -143,18 +159,61 @@ async def _enqueue_auto_send(
 
     options = _tracker_options()
     source = f"tracker:{kind}:{slug}"
+    futures: list[asyncio.Future] = []
     for code in combined:
-        await download_queue.enqueue(
-            Job(
-                code=code,
-                options=options,
-                source=source,
-                tracked_kind=kind,
-                tracked_slug=slug,
-                tracked_name=tracked_name,
+        futures.append(
+            await download_queue.enqueue(
+                Job(
+                    code=code,
+                    options=options,
+                    source=source,
+                    tracked_kind=kind,
+                    tracked_slug=slug,
+                    tracked_name=tracked_name,
+                )
             )
         )
+    # Fire-and-forget: jobs resolve as workers drain the queue, so the
+    # failure roll-up must not block this tracker tick.
+    asyncio.create_task(
+        _report_auto_send_failures(kind, slug, tracked_name or slug, futures)
+    )
     return len(combined)
+
+
+async def _report_auto_send_failures(
+    kind: str, slug: str, display_name: str, futures: list[asyncio.Future]
+) -> None:
+    """Await the enqueued jobs and surface failures — previously a
+    tracker-submitted job that failed in the queue vanished without a
+    trace unless the (default-off) download_failed event was on. Rolls
+    failures up into ``TrackedListing.last_error`` (already rendered on
+    the tracked page) and one summary notification per batch."""
+    try:
+        results = await asyncio.gather(*futures, return_exceptions=True)
+    except asyncio.CancelledError:
+        raise
+    failed = [
+        r for r in results
+        if isinstance(r, BaseException)
+        or getattr(r, "status", "") == "failed"
+    ]
+    if not failed:
+        return
+    summary = f"自動補檔 {len(failed)}/{len(results)} 筆失敗"
+    logger.warning("tracker %s/%s: %s", kind, slug, summary)
+    try:
+        async with SessionLocal() as session:
+            row = await session.get(TrackedListing, (kind, slug))
+            if row is not None:
+                row.last_error = summary
+                await session.commit()
+    except Exception:  # noqa: BLE001 — reporting must not crash anything
+        logger.exception("記錄 last_error 失敗 %s/%s", kind, slug)
+    webhook_queue.enqueue_nowait(
+        f"⚠️ {display_name}:{summary}(詳見下載佇列 recent)",
+        event="download_failed",
+    )
 
 
 async def _detect_new(

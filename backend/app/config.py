@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     # exceeds it, fall back to picking from the oversized ones anyway.
     # 0 disables the preference.
     tracker_auto_send_max_size_mb: float = 10240
+    # 缺漏自動補檔:auto_send 全掃時把「歷史缺漏」也送進下載佇列。
+    # 關閉後仍會重算缺漏數(看板照常更新),只是不送件。執行期可在
+    # 設定頁切換(切換值不落地,重啟回到這裡的預設)。
+    tracker_backfill_enabled: bool = True
+    # 每次全掃最多送出的缺漏數(page-1 新作不受限)。超出的部分留給
+    # 下一輪 tick 重掃時繼續補,避免一個大目錄瞬間灌爆佇列。<=0 不設限。
+    tracker_backfill_batch_limit: int = 100
 
     # Global download queue: every PikPak offline submission (tracker
     # auto-send, bulk send-all, single magnet) routes through one queue

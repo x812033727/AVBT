@@ -57,6 +57,12 @@ async def tracker_toggle(enabled: bool = Body(..., embed=True)):
     return tracker.state.to_dict()
 
 
+@router.post("/status/toggle-backfill")
+async def tracker_toggle_backfill(enabled: bool = Body(..., embed=True)):
+    tracker.state.backfill_enabled = enabled
+    return tracker.state.to_dict()
+
+
 @router.post("/status/run-now/stream")
 async def tracker_run_now_stream():
     """Streaming variant of ``/status/run-now`` — yields NDJSON events

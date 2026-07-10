@@ -408,6 +408,8 @@ export type PikPakStatus = {
 
 export type TrackerStatus = {
   enabled: boolean;
+  backfill_enabled: boolean;
+  backfill_batch_limit: number;
   interval_seconds: number;
   last_run: string | null;
   last_error: string;

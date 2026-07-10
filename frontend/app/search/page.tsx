@@ -14,6 +14,19 @@ export default function SearchPage() {
   );
 }
 
+const HISTORY_KEY = "avbt:search-history";
+const HISTORY_MAX = 12;
+
+function loadHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function SearchPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -24,6 +37,37 @@ function SearchPageInner() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState(initialQ);
   const [uncensored, setUncensored] = useState(initialUncensored);
+  const [history, setHistory] = useState<string[]>([]);
+
+  useEffect(() => {
+    setHistory(loadHistory());
+  }, []);
+
+  const remember = useCallback((term: string) => {
+    const keyword = term.trim();
+    if (!keyword) return;
+    setHistory((prev) => {
+      const next = [keyword, ...prev.filter((s) => s !== keyword)].slice(
+        0,
+        HISTORY_MAX
+      );
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+      } catch {
+        /* storage full/blocked — history is best-effort */
+      }
+      return next;
+    });
+  }, []);
+
+  function clearHistory() {
+    setHistory([]);
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -69,7 +113,10 @@ function SearchPageInner() {
 
   // Run a search whenever the URL ?q= changes (i.e. coming from dashboard).
   useEffect(() => {
-    if (initialQ) run(1, initialQ, initialUncensored);
+    if (initialQ) {
+      remember(initialQ);
+      run(1, initialQ, initialUncensored);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQ, initialUncensored]);
 
@@ -77,7 +124,16 @@ function SearchPageInner() {
     e.preventDefault();
     const params = new URLSearchParams({ q: q.trim(), uncensored: String(uncensored) });
     router.replace(`/search?${params.toString()}`);
+    remember(q);
     run(1, q, uncensored);
+  }
+
+  function searchFromHistory(term: string) {
+    setQ(term);
+    const params = new URLSearchParams({ q: term, uncensored: String(uncensored) });
+    router.replace(`/search?${params.toString()}`);
+    remember(term);
+    run(1, term, uncensored);
   }
 
   return (
@@ -90,8 +146,14 @@ function SearchPageInner() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="輸入番號 / 女優 / 關鍵字"
+          list="search-history"
           className="flex-1 min-w-[260px] rounded-md border border-white/10 bg-panel px-3 py-2 outline-none focus:border-accent"
         />
+        <datalist id="search-history">
+          {history.map((h) => (
+            <option key={h} value={h} />
+          ))}
+        </datalist>
         <label className="flex items-center gap-2 text-sm text-white/70">
           <input
             type="checkbox"
@@ -104,6 +166,28 @@ function SearchPageInner() {
           {loading ? "搜尋中…" : "搜尋"}
         </button>
       </form>
+
+      {history.length > 0 && !data && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-white/40">最近搜尋:</span>
+          {history.map((h) => (
+            <button
+              key={h}
+              onClick={() => searchFromHistory(h)}
+              className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:border-accent hover:text-accent"
+            >
+              {h}
+            </button>
+          ))}
+          <button
+            onClick={clearHistory}
+            className="text-white/30 hover:text-white/60"
+            title="清除搜尋紀錄"
+          >
+            清除
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">

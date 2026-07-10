@@ -161,6 +161,13 @@ export default function SettingsPage() {
     setTracker(t);
   }
 
+  async function toggleBackfill(enabled: boolean) {
+    const t = await api.post<TrackerStatus>("/api/tracked/status/toggle-backfill", {
+      enabled,
+    });
+    setTracker(t);
+  }
+
   async function runTrackerNow() {
     setBusy(true);
     try {
@@ -388,6 +395,19 @@ export default function SettingsPage() {
                 onChange={(e) => toggleTracker(e.target.checked)}
               />
               啟用（每 {tracker.interval_seconds} 秒掃一次）
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={tracker.backfill_enabled}
+                onChange={(e) => toggleBackfill(e.target.checked)}
+              />
+              缺漏自動補檔
+              <span className="text-xs text-white/40">
+                auto_send 全掃時把歷史缺漏一併送 PikPak（每輪每目錄最多{" "}
+                {tracker.backfill_batch_limit > 0 ? tracker.backfill_batch_limit : "不限"}{" "}
+                筆）；關閉後仍會更新缺漏數
+              </span>
             </label>
             <div className="text-xs text-white/60">
               最後執行 {fmt(tracker.last_run)} ・ 上次找到 {tracker.last_new_total} 部新作品

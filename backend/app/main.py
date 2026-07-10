@@ -23,7 +23,7 @@ from .routers import (
     notify as notify_router,
 )
 from .scrapers import javbus as scraper
-from .services import archiver, auto_backup, log_cleanup, notify, tracker
+from .services import archiver, auto_backup, duplicate_scan, log_cleanup, notify, tracker
 from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud import pcloud_service
@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
         supervise(tracker.run_loop, "tracker"),
         supervise(log_cleanup.run_loop, "log-cleanup"),
         supervise(auto_backup.run_loop, "auto-backup"),
+        supervise(duplicate_scan.run_loop, "duplicate-scan"),
     ]
     try:
         yield

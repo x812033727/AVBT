@@ -174,6 +174,10 @@ class Settings(BaseSettings):
     notify_download_failed: bool = False
     # 爬蟲哨兵:偵測到 JavBus 疑似改版/封鎖時的告警(每類每小時最多一次)。
     notify_scraper_alert: bool = True
+    # 自動備份失敗(靜默失敗的備份比沒備份更危險)。
+    notify_backup_failed: bool = True
+    # 定期重複掃描發現重複番號時。
+    notify_duplicates_found: bool = True
 
     # 允許的前端來源(CORS),逗號分隔。含 "*" 時視為全開(此時
     # 瀏覽器規範強制 allow_credentials=False)。
@@ -191,6 +195,15 @@ class Settings(BaseSettings):
     auto_backup_enabled: bool = True
     auto_backup_interval_hours: int = 24
     auto_backup_keep: int = 7
+
+    # ----- 定期重複掃描(PikPak↔pCloud)-----
+    # 預設關(要走訪兩邊雲端樹,屬重操作):開啟後每 N 小時做一次
+    # 唯讀掃描,發現重複番號就發 duplicates_found 通知,絕不自動刪。
+    duplicates_scan_enabled: bool = False
+    duplicates_scan_interval_hours: int = 168  # 一週
+    # 掃描根:PikPak 空字串=雲端根;pCloud "0"=根。
+    duplicates_scan_pikpak_folder: str = ""
+    duplicates_scan_pcloud_folder: str = "0"
 
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 

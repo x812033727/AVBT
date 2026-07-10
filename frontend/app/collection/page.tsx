@@ -35,6 +35,29 @@ export default function CollectionPage() {
   // 影片數快取(key = code)。"loading" = 查詢中。
   const [counts, setCounts] = useState<Record<string, VideoCountResult | "loading">>({});
   const [counting, setCounting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  async function syncStatus() {
+    setSyncing(true);
+    try {
+      const r = await api.post<{
+        checked: number;
+        to_downloading: number;
+        to_done: number;
+      }>("/api/collection/sync-status");
+      const changed = r.to_downloading + r.to_done;
+      toast.success(
+        changed
+          ? `已同步:${r.to_done} 個標為完成、${r.to_downloading} 個標為下載中`
+          : `已檢查 ${r.checked} 個收藏,狀態都是最新的`
+      );
+      if (changed) load(status);
+    } catch (e: any) {
+      toast.error(`同步失敗:${e.message}`);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   async function load(s: string) {
     setError(null);
@@ -190,6 +213,14 @@ export default function CollectionPage() {
           title="向 PikPak 查詢下載中/完成項目的實際影片檔數(分集/單一)"
         >
           {counting ? "查詢中…" : "查詢影片數"}
+        </button>
+        <button
+          onClick={syncStatus}
+          disabled={syncing}
+          className="btn-ghost disabled:opacity-50"
+          title="依雲端實況調整狀態:已送 PikPak → 下載中;檔案已在雲端/已歸檔 → 完成。只往前推進,不會降級"
+        >
+          {syncing ? "同步中…" : "依雲端狀態同步"}
         </button>
         <div className="ml-auto">
           <BulkSendButton

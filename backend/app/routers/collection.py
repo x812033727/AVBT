@@ -19,6 +19,7 @@ from ..schemas import (
 from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
 from ..services.download_queue import all_sent_hashes
+from ..services.pikpak_presence import presence_index
 
 router = APIRouter(prefix="/api/collection", tags=["collection"])
 
@@ -98,6 +99,58 @@ async def delete_item(code: str, session: AsyncSession = Depends(get_session)):
     await session.delete(row)
     await session.commit()
     return {"ok": True}
+
+
+_STATUS_RANK = {"wishlist": 0, "downloading": 1, "done": 2}
+
+
+@router.post("/sync-status")
+async def sync_status(session: AsyncSession = Depends(get_session)):
+    """Reconcile collection statuses with cloud reality.
+
+    Forward-only: wishlist → downloading (a submitted OfflineTaskLog
+    row exists) → done (the code is present in PikPak per the presence
+    index, or its log row is archived). Never downgrades — a manually
+    set「完成」stays even if the file was later removed."""
+    presence = await presence_index.get()
+
+    rows = (await session.execute(select(CollectedMovie))).scalars().all()
+    sent_codes = set(
+        (
+            await session.execute(
+                select(OfflineTaskLog.code).where(OfflineTaskLog.code != "").distinct()
+            )
+        ).scalars().all()
+    )
+    archived_codes = set(
+        (
+            await session.execute(
+                select(OfflineTaskLog.code)
+                .where(OfflineTaskLog.code != "", OfflineTaskLog.archived == True)  # noqa: E712
+                .distinct()
+            )
+        ).scalars().all()
+    )
+
+    updated = {"downloading": 0, "done": 0}
+    now = datetime.utcnow()
+    for row in rows:
+        code = (row.code or "").upper()
+        target = None
+        if code in presence or code in archived_codes:
+            target = "done"
+        elif code in sent_codes:
+            target = "downloading"
+        if target and _STATUS_RANK.get(target, 0) > _STATUS_RANK.get(row.status, 0):
+            row.status = target
+            row.updated_at = now
+            updated[target] += 1
+    await session.commit()
+    return {
+        "checked": len(rows),
+        "to_downloading": updated["downloading"],
+        "to_done": updated["done"],
+    }
 
 
 @router.get("/sent-hashes", response_model=list[str])

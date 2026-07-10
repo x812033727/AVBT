@@ -91,6 +91,10 @@ class PCloudTransfer(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     bytes_downloaded: Mapped[int] = mapped_column(Integer, default=0)
     delete_source: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Auto-retry bookkeeping: transient failures re-queue with
+    # exponential backoff until attempts reaches the configured cap.
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

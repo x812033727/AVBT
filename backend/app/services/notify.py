@@ -26,6 +26,8 @@ EVENT_DEFAULTS = {
     "scraper_alert": "notify_scraper_alert",
     "backup_failed": "notify_backup_failed",
     "duplicates_found": "notify_duplicates_found",
+    "transfer_done": "notify_transfer_done",
+    "transfer_failed": "notify_transfer_failed",
 }
 
 

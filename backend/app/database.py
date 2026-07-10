@@ -134,6 +134,9 @@ _MIGRATION_DDL = (
     "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_created_at ON pcloud_transfer(created_at)",
     # Change-password revokes tokens issued before this moment.
     "ALTER TABLE auth_account ADD COLUMN password_changed_at DATETIME",
+    # pCloud transfer auto-retry bookkeeping.
+    "ALTER TABLE pcloud_transfer ADD COLUMN attempts INTEGER DEFAULT 0",
+    "ALTER TABLE pcloud_transfer ADD COLUMN next_retry_at DATETIME",
 )
 
 

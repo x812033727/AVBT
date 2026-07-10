@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from ..config import settings
 from ..database import SessionLocal
@@ -35,6 +35,7 @@ from ..models import PCloudTransfer
 from .pcloud import PCloudError, pcloud_service
 from .pikpak import PikPakError, pikpak_service
 from .supervisor import supervise
+from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
 
@@ -230,14 +231,23 @@ class PCloudTransferQueue:
 
     async def _claim_pending(self, limit: int) -> list[int]:
         """Atomically pick the next ``limit`` pending rows. Sets them to
-        'running' so two workers can never grab the same one."""
+        'running' so two workers can never grab the same one. Rows
+        parked by the auto-retry backoff stay untouched until their
+        ``next_retry_at`` passes (submit loop wakes at least every 30 s,
+        so the delay granularity is ~half a minute)."""
         if limit <= 0:
             return []
         async with SessionLocal() as session:
             rows = (
                 await session.execute(
                     select(PCloudTransfer.id)
-                    .where(PCloudTransfer.status == "pending")
+                    .where(
+                        PCloudTransfer.status == "pending",
+                        or_(
+                            PCloudTransfer.next_retry_at.is_(None),
+                            PCloudTransfer.next_retry_at <= datetime.utcnow(),
+                        ),
+                    )
                     .order_by(PCloudTransfer.id.asc())
                     .limit(limit)
                 )
@@ -270,14 +280,16 @@ class PCloudTransferQueue:
             try:
                 links = await pikpak_service.file_links(file_id)
             except PikPakError as exc:
-                await self._mark(transfer_id, "failed", f"PikPak 連結取得失敗: {exc}")
+                await self._fail_or_retry(transfer_id, f"PikPak 連結取得失敗: {exc}")
                 return
             except Exception as exc:  # noqa: BLE001
-                await self._mark(transfer_id, "failed", f"PikPak 錯誤: {exc}")
+                await self._fail_or_retry(transfer_id, f"PikPak 錯誤: {exc}")
                 return
 
             url = (links or {}).get("download_url") or ""
             if not url:
+                # No link at all is (almost always) a permanent property
+                # of the file, not a hiccup — fail immediately.
                 await self._mark(transfer_id, "failed", "PikPak 沒有可用下載連結")
                 return
 
@@ -286,10 +298,10 @@ class PCloudTransferQueue:
                     url, folder_id, filename=name
                 )
             except PCloudError as exc:
-                await self._mark(transfer_id, "failed", f"pCloud 拒絕: {exc}")
+                await self._fail_or_retry(transfer_id, f"pCloud 拒絕: {exc}")
                 return
             except Exception as exc:  # noqa: BLE001
-                await self._mark(transfer_id, "failed", f"pCloud 錯誤: {exc}")
+                await self._fail_or_retry(transfer_id, f"pCloud 錯誤: {exc}")
                 return
 
             upload_id = int(resp.get("upload_id") or 0)
@@ -333,6 +345,7 @@ class PCloudTransferQueue:
                         PCloudTransfer.pcloud_upload_id,
                         PCloudTransfer.delete_source,
                         PCloudTransfer.pikpak_file_id,
+                        PCloudTransfer.pikpak_name,
                     )
                     .where(
                         PCloudTransfer.status == "running",
@@ -342,7 +355,7 @@ class PCloudTransferQueue:
             ).all()
         if not rows:
             return
-        for rid, upload_id, delete_source, pikpak_fid in rows:
+        for rid, upload_id, delete_source, pikpak_fid, pikpak_name in rows:
             try:
                 p = await pcloud_service.upload_progress(int(upload_id))
             except Exception as exc:  # noqa: BLE001
@@ -384,16 +397,22 @@ class PCloudTransferQueue:
                             "post-transfer PikPak trash failed for %s: %s",
                             pikpak_fid, exc,
                         )
+                # Per-file — noisy for big folder batches, so the event
+                # defaults OFF (notify_transfer_done).
+                webhook_queue.enqueue_nowait(
+                    f"✅ pCloud 傳輸完成:{pikpak_name or rid}",
+                    event="transfer_done",
+                )
             elif status == "failed":
-                await self._mark(
-                    rid, "failed",
-                    f"pCloud 下載失敗: {p.get('error') or 'unknown'}",
+                # Often a CDN-side fetch hiccup — resubmitting from
+                # scratch (fresh PikPak link) frequently succeeds.
+                await self._fail_or_retry(
+                    rid, f"pCloud 下載失敗: {p.get('error') or 'unknown'}"
                 )
             elif status == "unknown":
-                # pCloud has no record — assume lost; mark failed so the
-                # user can retry.
-                await self._mark(
-                    rid, "failed", "pCloud 找不到此上傳任務(可能已逾時或被取消)",
+                # pCloud has no record — assume lost and resubmit.
+                await self._fail_or_retry(
+                    rid, "pCloud 找不到此上傳任務(可能已逾時或被取消)"
                 )
 
     async def _mark(self, transfer_id: int, status: str, message: str) -> None:
@@ -407,6 +426,40 @@ class PCloudTransferQueue:
                 .values(**values)
             )
             await session.commit()
+
+    async def _fail_or_retry(self, transfer_id: int, message: str) -> None:
+        """Transient failure: park the row back to 'pending' with
+        exponential backoff until the attempt cap, then fail for real
+        (one notification). A folder-recursive batch used to turn into
+        a wall of 'failed' rows whenever PikPak's CDN hiccuped — each
+        needing a manual retry click."""
+        max_attempts = max(1, settings.pcloud_transfer_max_attempts)
+        base = max(1, settings.pcloud_transfer_retry_base_seconds)
+        async with SessionLocal() as session:
+            row = await session.get(PCloudTransfer, transfer_id)
+            if row is None or row.status not in ("running", "pending"):
+                return
+            row.attempts = (row.attempts or 0) + 1
+            if row.attempts < max_attempts:
+                delay = base * (2 ** (row.attempts - 1))
+                row.status = "pending"
+                row.pcloud_upload_id = 0
+                row.bytes_downloaded = 0
+                row.next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+                row.message = (
+                    f"{message}(第 {row.attempts} 次失敗,約 {delay} 秒後自動重試)"
+                )
+                await session.commit()
+                return
+            row.status = "failed"
+            row.message = f"{message}(已自動重試 {row.attempts - 1} 次)"
+            row.finished_at = datetime.utcnow()
+            name = row.pikpak_name
+            await session.commit()
+        webhook_queue.enqueue_nowait(
+            f"❌ pCloud 傳輸失敗:{name or transfer_id} — {message}",
+            event="transfer_failed",
+        )
 
     # ---------- caller actions ----------
 
@@ -422,6 +475,9 @@ class PCloudTransferQueue:
             row.bytes_downloaded = 0
             row.message = "已重新排隊"
             row.finished_at = None
+            # Manual retry = fresh start for the auto-retry budget.
+            row.attempts = 0
+            row.next_retry_at = None
             await session.commit()
         self.notify()
         return True

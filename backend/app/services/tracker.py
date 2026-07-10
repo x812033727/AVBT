@@ -208,13 +208,25 @@ async def _record_missing_count(kind: str, slug: str) -> None:
     """Standalone missing-scan used by the manual ``force=True`` path on
     listings without ``auto_send``: walks the JavBus catalog, writes
     ``last_missing_count``, but does NOT enqueue anything to PikPak.
-    Lets the user trigger a fresh count without flipping auto-send on."""
+    Lets the user trigger a fresh count without flipping auto-send on.
+
+    Raises on a failed catalog walk (JavBus 429/5xx/network) so the
+    streaming "立即檢查" caller can report 失敗 instead of a silent 完成
+    with a stale count. The fire-and-forget background path uses
+    ``_record_missing_count_quiet`` to swallow + log instead."""
+    result = await missing_svc.missing_for_listing(kind, slug, refresh=True)
+    await _record_scan_result(kind, slug, len(result.missing))
+
+
+async def _record_missing_count_quiet(kind: str, slug: str) -> None:
+    """Fire-and-forget wrapper for the background path: logs and drops a
+    failed missing-scan rather than surfacing an unretrieved task
+    exception. The user-facing streaming path calls
+    ``_record_missing_count`` directly so the failure can reach the UI."""
     try:
-        result = await missing_svc.missing_for_listing(kind, slug, refresh=True)
+        await _record_missing_count(kind, slug)
     except Exception as exc:  # noqa: BLE001
         logger.warning("missing-count record %s/%s failed: %s", kind, slug, exc)
-        return
-    await _record_scan_result(kind, slug, len(result.missing))
 
 
 def _full_scan_due(row: TrackedListing) -> bool:
@@ -394,7 +406,7 @@ async def check_listing(
         # Non-auto_send + manual force: still refresh the missing count
         # so the next _scan_due decision sees an accurate baseline,
         # without sending anything to PikPak.
-        asyncio.create_task(_record_missing_count(kind, listing_id))
+        asyncio.create_task(_record_missing_count_quiet(kind, listing_id))
 
     return {
         "kind": kind,
@@ -459,7 +471,18 @@ async def check_listing_stream(
     elif force:
         yield {"type": "progress", "phase": "missing_scan",
                "message": "重算缺漏…"}
-        await _record_missing_count(kind, listing_id)
+        try:
+            await _record_missing_count(kind, listing_id)
+        except Exception as exc:  # noqa: BLE001
+            # JavBus 429/5xx/network during the catalog walk. Report 失敗
+            # instead of yielding a clean done with a stale count — the
+            # whole point of this fix.
+            snapshot = await _read_row_snapshot(kind, listing_id)
+            yield {"type": "done", "kind": kind, "id": listing_id,
+                   "name": p.name,
+                   "new_codes": p.new_codes if p.had_baseline else [],
+                   "error": str(exc), **snapshot}
+            return
 
     snapshot = await _read_row_snapshot(kind, listing_id)
     yield {"type": "done", "kind": kind, "id": listing_id,

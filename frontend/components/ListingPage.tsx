@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
+import { toast } from "@/components/Toast";
 import {
   api,
   type MissingCodesResult,
@@ -38,6 +39,7 @@ export default function ListingPage({
     expected_root: string;
   } | null>(null);
   const [presenceBusy, setPresenceBusy] = useState(false);
+  const [presenceError, setPresenceError] = useState<string | null>(null);
   const trackable = kind !== "genre";  // 類別變動太頻繁，不適合做追蹤
 
   const run = useCallback(
@@ -88,6 +90,7 @@ export default function ListingPage({
     async (refresh: boolean) => {
       if (!trackable || !tracked) return;
       setPresenceBusy(true);
+      setPresenceError(null);
       try {
         const params = new URLSearchParams({
           uncensored: String(uncensored),
@@ -103,9 +106,15 @@ export default function ListingPage({
           extras: r.extras.length,
           expected_root: r.expected_root,
         });
-      } catch {
+      } catch (e: any) {
+        // Don't swallow: a JavBus 429/5xx (or any /missing-codes failure)
+        // used to make the whole presence card vanish with no explanation.
+        // Surface it so the user knows the count is unavailable, not zero.
+        const msg = e?.message || "讀取缺漏失敗";
         setPresence(null);
         setPresenceMeta(null);
+        setPresenceError(msg);
+        if (refresh) toast.error(`缺漏重算失敗：${msg}`);
       } finally {
         setPresenceBusy(false);
       }
@@ -264,6 +273,23 @@ export default function ListingPage({
                   </span>
                 </div>
               )}
+            </div>
+          )}
+          {tracked && presenceError && !presenceMeta && (
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              <span>
+                缺漏讀取失敗:{presenceError}
+                <span className="ml-1 text-red-300/70">
+                  (JavBus 可能限流 / 暫時無法連線,稍後再試)
+                </span>
+              </span>
+              <button
+                onClick={() => loadPresence(true)}
+                disabled={presenceBusy}
+                className="ml-auto rounded border border-red-400/30 px-2 py-0.5 hover:bg-red-500/15 disabled:opacity-40"
+              >
+                {presenceBusy ? "重試中…" : "重試"}
+              </button>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">

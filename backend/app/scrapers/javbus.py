@@ -402,6 +402,23 @@ async def _fetch(
             )
             await asyncio.sleep(wait)
             continue
+        if resp.status_code >= 500:
+            # Transient origin/CDN errors: 502/503/504 and the Cloudflare
+            # 52x family (522 = couldn't reach JavBus origin). Unlike 429
+            # these aren't rate-limit pushback, so we DON'T widen the
+            # limiter — just back off and retry; most clear within a few
+            # seconds. On the last attempt let it propagate so the failure
+            # surfaces (the walker turns it into an errored listing rather
+            # than a silently-empty catalog).
+            if attempt == 3:
+                resp.raise_for_status()
+            wait = 2.0 * (2 ** attempt) + random.uniform(0, 1.0)
+            logger.warning(
+                "JavBus %d on %s (attempt %d) — backing off %.1fs",
+                resp.status_code, url, attempt + 1, wait,
+            )
+            await asyncio.sleep(wait)
+            continue
         resp.raise_for_status()
         break
 

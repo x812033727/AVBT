@@ -68,11 +68,19 @@ async def walk_listing(
 
         for page, res in zip(batch_pages, results, strict=True):
             if isinstance(res, BaseException):
+                # A page fetch failed (429 exhausted / 5xx / network). We
+                # must NOT return the pages gathered so far as if they were
+                # the full catalog: a truncated listing silently under-
+                # counts (real works look 缺漏 / present files look 多餘),
+                # and a page-1 failure would masquerade as an empty —
+                # "complete, nothing missing" — listing. Propagate so the
+                # caller marks this listing errored instead of trusting a
+                # partial/empty result. Transient errors recover on the
+                # next tracker tick / 重算缺漏.
                 logger.warning(
                     "fetch_listing(%s/%s p=%d) failed: %s", kind, slug, page, res
                 )
-                stop = True
-                break
+                raise res
             pages_scanned += 1
             if not res.items:
                 stop = True

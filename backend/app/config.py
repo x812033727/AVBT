@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     presence_ttl_seconds: int = 300            # cache lifetime
     missing_listing_cache_seconds: int = 3600  # JavBus listing cache
     missing_max_pages: int = 50                # safety cap when crawling a listing
+    # 缺漏摘要重建時同時處理幾個 tracked listing。JavBus 端已有全域
+    # 限流,平行主要是重疊 IO 等待;調太高只會增加無效等待。
+    missing_rebuild_concurrency: int = 4
 
     # Per-kind hierarchy paths. When empty, derived as
     # ``<pikpak_download_folder>/<kind>``. Set explicitly when your

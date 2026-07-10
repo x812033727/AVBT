@@ -428,6 +428,20 @@ async def missing_for_listing(
     )
 
 
+async def _parallel_map(items, fn, limit: int) -> list:
+    """Order-preserving bounded-concurrency ``await fn(item)`` over
+    ``items``. Rebuild paths iterate 78+ tracked listings whose work is
+    IO-wait dominated (JavBus walk, presence lookups) — running them
+    strictly serially made a cold rebuild take minutes."""
+    sem = asyncio.Semaphore(max(1, limit))
+
+    async def _run(item):
+        async with sem:
+            return await fn(item)
+
+    return list(await asyncio.gather(*(_run(i) for i in items)))
+
+
 async def _summary_item(
     row: TrackedListing,
     presence: set[str],
@@ -519,15 +533,13 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     for code, key in owner.items():
         owned_by_row.setdefault(key, set()).add(code)
 
-    items: list[MissingSummaryItem] = []
-    for row in rows:
-        items.append(
-            await _summary_item(
-                row,
-                presence,
-                owned=owned_by_row.get((row.kind, row.id), set()),
-            )
-        )
+    items: list[MissingSummaryItem] = await _parallel_map(
+        rows,
+        lambda row: _summary_item(
+            row, presence, owned=owned_by_row.get((row.kind, row.id), set())
+        ),
+        settings.missing_rebuild_concurrency,
+    )
 
     return MissingSummary(
         built_at=datetime.utcnow(),
@@ -576,25 +588,47 @@ async def missing_summary_stream(
 
         yield {"type": "start", "total": len(rows)}
 
-        items: list[MissingSummaryItem] = []
-        for idx, row in enumerate(rows, 1):
-            item = await _summary_item(
-                row,
-                presence,
-                owned=owned_by_row.get((row.kind, row.id), set()),
-            )
-            items.append(item)
-            yield {
-                "type": "progress",
-                "current": idx,
-                "total": len(rows),
-                "kind": row.kind,
-                "id": row.id,
-                "name": row.name or "",
-                "missing_count": item.missing_count,
-                "pages_scanned": item.pages_scanned,
-                "error": item.error or "",
-            }
+        # Bounded-parallel, progress streamed as listings complete (so
+        # events arrive out of row order); the final result is
+        # reassembled in row order below.
+        sem = asyncio.Semaphore(max(1, settings.missing_rebuild_concurrency))
+
+        async def _one(idx: int, row: TrackedListing):
+            async with sem:
+                item = await _summary_item(
+                    row,
+                    presence,
+                    owned=owned_by_row.get((row.kind, row.id), set()),
+                )
+            return idx, row, item
+
+        tasks = [
+            asyncio.create_task(_one(i, row)) for i, row in enumerate(rows)
+        ]
+        slots: list[MissingSummaryItem | None] = [None] * len(rows)
+        try:
+            done = 0
+            for fut in asyncio.as_completed(tasks):
+                idx, row, item = await fut
+                slots[idx] = item
+                done += 1
+                yield {
+                    "type": "progress",
+                    "current": done,
+                    "total": len(rows),
+                    "kind": row.kind,
+                    "id": row.id,
+                    "name": row.name or "",
+                    "missing_count": item.missing_count,
+                    "pages_scanned": item.pages_scanned,
+                    "error": item.error or "",
+                }
+        finally:
+            # Client disconnect closes the generator mid-stream — don't
+            # leave orphaned listing walks running.
+            for t in tasks:
+                t.cancel()
+        items: list[MissingSummaryItem] = [i for i in slots if i is not None]
 
         result = MissingSummary(
             built_at=datetime.utcnow(),
@@ -634,27 +668,33 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
         for code, key in owner.items():
             owned_by_row.setdefault(key, set()).add(code)
 
-        items: list[AggregatedMissingItem] = []
-        for row in rows:
+        async def _one_row(row: TrackedListing) -> AggregatedMissingItem | None:
             try:
                 listing, _pages = await fetch_all_listing_codes(
                     row.kind, row.id, uncensored=bool(row.uncensored)
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
-                continue
+                return None
             _, missing, _expected = _split_present_missing(listing, presence)
             owned = owned_by_row.get((row.kind, row.id), set())
             missing = [m for m in missing if m.code in owned]
-            if missing:
-                items.append(
-                    AggregatedMissingItem(
-                        kind=row.kind,
-                        id=row.id,
-                        name=row.name or row.id,
-                        missing=missing,
-                    )
-                )
+            if not missing:
+                return None
+            return AggregatedMissingItem(
+                kind=row.kind,
+                id=row.id,
+                name=row.name or row.id,
+                missing=missing,
+            )
+
+        items: list[AggregatedMissingItem] = [
+            item
+            for item in await _parallel_map(
+                rows, _one_row, settings.missing_rebuild_concurrency
+            )
+            if item is not None
+        ]
 
         result = AggregatedMissing(
             built_at=datetime.utcnow(),

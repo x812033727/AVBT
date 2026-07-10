@@ -29,7 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 _LIST_CONCURRENCY = 4
-_LIST_PAGE_SIZE = 500
+# Per-folder item ceiling for the paginated walk. The old single-page
+# ``size=500`` call silently truncated large folders (e.g. a busy
+# ``AVBT/已完成``), making present codes look missing.
+_LIST_MAX_ITEMS = 5000
 
 
 class PikPakPresenceIndex:
@@ -133,14 +136,21 @@ class PikPakPresenceIndex:
     async def _list(self, parent_id: str) -> list:
         async with self._sem:
             try:
-                return await pikpak_service.list_files(
-                    parent_id=parent_id, size=_LIST_PAGE_SIZE
+                files, partial = await pikpak_service.list_all_files(
+                    parent_id=parent_id, cap=_LIST_MAX_ITEMS
                 )
+                if partial:
+                    logger.warning(
+                        "presence walk truncated at %d items under folder %s "
+                        "— codes beyond the cap will look missing",
+                        len(files), parent_id,
+                    )
+                return files
             except PikPakError as exc:
-                logger.debug("list_files(%s) failed: %s", parent_id, exc)
+                logger.debug("list_all_files(%s) failed: %s", parent_id, exc)
                 return []
             except Exception as exc:  # noqa: BLE001
-                logger.warning("list_files(%s) failed: %s", parent_id, exc)
+                logger.warning("list_all_files(%s) failed: %s", parent_id, exc)
                 return []
 
     def _record(self, code: str, path: str) -> None:

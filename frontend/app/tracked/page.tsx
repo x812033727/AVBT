@@ -192,8 +192,19 @@ export default function TrackedPage() {
       // Reuse the same payload for the (collapsed) detail panel so a later
       // expand renders instantly without another round-trip.
       setDetails((m) => new Map(m).set(key, res));
-    } catch {
-      /* keep the existing badge / detail on failure */
+    } catch (e: any) {
+      // Don't swallow: flag the row's badge as errored (red「缺漏 ?」) so a
+      // JavBus 429/5xx during the post-check re-fetch doesn't leave a
+      // stale/blank count looking authoritative, and tell the user.
+      const msg = e?.message || "讀取缺漏失敗";
+      setMissing((prev) => {
+        if (!prev) return prev;
+        const next = new Map(prev);
+        const existing = next.get(key);
+        if (existing) next.set(key, { ...existing, error: msg });
+        return next;
+      });
+      toast.error(`${it.name || it.id} 缺漏重算失敗：${msg}`);
     }
   }, []);
 

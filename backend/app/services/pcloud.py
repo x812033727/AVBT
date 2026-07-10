@@ -78,6 +78,26 @@ class PCloudService(PCloudOrganizeMixin):
         self._username: str = ""
         self._userid: int | None = None
         self._lock = asyncio.Lock()
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
+
+    # ---------- shared HTTP client ----------
+    # One keep-alive pool per process (same pattern as the JavBus
+    # scraper's shared client). Every request used to build and tear
+    # down its own AsyncClient — a full TCP+TLS handshake per call,
+    # paid every 15 s by each running transfer's status poll.
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            async with self._client_lock:
+                if self._client is None or self._client.is_closed:
+                    self._client = httpx.AsyncClient(**self._client_args())
+        return self._client
+
+    async def aclose(self) -> None:
+        """Lifespan shutdown hook."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
 
     # ---------- token persistence ----------
 
@@ -178,16 +198,18 @@ class PCloudService(PCloudOrganizeMixin):
         approx_qs_len = sum(len(str(k)) + len(str(v)) + 2 for k, v in q.items())
         use_post = approx_qs_len > 4096
         try:
-            async with httpx.AsyncClient(timeout=timeout, **self._client_args()) as client:
-                if use_post:
-                    # pCloud accepts standard form-encoded POST. We move
-                    # everything (including auth) into the body so the
-                    # URL itself stays short.
-                    resp = await client.post(url, data=q)
-                else:
-                    resp = await client.get(url, params=q)
-                resp.raise_for_status()
-                data = resp.json()
+            client = await self._get_client()
+            # Per-request timeout keeps the "0 disables" semantics the
+            # shared client can't carry (it outlives any single call).
+            if use_post:
+                # pCloud accepts standard form-encoded POST. We move
+                # everything (including auth) into the body so the
+                # URL itself stays short.
+                resp = await client.post(url, data=q, timeout=timeout)
+            else:
+                resp = await client.get(url, params=q, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.TimeoutException as exc:
             raise PCloudError(
                 f"pCloud API 逾時 ({settings.pcloud_api_timeout_seconds:.0f}s)"

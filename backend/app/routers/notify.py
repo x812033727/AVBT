@@ -18,6 +18,7 @@ from ..services.notify import (
     send_notification,
     telegram_configured,
 )
+from ..services.webhook_queue import webhook_queue
 
 router = APIRouter(prefix="/api/notify", tags=["notify"])
 
@@ -29,6 +30,9 @@ async def get_settings():
         "webhook_configured": bool(settings.webhook_url),
         "telegram_configured": telegram_configured(),
         "toggles": toggles,
+        # Delivery counters — without these a full queue drops messages
+        # with no user-visible trace.
+        "queue": webhook_queue.status(),
     }
 
 

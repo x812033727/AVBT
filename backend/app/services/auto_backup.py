@@ -3,13 +3,18 @@
 Uses the stdlib ``sqlite3`` online-backup API (safe against a live
 writer, unlike a plain file copy) to snapshot the DB into
 ``<data-dir>/backups/avbt-YYYYMMDD-HHMMSS.db``, keeping the newest
-``auto_backup_keep`` files. The last run's timestamp/result is stored in
-app_meta so the settings page can display it."""
+``auto_backup_keep`` files. Credential files (auth secret, cloud
+tokens) are mirrored into ``backups/credentials/`` on every run —
+latest copy only; they aren't versioned data, the copy just survives
+an accidental delete/corruption of the originals. The last run's
+timestamp/result is stored in app_meta so the settings page can
+display it."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +26,9 @@ from ..models import AppMeta
 logger = logging.getLogger(__name__)
 
 _META_KEY = "auto_backup:last"
+
+# Relative to the data dir (= the DB file's parent).
+_CREDENTIAL_FILES = ("auth_secret.txt", "pikpak_token.txt", "pcloud_token.json")
 
 
 def _db_file() -> Path | None:
@@ -62,9 +70,29 @@ async def run_backup() -> Path:
     dest = directory / f"avbt-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.db"
     await asyncio.to_thread(_backup_sync, src, dest)
     removed = await asyncio.to_thread(_prune_sync, directory, settings.auto_backup_keep)
-    logger.info("database backed up to %s (pruned %d old)", dest, removed)
+    copied = await asyncio.to_thread(_copy_credentials_sync, src.parent, directory)
+    logger.info(
+        "database backed up to %s (pruned %d old, %d credential file(s))",
+        dest, removed, copied,
+    )
     await _record(f"ok:{dest.name}")
     return dest
+
+
+def _copy_credentials_sync(data_dir: Path, backup_root: Path) -> int:
+    cred_dir = backup_root / "credentials"
+    copied = 0
+    for name in _CREDENTIAL_FILES:
+        src = data_dir / name
+        if not src.is_file():
+            continue
+        try:
+            cred_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, cred_dir / name)  # copy2 keeps the 0600 mode
+            copied += 1
+        except OSError as exc:
+            logger.warning("credential backup failed for %s: %s", name, exc)
+    return copied
 
 
 async def _record(value: str) -> None:

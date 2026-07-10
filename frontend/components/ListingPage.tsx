@@ -40,7 +40,9 @@ export default function ListingPage({
   } | null>(null);
   const [presenceBusy, setPresenceBusy] = useState(false);
   const [presenceError, setPresenceError] = useState<string | null>(null);
-  const trackable = kind !== "genre";  // 類別變動太頻繁，不適合做追蹤
+  // 全部六種 kind 都可追蹤;類別目錄很大,tracked 頁開 auto_send 前會
+  // 另行 confirm,補檔量由 backfill batch limit 節流。
+  const trackable = true;
 
   const run = useCallback(
     async (p: number) => {

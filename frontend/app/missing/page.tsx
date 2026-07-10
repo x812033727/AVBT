@@ -19,6 +19,7 @@ const KIND_COLORS: Record<TrackedKind, string> = {
   label: "bg-violet-500/20 text-violet-300",
   series: "bg-emerald-500/20 text-emerald-300",
   director: "bg-amber-500/20 text-amber-300",
+  genre: "bg-cyan-500/20 text-cyan-300",
 };
 
 function fmt(d: string | null): string {
@@ -135,6 +136,7 @@ export default function MissingPage() {
             { v: "label", l: "發行商" },
             { v: "series", l: "系列" },
             { v: "director", l: "導演" },
+            { v: "genre", l: "類別" },
           ] as { v: TrackedKind | ""; l: string }[]).map((f) => (
             <button
               key={f.v}

@@ -40,6 +40,7 @@ const KIND_COLORS: Record<TrackedKind, string> = {
   label: "bg-violet-500/20 text-violet-300",
   series: "bg-emerald-500/20 text-emerald-300",
   director: "bg-amber-500/20 text-amber-300",
+  genre: "bg-cyan-500/20 text-cyan-300",
 };
 
 const ADD_KINDS: { value: TrackedKind; label: string }[] = [
@@ -48,6 +49,7 @@ const ADD_KINDS: { value: TrackedKind; label: string }[] = [
   { value: "label", label: "發行商" },
   { value: "series", label: "系列" },
   { value: "director", label: "導演" },
+  { value: "genre", label: "類別" },
 ];
 
 export default function TrackedPage() {
@@ -303,6 +305,15 @@ export default function TrackedPage() {
   }
 
   async function toggleAuto(it: TrackedListing) {
+    if (!it.auto_send && it.kind === "genre") {
+      // Genre catalogs run to thousands of works — backfill would keep
+      // feeding the queue batch after batch. Make sure it's deliberate.
+      const ok = window.confirm(
+        `「${it.name || it.id}」是類別追蹤,作品數可能上千部;開啟自動送出後` +
+          "會分批把所有缺漏送進 PikPak。確定要開啟?"
+      );
+      if (!ok) return;
+    }
     await api.post("/api/tracked", { ...it, auto_send: !it.auto_send });
     load();
   }

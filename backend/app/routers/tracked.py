@@ -23,8 +23,10 @@ from ..services import tracker
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 
 # Subset of LISTING_KINDS that we can sensibly track for "new works".
-# Genre changes too fast to be useful as a "new" feed.
-_ALLOWED = {"star", "studio", "label", "series", "director"}
+# Genre listings are huge/fast-moving — allowed, but the frontend warns
+# before enabling auto_send on one (see tracked page) and the backfill
+# batch limit keeps a giant catalog from flooding the queue.
+_ALLOWED = {"star", "studio", "label", "series", "director", "genre"}
 
 
 def _to_out(r: TrackedListing) -> TrackedListingOut:

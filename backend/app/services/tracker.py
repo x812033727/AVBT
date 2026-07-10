@@ -32,6 +32,7 @@ _KIND_LABELS = {
     "label": "發行商",
     "series": "系列",
     "director": "導演",
+    "genre": "類別",
 }
 
 # Bounds the number of listings checked simultaneously. JavBus outbound

@@ -381,15 +381,10 @@ class DownloadQueue:
     async def _process_direct(self, job: Job) -> JobResult:
         h = extract_btih(job.direct_magnet)
         if not job.force and h:
-            async with SessionLocal() as session:
-                row = (
-                    await session.execute(
-                        select(OfflineTaskLog.id)
-                        .where(OfflineTaskLog.btih == h)
-                        .limit(1)
-                    )
-                ).first()
-            if row is not None:
+            # Same btih cache the code-job path uses — saves a DB
+            # round-trip per direct submit (the cache is authoritative:
+            # warmed at startup, appended on every logged send).
+            if h in await _load_sent_hashes():
                 return JobResult(
                     code=job.code,
                     status="skipped_already_sent",
@@ -478,6 +473,12 @@ async def warm_sent_hashes() -> None:
     first job pulled by a worker doesn't pay the full-table-scan
     latency."""
     await _load_sent_hashes()
+
+
+async def all_sent_hashes() -> set[str]:
+    """Read-only view of the btih cache for routers. Callers must not
+    mutate the returned set."""
+    return await _load_sent_hashes()
 
 
 def _note_sent_hash(magnet: str) -> None:

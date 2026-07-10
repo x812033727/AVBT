@@ -16,8 +16,9 @@ from ..schemas import (
     SendAllOptions,
     SendAllResult,
 )
-from ..scrapers.javbus import JavbusBlocked, extract_btih
+from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
+from ..services.download_queue import all_sent_hashes
 
 router = APIRouter(prefix="/api/collection", tags=["collection"])
 
@@ -100,15 +101,14 @@ async def delete_item(code: str, session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/sent-hashes", response_model=list[str])
-async def sent_hashes(session: AsyncSession = Depends(get_session)):
-    """btih hashes of every magnet we've previously submitted to PikPak."""
-    rows = (await session.execute(select(OfflineTaskLog.magnet))).scalars().all()
-    seen: set[str] = set()
-    for magnet in rows:
-        h = extract_btih(magnet or "")
-        if h:
-            seen.add(h)
-    return sorted(seen)
+async def sent_hashes():
+    """btih hashes of every magnet we've previously submitted to PikPak.
+
+    Served from the download queue's process-wide btih cache (warmed at
+    startup, appended on every send) — the movie page calls this on
+    every load, and the previous implementation re-scanned all magnet
+    strings from the table each time."""
+    return sorted(await all_sent_hashes())
 
 
 @router.get("/history", response_model=HistoryPage)

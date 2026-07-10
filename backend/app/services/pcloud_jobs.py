@@ -13,10 +13,11 @@ Trade-offs:
   to checkpoint to disk: a half-finished organize already mutated
   pCloud, so on next boot we have nothing useful to resume from
   anyway. The user just looks at pCloud and reruns if needed.
-- **Unbounded job history within a session**. Each job is a small dict
-  plus its event list (≤ N events, where N == folder size). For a
-  typical 100-file folder that's ~50 KB. We don't actively prune;
-  housekeeping can be added when it actually matters.
+- **Bounded job history**. Each job is a small dict plus its event
+  list (≤ N events, where N == folder size; ~50 KB for a 100-file
+  folder). Finished jobs are pruned oldest-first past
+  ``_KEEP_FINISHED`` so a long-lived process can't accumulate
+  unbounded memory; running jobs are never pruned.
 - **One organize per folder at a time**. ``create_organize_job``
   rejects with 409 if there's already a running job for the same
   folder_id, to avoid two passes racing each other on the same set of
@@ -90,9 +91,13 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+_KEEP_FINISHED = 50
+
+
 class OrganizeJobManager:
-    def __init__(self) -> None:
+    def __init__(self, keep_finished: int = _KEEP_FINISHED) -> None:
         self._jobs: dict[str, OrganizeJob] = {}
+        self._keep_finished = max(1, keep_finished)
 
     def create(
         self, folder_id: str, folder_name: str, dry_run: bool
@@ -109,7 +114,22 @@ class OrganizeJobManager:
             started_at=_now_iso(),
         )
         self._jobs[job_id] = job
+        self._prune()
         return job
+
+    def _prune(self) -> None:
+        """Drop the oldest finished jobs past the retention cap. A
+        client polling a just-pruned id gets 404 — acceptable, since
+        pruning only happens once 50+ newer jobs exist."""
+        finished = [
+            j for j in self._jobs.values() if j.status != _STATUS_RUNNING
+        ]
+        excess = len(finished) - self._keep_finished
+        if excess <= 0:
+            return
+        finished.sort(key=lambda j: j.finished_at or j.started_at)
+        for job in finished[:excess]:
+            self._jobs.pop(job.job_id, None)
 
     def get(self, job_id: str) -> OrganizeJob | None:
         return self._jobs.get(job_id)

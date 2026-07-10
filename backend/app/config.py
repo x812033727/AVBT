@@ -181,6 +181,9 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./data/avbt.db"
 
+    # Root logger level (see logging_setup.py). DEBUG/INFO/WARNING/ERROR.
+    log_level: str = "INFO"
+
     # ----- 登入門禁 -----
     # 用來簽 JWT 的密鑰。留空時啟動會自動產生一組並寫入
     # data/auth_secret.txt(沿用 PikPak token 的持久化模式),讓 token

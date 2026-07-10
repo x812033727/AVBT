@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import cors_origin_list
 from .database import init_db
+from .logging_setup import setup_logging
 from .routers import (
     auth,
     backup,
@@ -27,6 +28,8 @@ from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.webhook_queue import webhook_queue
+
+setup_logging()
 
 
 @asynccontextmanager

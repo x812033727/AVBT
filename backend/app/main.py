@@ -26,6 +26,7 @@ from .scrapers import javbus as scraper
 from .services import archiver, auto_backup, log_cleanup, notify, tracker
 from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
+from .services.pcloud import pcloud_service
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.scraper_health import scraper_health
 from .services.supervisor import supervise
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
         await scraper.aclose_client()
         await img.aclose_client()
         await notify.aclose_client()
+        await pcloud_service.aclose()
 
 
 app = FastAPI(title="AVBT", version="0.1.0", lifespan=lifespan)

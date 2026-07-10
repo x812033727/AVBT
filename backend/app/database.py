@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -21,9 +22,40 @@ def _ensure_sqlite_dir(url: str) -> None:
             Path(os.path.dirname(path) or ".").mkdir(parents=True, exist_ok=True)
 
 
+def attach_sqlite_pragmas(target) -> None:
+    """WAL + busy_timeout on every pooled connection.
+
+    Concurrent writers (download_queue ×5, pcloud_transfer, tracker,
+    archiver, log_cleanup, auto_backup) on the default rollback journal
+    with busy_timeout=0 fail fast with "database is locked"; WAL lets
+    readers proceed under a writer and busy_timeout makes contending
+    writers wait instead of erroring. journal_mode persists in the db
+    file but busy_timeout is per-connection, hence the connect hook.
+    Listens on ``sync_engine`` — the async engine itself doesn't emit
+    pool events."""
+
+    @event.listens_for(target.sync_engine, "connect")
+    def _sqlite_on_connect(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
+
+
 _ensure_sqlite_dir(settings.database_url)
 
-engine = create_async_engine(settings.database_url, echo=False, future=True)
+_is_sqlite = settings.database_url.startswith("sqlite")
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    future=True,
+    # aiosqlite forwards this to sqlite3.connect — connection-level
+    # busy wait as a second line of defence under the PRAGMA below.
+    connect_args={"timeout": 30} if _is_sqlite else {},
+)
+if _is_sqlite:
+    attach_sqlite_pragmas(engine)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

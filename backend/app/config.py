@@ -161,6 +161,8 @@ class Settings(BaseSettings):
     notify_archive_failed: bool = True
     # PikPak 不穩時失敗通知可能很吵,預設關閉。
     notify_download_failed: bool = False
+    # 爬蟲哨兵:偵測到 JavBus 疑似改版/封鎖時的告警(每類每小時最多一次)。
+    notify_scraper_alert: bool = True
 
     # 允許的前端來源(CORS),逗號分隔。含 "*" 時視為全開(此時
     # 瀏覽器規範強制 allow_credentials=False)。

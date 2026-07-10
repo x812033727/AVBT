@@ -10,6 +10,7 @@ FastAPI dependency.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -107,11 +108,17 @@ def create_token(username: str) -> str:
     return jwt.encode(payload, _get_secret(), algorithm=_JWT_ALG)
 
 
+def decode_token_payload(token: str) -> dict | None:
+    try:
+        return jwt.decode(token, _get_secret(), algorithms=[_JWT_ALG])
+    except jwt.PyJWTError:
+        return None
+
+
 def decode_token(token: str) -> str | None:
     """Return the username from a valid token, or None if invalid/expired."""
-    try:
-        payload = jwt.decode(token, _get_secret(), algorithms=[_JWT_ALG])
-    except jwt.PyJWTError:
+    payload = decode_token_payload(token)
+    if payload is None:
         return None
     sub = payload.get("sub")
     return sub if isinstance(sub, str) and sub else None
@@ -193,8 +200,47 @@ async def update_password(
     if account is None or not verify_password(old_password, account.password_hash):
         return False
     account.password_hash = hash_password(new_password)
+    account.password_changed_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
+    _set_pwd_changed_epoch(account.password_changed_at)
     return True
+
+
+# ----- token revocation on password change -----
+# require_auth stays off the DB on the hot path: password_changed_at is
+# loaded once per process (lazily) and refreshed in-place by
+# update_password. Tokens whose iat predates it are rejected.
+
+_pwd_changed_epoch: float | None = None
+_pwd_changed_loaded = False
+_pwd_changed_lock = asyncio.Lock()
+
+# Grace so the token minted right after a password change (same second)
+# isn't killed by iat/changed_at second-level truncation.
+_IAT_LEEWAY_S = 2.0
+
+
+def _set_pwd_changed_epoch(changed: datetime | None) -> None:
+    global _pwd_changed_epoch, _pwd_changed_loaded
+    # DB stores naive UTC datetimes (project-wide utcnow convention).
+    _pwd_changed_epoch = (
+        changed.replace(tzinfo=UTC).timestamp() if changed else None
+    )
+    _pwd_changed_loaded = True
+
+
+async def _get_pwd_changed_epoch() -> float | None:
+    if _pwd_changed_loaded:
+        return _pwd_changed_epoch
+    async with _pwd_changed_lock:
+        if _pwd_changed_loaded:
+            return _pwd_changed_epoch
+        from ..database import SessionLocal  # local: avoid import cycle
+
+        async with SessionLocal() as session:
+            account = await get_account(session)
+        _set_pwd_changed_epoch(account.password_changed_at if account else None)
+    return _pwd_changed_epoch
 
 
 # ----- FastAPI dependency -----
@@ -206,13 +252,20 @@ async def require_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> str:
     """Guard dependency for protected routers. Verifies the Bearer JWT
-    (signature + expiry) and returns the username. Raises 401 otherwise.
-
-    Stateless on purpose: it does not hit the DB, so a password change
-    leaves previously-issued tokens valid until they expire."""
+    (signature + expiry + not-revoked-by-password-change) and returns
+    the username. Raises 401 otherwise. No DB hit on the hot path — the
+    revocation cutoff is a process-level cache."""
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=401, detail="需要登入")
-    username = decode_token(credentials.credentials)
-    if username is None:
+    payload = decode_token_payload(credentials.credentials)
+    username = payload.get("sub") if payload else None
+    if not isinstance(username, str) or not username:
         raise HTTPException(status_code=401, detail="登入已失效,請重新登入")
+    changed = await _get_pwd_changed_epoch()
+    if changed is not None:
+        iat = payload.get("iat")
+        if not isinstance(iat, (int, float)) or iat + _IAT_LEEWAY_S < changed:
+            raise HTTPException(
+                status_code=401, detail="密碼已變更,請重新登入"
+            )
     return username

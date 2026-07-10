@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 
 from .notify import send_notification
+from .supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +36,10 @@ class WebhookQueue:
         if self._started:
             return
         self._started = True
-        loop = asyncio.get_event_loop()
         for i in range(self._concurrency):
-            self._workers.append(loop.create_task(self._worker(i)))
+            self._workers.append(
+                supervise(partial(self._worker, i), f"webhook-worker-{i}")
+            )
         logger.info("webhook queue started with %d worker(s)", self._concurrency)
 
     async def stop(self) -> None:

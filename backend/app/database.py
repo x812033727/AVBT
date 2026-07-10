@@ -132,6 +132,8 @@ _MIGRATION_DDL = (
     "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_parent ON pcloud_transfer(parent_id)",
     "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_pikpak_file ON pcloud_transfer(pikpak_file_id)",
     "CREATE INDEX IF NOT EXISTS ix_pcloud_transfer_created_at ON pcloud_transfer(created_at)",
+    # Change-password revokes tokens issued before this moment.
+    "ALTER TABLE auth_account ADD COLUMN password_changed_at DATETIME",
 )
 
 

@@ -111,6 +111,11 @@ class AuthAccount(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     username: Mapped[str] = mapped_column(String(64))
     password_hash: Mapped[str] = mapped_column(String(255))
+    # Tokens issued before this moment are rejected (change-password
+    # revokes old sessions). NULL = never changed → nothing to revoke.
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

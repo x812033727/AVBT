@@ -34,6 +34,7 @@ from ..database import SessionLocal
 from ..models import PCloudTransfer
 from .pcloud import PCloudError, pcloud_service
 from .pikpak import PikPakError, pikpak_service
+from .supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,16 @@ class PCloudTransferQueue:
     # ---------- lifecycle ----------
 
     async def start(self) -> None:
+        running = lambda: not self._stop.is_set()  # noqa: E731
         if self._task is None or self._task.done():
             self._stop.clear()
-            self._task = asyncio.create_task(self._submit_loop(), name="pcloud-submit")
+            self._task = supervise(
+                self._submit_loop, "pcloud-submit", should_restart=running
+            )
         if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(self._poll_loop(), name="pcloud-poll")
+            self._poll_task = supervise(
+                self._poll_loop, "pcloud-poll", should_restart=running
+            )
         # Resurrect any rows the previous process left in "running" — those
         # are recoverable via savefilefromurlstatus(upload_id).
         await self._requeue_stuck()

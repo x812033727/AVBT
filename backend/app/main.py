@@ -28,6 +28,7 @@ from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.scraper_health import scraper_health
+from .services.supervisor import supervise
 from .services.webhook_queue import webhook_queue
 
 setup_logging()
@@ -47,10 +48,10 @@ async def lifespan(app: FastAPI):
     await webhook_queue.start()
     await pcloud_transfer_queue.start()
     background = [
-        asyncio.create_task(archiver.run_loop()),
-        asyncio.create_task(tracker.run_loop()),
-        asyncio.create_task(log_cleanup.run_loop()),
-        asyncio.create_task(auto_backup.run_loop()),
+        supervise(archiver.run_loop, "archiver"),
+        supervise(tracker.run_loop, "tracker"),
+        supervise(log_cleanup.run_loop, "log-cleanup"),
+        supervise(auto_backup.run_loop, "auto-backup"),
     ]
     try:
         yield

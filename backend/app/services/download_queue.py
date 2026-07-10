@@ -37,6 +37,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from typing import Literal
 
 from sqlalchemy import insert, select
@@ -48,6 +49,7 @@ from ..schemas import OfflineSubmit, SendAllOptions
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import extract_btih, pick_best_magnet
 from .pikpak import pikpak_service
+from .supervisor import supervise
 from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
@@ -147,9 +149,10 @@ class DownloadQueue:
         if self._started:
             return
         self._started = True
-        loop = asyncio.get_event_loop()
         for i in range(self._concurrency):
-            self._workers.append(loop.create_task(self._worker(i)))
+            self._workers.append(
+                supervise(partial(self._worker, i), f"download-worker-{i}")
+            )
         logger.info("download queue started with %d workers", self._concurrency)
 
     async def stop(self) -> None:

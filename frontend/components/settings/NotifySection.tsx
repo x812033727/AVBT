@@ -11,6 +11,8 @@ const NOTIFY_EVENTS: { key: string; label: string; hint: string }[] = [
   { key: "scraper_alert", label: "爬蟲異常告警", hint: "JavBus 疑似改版/封鎖時通知（每類每小時最多一次）" },
   { key: "backup_failed", label: "自動備份失敗", hint: "靜默失敗的備份比沒備份更危險" },
   { key: "duplicates_found", label: "定期重複掃描", hint: "需在 .env 開 DUPLICATES_SCAN_ENABLED；發現重複只通知不自動刪" },
+  { key: "transfer_done", label: "pCloud 傳輸完成", hint: "一檔一則,整資料夾轉存會很吵,預設關閉" },
+  { key: "transfer_failed", label: "pCloud 傳輸失敗", hint: "自動重試用盡仍失敗時通知" },
 ];
 
 type NotifySettings = {

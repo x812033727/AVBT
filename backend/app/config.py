@@ -178,6 +178,10 @@ class Settings(BaseSettings):
     notify_backup_failed: bool = True
     # 定期重複掃描發現重複番號時。
     notify_duplicates_found: bool = True
+    # pCloud 傳輸:單檔完成可能很吵(整資料夾遞迴=一檔一則),預設關;
+    # 用盡重試仍失敗的告警預設開。
+    notify_transfer_done: bool = False
+    notify_transfer_failed: bool = True
 
     # 允許的前端來源(CORS),逗號分隔。含 "*" 時視為全開(此時
     # 瀏覽器規範強制 allow_credentials=False)。
@@ -234,6 +238,11 @@ class Settings(BaseSettings):
     pcloud_transfer_concurrency: int = 3
     # 輪詢一個 pCloud 上傳任務狀態的間隔(秒)
     pcloud_poll_interval_seconds: int = 15
+    # 暫時性失敗(PikPak 連結逾時、pCloud 限流/下載失敗)自動重試:
+    # 總嘗試次數上限(含首次)。1 = 關閉自動重試。
+    pcloud_transfer_max_attempts: int = 3
+    # 重試退避基數(秒),第 n 次失敗後等 base * 2^(n-1)。
+    pcloud_transfer_retry_base_seconds: int = 60
 
 
 settings = Settings()

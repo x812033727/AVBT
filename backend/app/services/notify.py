@@ -23,6 +23,7 @@ EVENT_DEFAULTS = {
     "archive_done": "notify_archive_done",
     "archive_failed": "notify_archive_failed",
     "download_failed": "notify_download_failed",
+    "scraper_alert": "notify_scraper_alert",
 }
 
 

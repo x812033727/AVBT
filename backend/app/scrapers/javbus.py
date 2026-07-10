@@ -28,6 +28,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..config import settings
+from ..services.scraper_health import scraper_health
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,21 @@ IMG_RE = re.compile(r"var\s+img\s*=\s*['\"]([^'\"]+)['\"]")
 
 AGE_GATE_MARKERS = ("driver-verify", "Age Verification")
 
+# Cloudflare (and lookalike) anti-bot interstitials come back as
+# HTTP 200 with a challenge document — without detection they parse as
+# a valid-but-empty page and the failure is invisible.
+CHALLENGE_MARKERS = (
+    "Just a moment",
+    "cf-browser-verification",
+    "challenge-platform",
+    "__cf_chl_",
+    "Attention Required",
+)
+
+
+def _looks_like_challenge(html: str) -> bool:
+    return any(marker in html for marker in CHALLENGE_MARKERS)
+
 
 class JavbusBlocked(RuntimeError):
     """Raised when JavBus refuses to serve content (region-blocked)."""
@@ -423,6 +439,13 @@ async def _fetch(
         break
 
     assert resp is not None
+    if _looks_like_challenge(resp.text):
+        scraper_health.record_challenge()
+        logger.warning("JavBus anti-bot challenge page on %s", url)
+        raise JavbusBlocked(
+            "JavBus 回應反機器人挑戰頁(Cloudflare)——此 IP 可能被盯上。"
+            "請稍後再試,持續發生時考慮設 HTTP_PROXY 或改用鏡像站。"
+        )
     if _is_age_gate(resp.text):
         ok = await _bypass_age_gate(cli, url)
         if not ok:
@@ -530,11 +553,11 @@ async def search(
     url = f"{base}{prefix}/{keyword}/{max(1, page)}"
 
     cookies = None if with_magnets_only else {"existmag": "all"}
-    html = await _fetch(_get_client(), url, cookies=cookies)
+    html = await _fetch_listing_html(url, cookies=cookies)
     if not html:
         return SearchResult(items=[], page=page, has_next=False)
 
-    return _parse_listing(html, page)
+    return _parse_listing_recorded(html, page)
 
 
 async def fetch_listing(
@@ -573,11 +596,25 @@ async def fetch_listing(
     # ``_cookie_header_with``) so JavBus can't be served a duplicate
     # ``existmag`` and silently keep the magnet-only filter.
     cookies = None if with_magnets_only else {"existmag": "all"}
-    html = await _fetch(_get_client(), url, cookies=cookies)
+    html = await _fetch_listing_html(url, cookies=cookies)
     if not html:
         return SearchResult(items=[], page=page, has_next=False)
 
-    return _parse_listing(html, page)
+    return _parse_listing_recorded(html, page)
+
+
+async def _fetch_listing_html(url: str, *, cookies: dict[str, str] | None) -> str:
+    try:
+        return await _fetch(_get_client(), url, cookies=cookies)
+    except Exception:
+        scraper_health.record_listing("error")
+        raise
+
+
+def _parse_listing_recorded(html: str, page: int) -> SearchResult:
+    res = _parse_listing(html, page)
+    scraper_health.record_listing("ok" if res.items else "zero_items")
+    return res
 
 
 def _parse_listing_title(html: str) -> str:
@@ -773,6 +810,7 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     try:
         html = await _fetch(cli, url)
         if not html:
+            scraper_health.record_detail("empty_html")
             return MovieDetail(code=code, title="")
 
         detail = _parse_detail(html, code)
@@ -790,10 +828,22 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
                 img=img_m.group(1),
                 code=code,
             )
+            # Empty AJAX result = fresh release without magnets yet;
+            # only a missing token on a parsed page signals breakage.
+            scraper_health.record_detail(
+                "ok_magnets" if detail.magnets else "ok_no_magnets"
+            )
+        elif detail.title:
+            scraper_health.record_detail("gid_missing")
+        else:
+            scraper_health.record_detail("empty_parse")
 
         if detail.title:
             _detail_cache_put(code, detail)
         return detail
+    except Exception:
+        scraper_health.record_detail("error")
+        raise
     finally:
         if owns_inflight:
             async with _detail_cache_lock:

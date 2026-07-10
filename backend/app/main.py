@@ -27,6 +27,7 @@ from .services import archiver, auto_backup, log_cleanup, notify, tracker
 from .services.auth import require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud_transfer import pcloud_transfer_queue
+from .services.scraper_health import scraper_health
 from .services.webhook_queue import webhook_queue
 
 setup_logging()
@@ -104,4 +105,6 @@ app.include_router(img.router)
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True}
+    # scraper_degraded is informational — the container healthcheck must
+    # not flap because JavBus is having a bad hour.
+    return {"ok": True, "scraper_degraded": scraper_health.degraded()}

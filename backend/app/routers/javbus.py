@@ -13,8 +13,15 @@ from ..schemas import (
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
+from ..services.scraper_health import scraper_health
 
 router = APIRouter(prefix="/api/javbus", tags=["javbus"])
+
+
+@router.get("/scraper-health")
+async def scraper_health_snapshot():
+    """Rolling scrape-outcome stats — is JavBus parsing still healthy?"""
+    return scraper_health.snapshot()
 
 
 @router.get("/search", response_model=SearchResult)

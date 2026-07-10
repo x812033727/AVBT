@@ -64,6 +64,7 @@ KIND_LABELS_CH: dict[str, str] = {
     "studio": "製作商",
     "label": "發行商",
     "director": "導演",
+    "genre": "類別",
 }
 
 
@@ -72,7 +73,7 @@ KIND_LABELS_CH: dict[str, str] = {
 # "回胴錄". Strip that template suffix so archived folders are named with
 # the bare title.
 _LISTING_SUFFIX_RE = re.compile(
-    r"\s*[-‐－–—]\s*(?:女優|系列|製作商|發行商|導演)\s*[-‐－–—]\s*影片\s*$"
+    r"\s*[-‐－–—]\s*(?:女優|系列|製作商|發行商|導演|類別)\s*[-‐－–—]\s*影片\s*$"
 )
 
 

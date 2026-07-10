@@ -365,7 +365,7 @@ export type HistoryPage = {
   limit: number;
 };
 
-export type TrackedKind = "star" | "studio" | "label" | "series" | "director";
+export type TrackedKind = "star" | "studio" | "label" | "series" | "director" | "genre";
 
 export type TrackedListing = {
   kind: TrackedKind;
@@ -395,6 +395,7 @@ export const TRACKED_LABELS: Record<TrackedKind, string> = {
   label: "發行商",
   series: "系列",
   director: "導演",
+  genre: "類別",
 };
 
 export type PikPakStatus = {

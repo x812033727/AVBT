@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     pikpak_studio_folder: str = ""
     pikpak_label_folder: str = ""
     pikpak_director_folder: str = ""
+    pikpak_genre_folder: str = ""
 
     # Listing tracker: every N seconds, check JavBus for new works of
     # every TrackedListing row.
@@ -261,7 +262,7 @@ def img_proxy_allowed_hosts() -> tuple[str, ...]:
     return tuple(dict.fromkeys(hosts))
 
 
-_TRACKED_KINDS = ("star", "series", "studio", "label", "director")
+_TRACKED_KINDS = ("star", "series", "studio", "label", "director", "genre")
 
 
 def kind_base_path(kind: str) -> str:

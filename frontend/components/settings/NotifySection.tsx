@@ -9,6 +9,8 @@ const NOTIFY_EVENTS: { key: string; label: string; hint: string }[] = [
   { key: "archive_failed", label: "歸檔失敗", hint: "同一檔案只通知第一次失敗" },
   { key: "download_failed", label: "下載送出失敗", hint: "PikPak 不穩時可能較吵，預設關閉" },
   { key: "scraper_alert", label: "爬蟲異常告警", hint: "JavBus 疑似改版/封鎖時通知（每類每小時最多一次）" },
+  { key: "backup_failed", label: "自動備份失敗", hint: "靜默失敗的備份比沒備份更危險" },
+  { key: "duplicates_found", label: "定期重複掃描", hint: "需在 .env 開 DUPLICATES_SCAN_ENABLED；發現重複只通知不自動刪" },
 ];
 
 type NotifySettings = {

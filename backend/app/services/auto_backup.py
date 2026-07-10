@@ -148,3 +148,11 @@ async def run_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("auto backup iteration failed")
             await _record(f"error:{exc}")
+            # A silently failing backup is worse than no backup — the
+            # user believes they're covered. Local import keeps the
+            # module import-light for tests.
+            from .webhook_queue import webhook_queue
+
+            webhook_queue.enqueue_nowait(
+                f"❌ 自動資料庫備份失敗:{exc}", event="backup_failed"
+            )

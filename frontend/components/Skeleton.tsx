@@ -1,28 +1,12 @@
-export function Skeleton({ className = "" }: { className?: string }) {
-  return (
-    <div
-      className={
-        "animate-pulse rounded bg-white/10 " + className
-      }
-      aria-hidden
-    />
-  );
-}
+// 過渡層:舊頁面仍從這裡 import Skeleton / MovieGridSkeleton / RowSkeleton,
+// 實作已收斂到 components/ui/skeleton 與 components/shared/MovieGrid,
+// PR10 收尾時把 caller 改為直接引用後移除本檔。
+import { Skeleton as UISkeleton } from "@/components/ui/skeleton";
 
-export function MovieGridSkeleton({ count = 8 }: { count?: number }) {
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-      {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="overflow-hidden rounded-lg border border-white/5 bg-panel">
-          <Skeleton className="aspect-[5/7] w-full rounded-none" />
-          <div className="space-y-2 p-2">
-            <Skeleton className="h-3 w-1/3" />
-            <Skeleton className="h-3 w-full" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+export { MovieGridSkeleton } from "@/components/shared/MovieGrid";
+
+export function Skeleton(props: React.HTMLAttributes<HTMLDivElement>) {
+  return <UISkeleton aria-hidden {...props} />;
 }
 
 export function RowSkeleton({ count = 5 }: { count?: number }) {

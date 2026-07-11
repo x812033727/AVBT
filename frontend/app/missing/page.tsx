@@ -2,9 +2,15 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PackageCheck } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { MovieGrid } from "@/components/shared/MovieGrid";
 import { toast } from "@/components/Toast";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   TRACKED_LABELS,
   api,
@@ -125,7 +131,7 @@ export default function MissingPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-lg font-semibold">缺漏番號</h1>
-        <span className="text-sm text-white/40">
+        <span className="text-sm text-muted-foreground">
           {sections.length} 個分類 ・ 共 {totalMissing} 部缺漏
         </span>
         <div className="flex flex-wrap gap-1">
@@ -140,25 +146,27 @@ export default function MissingPage() {
           ] as { v: TrackedKind | ""; l: string }[]).map((f) => (
             <button
               key={f.v}
+              type="button"
               onClick={() => setFilter(f.v)}
-              className={
-                "rounded-md px-3 py-1 text-xs " +
-                (filter === f.v
-                  ? "bg-accent text-black"
-                  : "border border-white/10 text-white/60 hover:bg-white/5")
-              }
+              className={cn(
+                "rounded-md px-3 py-1 text-xs transition",
+                filter === f.v
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
             >
               {f.l}
             </button>
           ))}
         </div>
         <button
-          className={
-            "rounded-md px-3 py-1 text-xs " +
-            (selectMode
-              ? "bg-accent text-black"
-              : "border border-white/10 text-white/60 hover:bg-white/5")
-          }
+          type="button"
+          className={cn(
+            "rounded-md px-3 py-1 text-xs transition",
+            selectMode
+              ? "bg-primary text-primary-foreground"
+              : "border border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+          )}
           onClick={() => {
             setSelectMode((m) => !m);
             setSelected(new Set());
@@ -166,32 +174,31 @@ export default function MissingPage() {
         >
           {selectMode ? "結束選取" : "選取模式"}
         </button>
-        <button
-          className="ml-auto btn-ghost"
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
           onClick={() => load(true)}
           disabled={loading}
         >
           {loading ? "重算中…" : "重新整理"}
-        </button>
+        </Button>
       </div>
 
-      <div className="text-xs text-white/40">
+      <div className="text-xs text-muted-foreground">
         建立於 {fmt(data?.built_at || null)} ・ PikPak 索引{" "}
         {fmt(data?.presence_built_at || null)}
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} />}
 
       {!loading && sections.length === 0 && (
-        <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
-          {data
-            ? "沒有缺漏 — 所有追蹤分類都已收齊。"
-            : "載入中…"}
-        </div>
+        <EmptyState
+          icon={PackageCheck}
+          title={
+            data ? "沒有缺漏 — 所有追蹤分類都已收齊。" : "載入中…"
+          }
+        />
       )}
 
       {sections.map((s) => {
@@ -201,31 +208,38 @@ export default function MissingPage() {
         return (
           <section
             key={`${s.kind}:${s.id}`}
-            className="space-y-3 rounded-lg border border-white/10 bg-panel/40 p-3"
+            className="space-y-3 rounded-lg border border-border bg-card/50 p-3"
           >
             <div className="flex flex-wrap items-center gap-2">
-              <span className={"rounded px-2 py-0.5 text-xs " + KIND_COLORS[s.kind]}>
+              <span
+                className={cn(
+                  "rounded-sm px-2 py-0.5 text-xs font-medium",
+                  KIND_COLORS[s.kind]
+                )}
+              >
                 {TRACKED_LABELS[s.kind]}
               </span>
               <Link
                 href={`/${s.kind}/${encodeURIComponent(s.id)}`}
-                className="font-semibold text-accent hover:underline"
+                className="font-semibold text-foreground hover:text-primary hover:underline"
               >
                 {s.name || s.id}
               </Link>
-              <span className="text-xs text-white/40">
+              <span className="text-xs text-muted-foreground">
                 缺 {s.missing.length} 部
               </span>
               {selectMode && (
-                <button
-                  className="rounded border border-white/10 px-2 py-0.5 text-xs text-white/60 hover:bg-white/10"
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
                   onClick={() => selectSection(codes, !allSelected)}
                 >
                   {allSelected ? "取消全選" : "全選此分類"}
-                </button>
+                </Button>
               )}
             </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <MovieGrid>
               {s.missing.map((it) => (
                 <MovieCard
                   key={it.code + it.detail_url}
@@ -236,14 +250,14 @@ export default function MissingPage() {
                   onToggleSelect={toggleCode}
                 />
               ))}
-            </div>
+            </MovieGrid>
           </section>
         );
       })}
 
       {selectMode && selected.size > 0 && (
-        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-panel/95 px-4 py-3 shadow-lg backdrop-blur">
-          <span className="text-sm text-white/70">
+        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/95 px-4 py-3 backdrop-blur">
+          <span className="text-sm text-muted-foreground">
             已選 {selectedItems.length} 部
           </span>
           <BulkSendButton
@@ -255,20 +269,22 @@ export default function MissingPage() {
             onDone={() => setSelected(new Set())}
             disabled={busy}
           />
-          <button
-            className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/80 transition hover:bg-white/5 disabled:opacity-50"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={addToCollection}
             disabled={busy}
           >
             加入收藏(待看)
-          </button>
-          <button
-            className="btn-ghost text-sm"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setSelected(new Set())}
             disabled={busy}
           >
             清除選取
-          </button>
+          </Button>
         </div>
       )}
     </div>

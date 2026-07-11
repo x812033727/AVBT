@@ -1,5 +1,10 @@
 "use client";
 
+// 全站通知/確認的統一入口。
+// 公開 API(toast.* / confirmDialog / useToast / default ToastProvider)維持
+// 原樣,內部實作換為 sonner(toast 疊層)+ Radix AlertDialog(confirm,含
+// focus trap / Esc / role 語意)。confirm 維持佇列語意:多筆依序呈現。
+
 import {
   createContext,
   useCallback,
@@ -9,14 +14,20 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast as sonnerToast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export type ToastKind = "info" | "success" | "warn" | "error";
-
-type ToastItem = {
-  id: number;
-  kind: ToastKind;
-  message: string;
-};
 
 type ConfirmRequest = {
   id: number;
@@ -25,34 +36,28 @@ type ConfirmRequest = {
   resolve: (ok: boolean) => void;
 };
 
-type EmitterEvent =
-  | { type: "toast"; kind: ToastKind; message: string }
-  | {
-      type: "confirm";
-      message: string;
-      detail?: string;
-      resolve: (ok: boolean) => void;
-    };
+type ConfirmListener = (req: Omit<ConfirmRequest, "id">) => void;
 
-type Listener = (e: EmitterEvent) => void;
-
-const listeners = new Set<Listener>();
-
-function emit(e: EmitterEvent) {
-  listeners.forEach((l) => l(e));
-}
+const confirmListeners = new Set<ConfirmListener>();
 
 export const toast = {
-  info: (message: string) => emit({ type: "toast", kind: "info", message }),
+  info: (message: string) => void sonnerToast.info(message, { duration: 3000 }),
   success: (message: string) =>
-    emit({ type: "toast", kind: "success", message }),
-  warn: (message: string) => emit({ type: "toast", kind: "warn", message }),
-  error: (message: string) => emit({ type: "toast", kind: "error", message }),
+    void sonnerToast.success(message, { duration: 3000 }),
+  warn: (message: string) =>
+    void sonnerToast.warning(message, { duration: 3000 }),
+  error: (message: string) =>
+    void sonnerToast.error(message, { duration: 5000 }),
 };
 
 export function confirmDialog(message: string, detail?: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    emit({ type: "confirm", message, detail, resolve });
+    if (confirmListeners.size === 0) {
+      // Provider 尚未掛載(理論上不會發生):不讓呼叫端永遠卡住。
+      resolve(false);
+      return;
+    }
+    confirmListeners.forEach((l) => l({ message, detail, resolve }));
   });
 }
 
@@ -61,54 +66,20 @@ export function useToast() {
   return useContext(ToastContext);
 }
 
-const TONE: Record<ToastKind, string> = {
-  info: "border-blue-400/30 bg-blue-500/10 text-blue-100",
-  success: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
-  warn: "border-amber-400/30 bg-amber-500/10 text-amber-100",
-  error: "border-red-500/30 bg-red-500/10 text-red-100",
-};
-
-const ICON: Record<ToastKind, string> = {
-  info: "ⓘ",
-  success: "✓",
-  warn: "⚠",
-  error: "✕",
-};
-
 export default function ToastProvider({ children }: { children: React.ReactNode }) {
-  const [items, setItems] = useState<ToastItem[]>([]);
   const [confirms, setConfirms] = useState<ConfirmRequest[]>([]);
   const counter = useRef(0);
 
-  const push = useCallback((kind: ToastKind, message: string) => {
-    const id = ++counter.current;
-    setItems((prev) => [...prev.slice(-4), { id, kind, message }]);
-    const ttl = kind === "error" ? 5000 : 3000;
-    setTimeout(() => {
-      setItems((prev) => prev.filter((t) => t.id !== id));
-    }, ttl);
-  }, []);
-
-  const dismiss = useCallback((id: number) => {
-    setItems((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
   useEffect(() => {
-    const handler: Listener = (e) => {
-      if (e.type === "toast") push(e.kind, e.message);
-      else if (e.type === "confirm") {
-        const id = ++counter.current;
-        setConfirms((prev) => [
-          ...prev,
-          { id, message: e.message, detail: e.detail, resolve: e.resolve },
-        ]);
-      }
+    const handler: ConfirmListener = (req) => {
+      const id = ++counter.current;
+      setConfirms((prev) => [...prev, { id, ...req }]);
     };
-    listeners.add(handler);
+    confirmListeners.add(handler);
     return () => {
-      listeners.delete(handler);
+      confirmListeners.delete(handler);
     };
-  }, [push]);
+  }, []);
 
   const settleConfirm = useCallback((id: number, ok: boolean) => {
     setConfirms((prev) => {
@@ -125,45 +96,38 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
   return (
     <ToastContext.Provider value={ctx}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 max-w-[90vw] flex-col gap-2">
-        {items.map((t) => (
-          <div
-            key={t.id}
-            onClick={() => dismiss(t.id)}
-            className={
-              "pointer-events-auto flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 text-sm shadow-lg backdrop-blur " +
-              TONE[t.kind]
-            }
-          >
-            <span className="text-base leading-none">{ICON[t.kind]}</span>
-            <span className="flex-1 break-words">{t.message}</span>
-          </div>
-        ))}
-      </div>
-      {top && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-lg border border-white/10 bg-panel p-4 shadow-xl">
-            <div className="text-sm text-white/90">{top.message}</div>
-            {top.detail && (
-              <div className="mt-2 text-xs text-white/50">{top.detail}</div>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                className="btn-ghost"
-                onClick={() => settleConfirm(top.id, false)}
-              >
+      <Toaster position="bottom-right" closeButton />
+      <AlertDialog
+        open={!!top}
+        onOpenChange={(open) => {
+          // Esc / 點遮罩關閉視為取消;按鈕路徑已先 settle,這裡的重複呼叫
+          // 會因佇列中找不到該 id 而自然變成 no-op。
+          if (!open && top) settleConfirm(top.id, false);
+        }}
+      >
+        {top && (
+          <AlertDialogContent className="max-w-sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-sm font-normal text-foreground">
+                {top.message}
+              </AlertDialogTitle>
+              {top.detail ? (
+                <AlertDialogDescription className="text-xs">
+                  {top.detail}
+                </AlertDialogDescription>
+              ) : null}
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => settleConfirm(top.id, false)}>
                 取消
-              </button>
-              <button
-                className="btn-primary"
-                onClick={() => settleConfirm(top.id, true)}
-              >
+              </AlertDialogCancel>
+              <AlertDialogAction onClick={() => settleConfirm(top.id, true)}>
                 確認
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
     </ToastContext.Provider>
   );
 }

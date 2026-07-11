@@ -308,7 +308,7 @@ export default function TrackedPage() {
     if (!it.auto_send && it.kind === "genre") {
       // Genre catalogs run to thousands of works — backfill would keep
       // feeding the queue batch after batch. Make sure it's deliberate.
-      const ok = window.confirm(
+      const ok = await confirmDialog(
         `「${it.name || it.id}」是類別追蹤,作品數可能上千部;開啟自動送出後` +
           "會分批把所有缺漏送進 PikPak。確定要開啟?"
       );

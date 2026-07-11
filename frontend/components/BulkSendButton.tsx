@@ -1,7 +1,16 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { Check, SkipForward, X } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress as ProgressBar } from "@/components/ui/progress";
 import { streamNdjson } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 type Options = {
   uncensored: boolean;
@@ -30,11 +39,22 @@ type Progress = {
   message?: string;
 };
 
-const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
-  sent: { text: "✓ 已送", cls: "text-emerald-300" },
-  skipped_no_magnet: { text: "⏭ 無磁力", cls: "text-white/50" },
-  skipped_already_sent: { text: "⏭ 已送過", cls: "text-white/50" },
-  failed: { text: "✗ 失敗", cls: "text-red-300" },
+const STATUS_LABEL: Record<
+  string,
+  { text: string; icon: LucideIcon; cls: string }
+> = {
+  sent: { text: "已送", icon: Check, cls: "text-emerald-300" },
+  skipped_no_magnet: {
+    text: "無磁力",
+    icon: SkipForward,
+    cls: "text-muted-foreground",
+  },
+  skipped_already_sent: {
+    text: "已送過",
+    icon: SkipForward,
+    cls: "text-muted-foreground",
+  },
+  failed: { text: "失敗", icon: X, cls: "text-red-300" },
 };
 
 const DEFAULT_OPTIONS: Options = {
@@ -68,6 +88,7 @@ export default function BulkSendButton({
   onDone?: (result: Result | null) => void;
   disabled?: boolean;
 }) {
+  const uid = useId();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [total, setTotal] = useState<number>(0);
@@ -132,13 +153,9 @@ export default function BulkSendButton({
 
   return (
     <>
-      <button
-        className="btn-primary disabled:opacity-50"
-        onClick={() => setOpen(true)}
-        disabled={disabled}
-      >
+      <Button onClick={() => setOpen(true)} disabled={disabled}>
         {buttonLabel}
-      </button>
+      </Button>
 
       {open && (
         <div
@@ -147,23 +164,31 @@ export default function BulkSendButton({
             if (e.target === e.currentTarget) close();
           }}
         >
-          <div className="w-full max-w-lg space-y-4 rounded-xl border border-white/10 bg-panel p-5">
+          <div className="w-full max-w-lg space-y-4 rounded-lg border border-border bg-card p-5">
             <div className="flex items-center">
               <h2 className="text-lg font-semibold">{title}</h2>
               <button
-                className="ml-auto text-white/40 hover:text-white"
+                type="button"
+                className="ml-auto rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
                 onClick={close}
+                aria-label="關閉"
               >
-                ✕
+                <X className="h-4 w-4" aria-hidden />
               </button>
             </div>
 
             {!busy && !done && (
               <div className="space-y-3 text-sm">
                 {showMaxPages && (
-                  <label className="flex items-center justify-between">
-                    <span className="text-white/70">最多抓幾頁</span>
-                    <input
+                  <div className="flex items-center justify-between">
+                    <Label
+                      htmlFor={`${uid}-max-pages`}
+                      className="font-normal text-muted-foreground"
+                    >
+                      最多抓幾頁
+                    </Label>
+                    <Input
+                      id={`${uid}-max-pages`}
                       type="number"
                       min={1}
                       max={20}
@@ -174,44 +199,53 @@ export default function BulkSendButton({
                           max_pages: parseInt(e.target.value || "1"),
                         })
                       }
-                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                      className="h-8 w-20 px-2 text-right"
                     />
-                  </label>
+                  </div>
                 )}
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${uid}-hd-only`}
                     checked={opts.hd_only}
-                    onChange={(e) =>
-                      setOpts({ ...opts, hd_only: e.target.checked })
+                    onCheckedChange={(v) =>
+                      setOpts({ ...opts, hd_only: v === true })
                     }
                   />
-                  <span>優先高清</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
+                  <Label htmlFor={`${uid}-hd-only`} className="font-normal">
+                    優先高清
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${uid}-subtitle-only`}
                     checked={opts.subtitle_only}
-                    onChange={(e) =>
-                      setOpts({ ...opts, subtitle_only: e.target.checked })
+                    onCheckedChange={(v) =>
+                      setOpts({ ...opts, subtitle_only: v === true })
                     }
                   />
-                  <span>優先有字幕</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
+                  <Label
+                    htmlFor={`${uid}-subtitle-only`}
+                    className="font-normal"
+                  >
+                    優先有字幕
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${uid}-skip-sent`}
                     checked={opts.skip_sent}
-                    onChange={(e) =>
-                      setOpts({ ...opts, skip_sent: e.target.checked })
+                    onCheckedChange={(v) =>
+                      setOpts({ ...opts, skip_sent: v === true })
                     }
                   />
-                  <span>跳過已送過的</span>
-                </label>
+                  <Label htmlFor={`${uid}-skip-sent`} className="font-normal">
+                    跳過已送過的
+                  </Label>
+                </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-white/70">檔案大小 (MB)</span>
+                  <span className="text-muted-foreground">檔案大小 (MB)</span>
                   <div className="flex items-center gap-1 text-xs">
-                    <input
+                    <Input
                       type="number"
                       min={0}
                       placeholder="不限"
@@ -224,10 +258,10 @@ export default function BulkSendButton({
                             : null,
                         })
                       }
-                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                      className="h-8 w-20 px-2 text-right"
                     />
                     <span>~</span>
-                    <input
+                    <Input
                       type="number"
                       min={0}
                       placeholder="不限"
@@ -240,25 +274,21 @@ export default function BulkSendButton({
                             : null,
                         })
                       }
-                      className="w-20 rounded-md border border-white/10 bg-ink px-2 py-1 text-right"
+                      className="h-8 w-20 px-2 text-right"
                     />
                   </div>
                 </div>
-                <p className="text-xs text-white/40">
+                <p className="text-xs text-muted-foreground">
                   範圍外或不在範圍內的磁力會跳過；大小未標示的磁力不會被過濾。
                 </p>
               </div>
             )}
 
-            {error && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {error}
-              </div>
-            )}
+            {error && <ErrorBox message={error} />}
 
             {(busy || done) && total > 0 && (
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-white/60">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>
                     {progress.length} / {total} ({percent}%)
                   </span>
@@ -270,30 +300,35 @@ export default function BulkSendButton({
                     {progress.filter((p) => p.status === "failed").length}
                   </span>
                 </div>
-                <div className="h-2 overflow-hidden rounded bg-white/10">
-                  <div
-                    className="h-full bg-accent transition-[width]"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
-                <ul className="max-h-48 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
+                <ProgressBar value={percent} className="h-2" />
+                <ul className="max-h-48 overflow-y-auto rounded-md border border-border bg-background/50 p-2 text-xs">
                   {recent.length === 0 && (
-                    <li className="text-white/40">等待第一筆…</li>
+                    <li className="text-muted-foreground">等待第一筆…</li>
                   )}
                   {recent.map((p) => {
                     const label = STATUS_LABEL[p.status] ?? {
                       text: p.status,
-                      cls: "text-white/60",
+                      icon: undefined,
+                      cls: "text-muted-foreground",
                     };
+                    const Icon = label.icon;
                     return (
                       <li
                         key={p.current}
                         className="flex items-baseline gap-2 py-0.5"
                       >
-                        <span className="font-mono text-accent">{p.code}</span>
-                        <span className={label.cls}>{label.text}</span>
+                        <span className="font-mono text-primary">{p.code}</span>
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1",
+                            label.cls
+                          )}
+                        >
+                          {Icon && <Icon className="h-3 w-3" aria-hidden />}
+                          {label.text}
+                        </span>
                         {p.magnet_name && (
-                          <span className="truncate text-white/40">
+                          <span className="truncate text-muted-foreground">
                             {p.magnet_name}
                           </span>
                         )}
@@ -305,20 +340,27 @@ export default function BulkSendButton({
             )}
 
             {done && result && (
-              <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+              <div className="space-y-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
                 <div>
                   共 <strong>{result.total_movies}</strong> 部
                 </div>
-                <div className="text-emerald-300">✓ 已送 {result.sent}</div>
-                <div className="text-white/60">
-                  ⏭ 跳過 (無磁力 {result.skipped_no_magnet}, 已送過{" "}
+                <div className="inline-flex items-center gap-1 text-emerald-300">
+                  <Check className="h-3.5 w-3.5" aria-hidden />
+                  已送 {result.sent}
+                </div>
+                <div className="flex items-center gap-1 text-muted-foreground">
+                  <SkipForward className="h-3.5 w-3.5" aria-hidden />
+                  跳過 (無磁力 {result.skipped_no_magnet}, 已送過{" "}
                   {result.skipped_already_sent})
                 </div>
                 {result.failed > 0 && (
-                  <div className="text-red-300">✗ 失敗 {result.failed}</div>
+                  <div className="flex items-center gap-1 text-red-300">
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                    失敗 {result.failed}
+                  </div>
                 )}
                 {result.errors.length > 0 && (
-                  <details className="text-xs text-white/50">
+                  <details className="text-xs text-muted-foreground">
                     <summary>錯誤明細 ({result.errors.length})</summary>
                     <ul className="mt-1 space-y-0.5">
                       {result.errors.slice(0, 20).map((e, i) => (
@@ -334,19 +376,15 @@ export default function BulkSendButton({
 
             <div className="flex justify-end gap-2">
               {busy ? (
-                <button className="btn-ghost" onClick={cancel}>
+                <Button variant="outline" onClick={cancel}>
                   取消
-                </button>
+                </Button>
               ) : (
                 <>
-                  <button className="btn-ghost" onClick={close}>
+                  <Button variant="outline" onClick={close}>
                     關閉
-                  </button>
-                  {!done && (
-                    <button className="btn-primary" onClick={submit}>
-                      開始
-                    </button>
-                  )}
+                  </Button>
+                  {!done && <Button onClick={submit}>開始</Button>}
                 </>
               )}
             </div>

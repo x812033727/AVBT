@@ -2,8 +2,16 @@
 
 import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { SearchX } from "lucide-react";
 import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { MovieGrid } from "@/components/shared/MovieGrid";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { api, type SearchResult } from "@/lib/api";
 
 export default function SearchPage() {
@@ -139,7 +147,7 @@ function SearchPageInner() {
   return (
     <div className="space-y-6">
       <form onSubmit={onSubmit} className="flex flex-wrap items-center gap-2">
-        <input
+        <Input
           ref={inputRef}
           id="search-input"
           autoFocus
@@ -147,41 +155,48 @@ function SearchPageInner() {
           onChange={(e) => setQ(e.target.value)}
           placeholder="輸入番號 / 女優 / 關鍵字"
           list="search-history"
-          className="flex-1 min-w-[260px] rounded-md border border-white/10 bg-panel px-3 py-2 outline-none focus:border-accent"
+          className="min-w-[260px] flex-1"
         />
         <datalist id="search-history">
           {history.map((h) => (
             <option key={h} value={h} />
           ))}
         </datalist>
-        <label className="flex items-center gap-2 text-sm text-white/70">
-          <input
-            type="checkbox"
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="search-uncensored"
             checked={uncensored}
-            onChange={(e) => setUncensored(e.target.checked)}
+            onCheckedChange={(v) => setUncensored(v === true)}
           />
-          無碼
-        </label>
-        <button type="submit" className="btn-primary" disabled={loading}>
+          <Label
+            htmlFor="search-uncensored"
+            className="text-sm font-normal text-muted-foreground"
+          >
+            無碼
+          </Label>
+        </div>
+        <Button type="submit" disabled={loading}>
           {loading ? "搜尋中…" : "搜尋"}
-        </button>
+        </Button>
       </form>
 
       {history.length > 0 && !data && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-white/40">最近搜尋:</span>
+          <span className="text-muted-foreground">最近搜尋:</span>
           {history.map((h) => (
             <button
               key={h}
+              type="button"
               onClick={() => searchFromHistory(h)}
-              className="rounded-full border border-white/10 px-3 py-1 text-white/70 hover:border-accent hover:text-accent"
+              className="rounded-full border border-border px-3 py-1 text-muted-foreground transition hover:border-primary hover:text-primary"
             >
               {h}
             </button>
           ))}
           <button
+            type="button"
             onClick={clearHistory}
-            className="text-white/30 hover:text-white/60"
+            className="text-muted-foreground/60 transition hover:text-foreground"
             title="清除搜尋紀錄"
           >
             清除
@@ -189,44 +204,48 @@ function SearchPageInner() {
         </div>
       )}
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} />}
 
       {loading && !data && <MovieGridSkeleton count={10} />}
 
       {data && (
         <>
-          <div className="text-sm text-white/50">
+          <div className="text-sm text-muted-foreground">
             第 {data.page} 頁
             {data.total_pages ? ` / 共 ${data.total_pages} 頁` : ""}，共{" "}
             {data.items.length} 筆
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {data.items.map((it) => (
-              <MovieCard key={it.code + it.detail_url} item={it} />
-            ))}
-          </div>
+          {data.items.length === 0 ? (
+            <EmptyState
+              icon={SearchX}
+              title="沒有符合的結果"
+              hint="換個番號或關鍵字再試一次"
+            />
+          ) : (
+            <MovieGrid>
+              {data.items.map((it) => (
+                <MovieCard key={it.code + it.detail_url} item={it} />
+              ))}
+            </MovieGrid>
+          )}
           <div className="flex items-center justify-center gap-2 pt-2">
-            <button
-              className="btn-ghost"
+            <Button
+              variant="outline"
               disabled={loading || page <= 1}
               onClick={() => run(page - 1, q, uncensored)}
             >
               上一頁
-            </button>
-            <button
-              className="btn-ghost"
+            </Button>
+            <Button
+              variant="outline"
               disabled={loading}
               onClick={() => run(page + 1, q, uncensored)}
               title={!data.has_next ? "後端沒偵測到下一頁，但仍可嘗試" : undefined}
             >
               下一頁
-            </button>
+            </Button>
             {!data.has_next && (
-              <span className="text-xs text-white/40">（已到底）</span>
+              <span className="text-xs text-muted-foreground">（已到底）</span>
             )}
           </div>
         </>

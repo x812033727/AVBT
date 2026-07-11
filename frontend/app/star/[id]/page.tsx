@@ -1,8 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Check, Clapperboard, Star, User } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { MovieGrid } from "@/components/shared/MovieGrid";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   api,
   imgProxy,
@@ -98,30 +105,30 @@ export default function StarPage({ params }: { params: { id: string } }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start gap-4 rounded-lg border border-white/10 bg-panel p-4">
+      <div className="flex flex-wrap items-start gap-4 rounded-lg border border-border bg-card p-4">
         {profile?.avatar ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={imgProxy(profile.avatar)}
             alt={profile.name || id}
             referrerPolicy="no-referrer"
-            className="h-32 w-24 flex-none rounded object-cover"
+            className="h-32 w-24 flex-none rounded-md object-cover"
           />
         ) : (
-          <div className="grid h-32 w-24 flex-none place-items-center rounded bg-white/5 text-3xl text-white/30">
-            ?
+          <div className="grid h-32 w-24 flex-none place-items-center rounded-md bg-muted">
+            <User className="h-8 w-8 text-muted-foreground/50" aria-hidden />
           </div>
         )}
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="text-xs text-white/40">女優</div>
-          <h1 className="text-xl font-semibold text-accent">
+          <div className="text-xs text-muted-foreground">女優</div>
+          <h1 className="text-xl font-semibold text-primary">
             {profile?.name || id}
           </h1>
           {profile && (
             <dl className="grid grid-cols-[64px_1fr] gap-x-2 gap-y-0.5 text-xs">
               {profile.birthday && (
                 <>
-                  <dt className="text-white/40">生日</dt>
+                  <dt className="text-muted-foreground">生日</dt>
                   <dd>
                     {profile.birthday}
                     {profile.age ? ` (${profile.age})` : ""}
@@ -130,13 +137,13 @@ export default function StarPage({ params }: { params: { id: string } }) {
               )}
               {profile.height && (
                 <>
-                  <dt className="text-white/40">身高</dt>
+                  <dt className="text-muted-foreground">身高</dt>
                   <dd>{profile.height}</dd>
                 </>
               )}
               {(profile.bust || profile.cup) && (
                 <>
-                  <dt className="text-white/40">三圍</dt>
+                  <dt className="text-muted-foreground">三圍</dt>
                   <dd>
                     {[
                       profile.bust && `${profile.bust}${profile.cup ? ` (${profile.cup})` : ""}`,
@@ -150,13 +157,13 @@ export default function StarPage({ params }: { params: { id: string } }) {
               )}
               {profile.birthplace && (
                 <>
-                  <dt className="text-white/40">出生地</dt>
+                  <dt className="text-muted-foreground">出生地</dt>
                   <dd>{profile.birthplace}</dd>
                 </>
               )}
               {profile.hobby && (
                 <>
-                  <dt className="text-white/40">愛好</dt>
+                  <dt className="text-muted-foreground">愛好</dt>
                   <dd className="line-clamp-2">{profile.hobby}</dd>
                 </>
               )}
@@ -164,29 +171,49 @@ export default function StarPage({ params }: { params: { id: string } }) {
           )}
         </div>
         <div className="flex flex-col items-end gap-2">
-          <label className="flex items-center gap-2 text-sm text-white/70">
-            <input
-              type="checkbox"
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="star-uncensored"
               checked={uncensored}
-              onChange={(e) => setUncensored(e.target.checked)}
+              onCheckedChange={(v) => setUncensored(v === true)}
             />
-            無碼
-          </label>
-          <button
+            <Label
+              htmlFor="star-uncensored"
+              className="text-sm font-normal text-muted-foreground"
+            >
+              無碼
+            </Label>
+          </div>
+          <Button
+            variant={tracked ? "outline" : "default"}
             onClick={toggleTrack}
-            className={tracked ? "btn-ghost" : "btn-primary"}
           >
-            {tracked ? "✓ 已追蹤" : "★ 追蹤"}
-          </button>
+            {tracked ? (
+              <>
+                <Check aria-hidden />
+                已追蹤
+              </>
+            ) : (
+              <>
+                <Star aria-hidden />
+                追蹤
+              </>
+            )}
+          </Button>
           {tracked && (
-            <label className="flex items-center gap-1 text-xs text-white/60">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-1.5">
+              <Checkbox
+                id="star-auto-send"
                 checked={tracked.auto_send}
-                onChange={toggleAutoSend}
+                onCheckedChange={toggleAutoSend}
               />
-              新作品自動送 PikPak
-            </label>
+              <Label
+                htmlFor="star-auto-send"
+                className="text-xs font-normal text-muted-foreground"
+              >
+                新作品自動送 PikPak
+              </Label>
+            </div>
           )}
           <BulkSendButton
             streamPath={`/api/javbus/star/${encodeURIComponent(id)}/send-all/stream`}
@@ -196,44 +223,44 @@ export default function StarPage({ params }: { params: { id: string } }) {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} />}
 
-      {loading && <div className="text-sm text-white/50">載入中…</div>}
+      {loading && <div className="text-sm text-muted-foreground">載入中…</div>}
 
       {data && (
         <>
-          <div className="text-sm text-white/50">
+          <div className="text-sm text-muted-foreground">
             第 {data.page} 頁
             {data.total_pages ? ` / 共 ${data.total_pages} 頁` : ""}，共{" "}
             {data.items.length} 筆
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {data.items.map((it) => (
-              <MovieCard key={it.code + it.detail_url} item={it} />
-            ))}
-          </div>
+          {data.items.length === 0 ? (
+            <EmptyState icon={Clapperboard} title="這一頁沒有作品" />
+          ) : (
+            <MovieGrid>
+              {data.items.map((it) => (
+                <MovieCard key={it.code + it.detail_url} item={it} />
+              ))}
+            </MovieGrid>
+          )}
           <div className="flex items-center justify-center gap-2 pt-2">
-            <button
-              className="btn-ghost"
+            <Button
+              variant="outline"
               disabled={loading || page <= 1}
               onClick={() => run(page - 1)}
             >
               上一頁
-            </button>
-            <button
-              className="btn-ghost"
+            </Button>
+            <Button
+              variant="outline"
               disabled={loading}
               onClick={() => run(page + 1)}
               title={!data.has_next ? "後端沒偵測到下一頁，但仍可嘗試" : undefined}
             >
               下一頁
-            </button>
+            </Button>
             {!data.has_next && (
-              <span className="text-xs text-white/40">（已到底）</span>
+              <span className="text-xs text-muted-foreground">（已到底）</span>
             )}
           </div>
         </>

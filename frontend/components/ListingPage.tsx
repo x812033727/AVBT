@@ -1,10 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { AlertCircle, Check, PackageSearch, Star } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { MovieGrid } from "@/components/shared/MovieGrid";
 import { toast } from "@/components/Toast";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   api,
   type MissingCodesResult,
@@ -162,37 +169,52 @@ export default function ListingPage({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div>
-          <div className="text-xs text-white/40">{label}</div>
+          <div className="text-xs text-muted-foreground">{label}</div>
           {tracked?.name ? (
             <>
-              <h1 className="text-lg font-semibold text-white/90">
+              <h1 className="text-lg font-semibold text-foreground">
                 {tracked.name}
               </h1>
-              <div className="font-mono text-xs text-white/40">
+              <div className="font-mono text-xs text-muted-foreground">
                 slug: {id}
               </div>
             </>
           ) : (
-            <h1 className="font-mono text-lg text-accent">{id}</h1>
+            <h1 className="font-mono text-lg text-primary">{id}</h1>
           )}
         </div>
-        <label className="flex items-center gap-2 text-sm text-white/70">
-          <input
-            type="checkbox"
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="listing-uncensored"
             checked={uncensored}
-            onChange={(e) => setUncensored(e.target.checked)}
+            onCheckedChange={(v) => setUncensored(v === true)}
           />
-          無碼
-        </label>
+          <Label
+            htmlFor="listing-uncensored"
+            className="text-sm font-normal text-muted-foreground"
+          >
+            無碼
+          </Label>
+        </div>
         <div className="ml-auto flex flex-col items-end gap-2">
           <div className="flex gap-2">
             {trackable && (
-              <button
+              <Button
+                variant={tracked ? "outline" : "default"}
                 onClick={toggleTrack}
-                className={tracked ? "btn-ghost" : "btn-primary"}
               >
-                {tracked ? "✓ 已追蹤" : "★ 追蹤"}
-              </button>
+                {tracked ? (
+                  <>
+                    <Check aria-hidden />
+                    已追蹤
+                  </>
+                ) : (
+                  <>
+                    <Star aria-hidden />
+                    追蹤
+                  </>
+                )}
+              </Button>
             )}
             <BulkSendButton
               streamPath={`/api/javbus/${kind}/${encodeURIComponent(id)}/send-all/stream`}
@@ -201,42 +223,45 @@ export default function ListingPage({
             />
           </div>
           {tracked && (
-            <label className="flex items-center gap-1 text-xs text-white/60">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-1.5">
+              <Checkbox
+                id="listing-auto-send"
                 checked={tracked.auto_send}
-                onChange={toggleAutoSend}
+                onCheckedChange={toggleAutoSend}
               />
-              新作品自動送 PikPak
-            </label>
+              <Label
+                htmlFor="listing-auto-send"
+                className="text-xs font-normal text-muted-foreground"
+              >
+                新作品自動送 PikPak
+              </Label>
+            </div>
           )}
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} />}
 
       {loading && !data && <MovieGridSkeleton count={10} />}
 
       {data && (
         <>
-          <div className="text-sm text-white/50">
+          <div className="text-sm text-muted-foreground">
             第 {data.page} 頁
             {data.total_pages ? ` / 共 ${data.total_pages} 頁` : ""}，共{" "}
             {data.items.length} 筆
             {firstTitle && (
-              <span className="ml-2 text-white/30">・最新：{firstTitle}</span>
+              <span className="ml-2 text-muted-foreground/60">
+                ・最新：{firstTitle}
+              </span>
             )}
           </div>
           {tracked && presenceMeta && (
-            <div className="space-y-1 rounded-md border border-white/10 bg-panel/40 px-3 py-2 text-xs text-white/70">
+            <div className="space-y-1 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
               <div className="flex flex-wrap items-center gap-3">
                 <span>
                   追蹤全集共{" "}
-                  <span className="font-semibold text-white/90">
+                  <span className="font-semibold text-foreground">
                     {presenceMeta.total}
                   </span>{" "}
                   部 ・{" "}
@@ -259,18 +284,20 @@ export default function ListingPage({
                     </>
                   )}
                 </span>
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto h-6 px-2 text-xs"
                   onClick={() => loadPresence(true)}
                   disabled={presenceBusy}
-                  className="ml-auto rounded border border-white/15 px-2 py-0.5 hover:bg-white/5 disabled:opacity-40"
                 >
                   {presenceBusy ? "重建中…" : "重新整理 PikPak 索引"}
-                </button>
+                </Button>
               </div>
               {presenceMeta.expected_root && (
-                <div className="text-white/40">
+                <div className="text-muted-foreground/70">
                   判斷路徑:
-                  <span className="ml-1 font-mono text-white/70">
+                  <span className="ml-1 font-mono text-foreground/70">
                     {presenceMeta.expected_root}/&lt;番號&gt;
                   </span>
                 </div>
@@ -278,49 +305,60 @@ export default function ListingPage({
             </div>
           )}
           {tracked && presenceError && !presenceMeta && (
-            <div className="flex flex-wrap items-center gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-              <span>
-                缺漏讀取失敗:{presenceError}
-                <span className="ml-1 text-red-300/70">
-                  (JavBus 可能限流 / 暫時無法連線,稍後再試)
+            <div
+              role="alert"
+              className="flex flex-wrap items-center gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
+            >
+              <span className="inline-flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" aria-hidden />
+                <span>
+                  缺漏讀取失敗:{presenceError}
+                  <span className="ml-1 text-red-300/70">
+                    (JavBus 可能限流 / 暫時無法連線,稍後再試)
+                  </span>
                 </span>
               </span>
               <button
+                type="button"
                 onClick={() => loadPresence(true)}
                 disabled={presenceBusy}
-                className="ml-auto rounded border border-red-400/30 px-2 py-0.5 hover:bg-red-500/15 disabled:opacity-40"
+                className="ml-auto rounded-md border border-red-400/30 px-2 py-0.5 transition hover:bg-red-500/15 disabled:opacity-40"
               >
                 {presenceBusy ? "重試中…" : "重試"}
               </button>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {data.items.map((it) => (
-              <MovieCard
-                key={it.code + it.detail_url}
-                item={it}
-                present={presence ? presence.has(it.code) : undefined}
-              />
-            ))}
-          </div>
+          {data.items.length === 0 ? (
+            <EmptyState icon={PackageSearch} title="這一頁沒有作品" />
+          ) : (
+            <MovieGrid>
+              {data.items.map((it) => (
+                <MovieCard
+                  key={it.code + it.detail_url}
+                  item={it}
+                  present={presence ? presence.has(it.code) : undefined}
+                />
+              ))}
+            </MovieGrid>
+          )}
           <div className="flex items-center justify-center gap-2 pt-2">
-            <button
-              className="btn-ghost"
+            <Button
+              variant="outline"
               disabled={loading || page <= 1}
               onClick={() => run(page - 1)}
             >
               上一頁
-            </button>
-            <button
-              className="btn-ghost"
+            </Button>
+            <Button
+              variant="outline"
               disabled={loading}
               onClick={() => run(page + 1)}
               title={!data.has_next ? "後端沒偵測到下一頁，但仍可嘗試" : undefined}
             >
               下一頁
-            </button>
+            </Button>
             {!data.has_next && (
-              <span className="text-xs text-white/40">（已到底）</span>
+              <span className="text-xs text-muted-foreground">（已到底）</span>
             )}
           </div>
         </>

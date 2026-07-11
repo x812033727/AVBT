@@ -331,6 +331,40 @@ class PresenceCodeFiles(BaseModel):
     source: str = ""
 
 
+class ActressIndexItem(BaseModel):
+    name: str
+    id: str = ""
+    count: int = 0
+    avatar: str = ""
+    sample_cover: str = ""
+
+
+class ActressBackfillStatus(BaseModel):
+    enabled: bool
+    pending: int = 0
+    done_total: int = 0
+    failed_total: int = 0
+    avatar_pending: int = 0
+    avatar_done: int = 0
+    last_run_at: datetime | None = None
+    last_error: str = ""
+
+
+class ActressIndexOut(BaseModel):
+    actresses: list[ActressIndexItem] = Field(default_factory=list)
+    downloaded_total: int = 0
+    indexed_total: int = 0
+    backfill: ActressBackfillStatus
+
+
+class ActressWorksOut(BaseModel):
+    name: str
+    id: str = ""
+    avatar: str = ""
+    count: int = 0
+    works: list[MovieListItem] = Field(default_factory=list)
+
+
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True
 

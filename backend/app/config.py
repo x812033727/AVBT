@@ -164,6 +164,15 @@ class Settings(BaseSettings):
     javbus_persist_ttl_old_seconds: int = 2_592_000
     javbus_persist_recent_days: int = 90
 
+    # 女優頁背景建檔:把已下載(presence)但沒有 detail 快取列的番號
+    # 溫和地補齊(女優名單藏在 detail 裡),外加女優頭像抓取。序列
+    # 執行 + 每筆間隔,疊在共享 RateLimiter 之上,不與互動查詢搶頻寬。
+    actress_backfill_enabled: bool = True
+    actress_backfill_interval_seconds: int = 300
+    actress_backfill_batch_limit: int = 25
+    actress_backfill_spacing_seconds: float = 3.0
+    actress_avatar_batch_limit: int = 25
+
     # Parallel page-walk batch size for listing scans (missing detection
     # and bulk send-all). Set to 1 to restore strict sequential walks.
     javbus_page_batch_size: int = 3

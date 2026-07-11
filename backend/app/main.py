@@ -8,6 +8,7 @@ from .config import cors_origin_list
 from .database import init_db
 from .logging_setup import setup_logging
 from .routers import (
+    actresses,
     auth,
     backup,
     collection,
@@ -23,7 +24,15 @@ from .routers import (
     notify as notify_router,
 )
 from .scrapers import javbus as scraper
-from .services import archiver, auto_backup, duplicate_scan, log_cleanup, notify, tracker
+from .services import (
+    archiver,
+    auto_backup,
+    detail_backfill,
+    duplicate_scan,
+    log_cleanup,
+    notify,
+    tracker,
+)
 from .services.auth import apply_reset_sentinel, require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
 from .services.pcloud import pcloud_service
@@ -57,6 +66,7 @@ async def lifespan(app: FastAPI):
         supervise(log_cleanup.run_loop, "log-cleanup"),
         supervise(auto_backup.run_loop, "auto-backup"),
         supervise(duplicate_scan.run_loop, "duplicate-scan"),
+        supervise(detail_backfill.run_loop, "detail-backfill"),
     ]
     try:
         yield
@@ -104,6 +114,7 @@ app.include_router(pcloud.router, dependencies=_guard)
 app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)
+app.include_router(actresses.router, dependencies=_guard)
 app.include_router(stats.router, dependencies=_guard)
 app.include_router(notify_router.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)

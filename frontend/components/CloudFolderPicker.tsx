@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Folder } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/components/Toast";
 
@@ -73,13 +74,13 @@ export default function CloudFolderPicker({
   }, [crumbs]);
 
   return (
-    <div className="space-y-2 rounded-lg border border-white/10 bg-panel p-3">
-      <div className="flex flex-wrap items-center gap-1 text-sm text-white/60">
+    <div className="space-y-2 rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
         {crumbs.map((c, i) => (
           <span key={c.id + i} className="flex items-center gap-1">
-            {i > 0 && <span className="text-white/30">/</span>}
+            {i > 0 && <span className="text-muted-foreground/50">/</span>}
             <button
-              className="hover:text-accent"
+              className="transition hover:text-primary"
               onClick={() => setCrumbs(crumbs.slice(0, i + 1))}
             >
               {c.name}
@@ -88,25 +89,28 @@ export default function CloudFolderPicker({
         ))}
       </div>
 
-      <div className="max-h-[36vh] min-h-[8rem] overflow-auto rounded-md border border-white/10">
+      <div className="max-h-[36vh] min-h-[8rem] overflow-auto rounded-md border border-border">
         {loading ? (
-          <div className="px-3 py-6 text-center text-sm text-white/40">
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             載入中…
           </div>
         ) : folders.length === 0 ? (
-          <div className="px-3 py-6 text-center text-sm text-white/40">
+          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             此目錄沒有子資料夾
           </div>
         ) : (
-          <ul className="divide-y divide-white/5 text-sm">
+          <ul className="divide-y divide-border text-sm">
             {folders.map((f) => (
               <li key={f.id}>
                 <button
                   onClick={() => setCrumbs([...crumbs, { id: f.id, name: f.name }])}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/5"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-muted"
                 >
-                  <span>📁</span>
-                  <span className="truncate text-white/90">{f.name}</span>
+                  <Folder
+                    className="h-4 w-4 shrink-0 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <span className="truncate text-foreground/90">{f.name}</span>
                 </button>
               </li>
             ))}
@@ -114,9 +118,9 @@ export default function CloudFolderPicker({
         )}
       </div>
 
-      <div className="text-xs text-white/40">
+      <div className="text-xs text-muted-foreground">
         將掃描：
-        <span className="ml-1 font-mono text-white/70">
+        <span className="ml-1 font-mono text-foreground/70">
           {crumbs.map((c) => c.name).join(" / ")}
         </span>
       </div>

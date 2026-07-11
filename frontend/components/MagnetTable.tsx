@@ -1,6 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Magnet as MagnetIcon } from "lucide-react";
+import { confirmDialog } from "@/components/Toast";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { api, btih, type Magnet } from "@/lib/api";
 
 type Status = { kind: "ok" | "err"; text: string } | null;
@@ -100,7 +114,7 @@ export default function MagnetTable({
     } catch (e: any) {
       const msg = e.message || "";
       if (!force && msg.includes("已經送過")) {
-        if (confirm(`${msg}\n\n要強制再送一次嗎？`)) {
+        if (await confirmDialog(msg, "要強制再送一次嗎？")) {
           return sendOne(m, true);
         }
         setStatus({ kind: "err", text: msg });
@@ -137,7 +151,7 @@ export default function MagnetTable({
       });
       if (dup && !force) {
         if (
-          confirm(`有 ${dup} 個磁力已送過。要強制再送一次嗎？`)
+          await confirmDialog(`有 ${dup} 個磁力已送過。要強制再送一次嗎？`)
         ) {
           // Re-send only the duplicates with force=true
           return sendSelected(true);
@@ -153,9 +167,11 @@ export default function MagnetTable({
 
   if (!magnets.length) {
     return (
-      <div className="rounded-lg border border-white/10 bg-panel p-6 text-center text-white/60">
-        沒有抓到磁力連結（可能該番號目前無資源，或被反爬擋下）。
-      </div>
+      <EmptyState
+        icon={MagnetIcon}
+        title="沒有抓到磁力連結"
+        hint="可能該番號目前無資源，或被反爬擋下"
+      />
     );
   }
 
@@ -164,22 +180,22 @@ export default function MagnetTable({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <button className="btn-ghost" onClick={selectAll}>
+        <Button variant="outline" size="sm" onClick={selectAll}>
           {allSelected ? "全部取消" : "全選"}
-        </button>
+        </Button>
         {hdLinks.length > 0 && (
-          <button className="btn-ghost" onClick={selectHD}>
+          <Button variant="outline" size="sm" onClick={selectHD}>
             僅選高清 ({hdLinks.length})
-          </button>
+          </Button>
         )}
-        <button
-          className="btn-primary disabled:opacity-50"
+        <Button
+          size="sm"
           onClick={() => sendSelected(false)}
           disabled={busy || !selected.size}
         >
           送 PikPak ({selected.size})
-        </button>
-        <div className="flex items-center gap-1 text-xs text-white/60">
+        </Button>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <span>大小</span>
           <input
             type="number"
@@ -187,7 +203,7 @@ export default function MagnetTable({
             placeholder="min"
             value={minMb}
             onChange={(e) => setMinMb(e.target.value)}
-            className="w-16 rounded border border-white/10 bg-ink px-2 py-1 text-right outline-none focus:border-accent"
+            className="w-16 rounded border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary"
           />
           <span>~</span>
           <input
@@ -196,14 +212,14 @@ export default function MagnetTable({
             placeholder="max"
             value={maxMb}
             onChange={(e) => setMaxMb(e.target.value)}
-            className="w-16 rounded border border-white/10 bg-ink px-2 py-1 text-right outline-none focus:border-accent"
+            className="w-16 rounded border border-border bg-background px-2 py-1 text-right text-foreground outline-none focus:border-primary"
           />
           <span>MB</span>
         </div>
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value as SortMode)}
-          className="ml-auto rounded-md border border-white/10 bg-panel px-2 py-1 text-sm text-white/80"
+          className="ml-auto rounded-md border border-border bg-card px-2 py-1 text-sm text-foreground/80"
           title="排序"
         >
           <option value="recommended">推薦排序</option>
@@ -211,7 +227,7 @@ export default function MagnetTable({
           <option value="raw">原始順序</option>
         </select>
       </div>
-      <div className="text-xs text-white/40">
+      <div className="text-xs text-muted-foreground">
         顯示 {sorted.length} / {magnets.length} 筆
         {(minMb || maxMb) && (
           <>
@@ -234,82 +250,92 @@ export default function MagnetTable({
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-white/10">
-        <table className="w-full text-sm">
-          <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/40">
-            <tr>
-              <th className="px-3 py-2 w-10"></th>
-              <th className="px-3 py-2">名稱 / 標籤</th>
-              <th className="px-3 py-2 w-24">大小</th>
-              <th className="px-3 py-2 w-28">日期</th>
-              <th className="px-3 py-2 w-32">動作</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="w-10 px-3" />
+              <TableHead className="px-3 text-xs uppercase tracking-wide">
+                名稱 / 標籤
+              </TableHead>
+              <TableHead className="w-24 px-3 text-xs uppercase tracking-wide">
+                大小
+              </TableHead>
+              <TableHead className="w-28 px-3 text-xs uppercase tracking-wide">
+                日期
+              </TableHead>
+              <TableHead className="w-32 px-3 text-xs uppercase tracking-wide">
+                動作
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {sorted.map((m) => {
               const sent = sentHashes?.has(btih(m.link)) ?? false;
               return (
-              <tr
-                key={m.link}
-                className={
-                  "border-t border-white/5 " + (sent ? "bg-emerald-400/5" : "")
-                }
-              >
-                <td className="px-3 py-2">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(m.link)}
-                    onChange={() => toggle(m.link)}
-                    className="h-4 w-4 accent-accent"
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <div className="font-mono text-xs text-white/80 break-all">
-                    {m.name || m.link}
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {m.is_hd && <span className="tag-hd">高清</span>}
-                    {m.has_subtitle && <span className="tag-sub">字幕</span>}
-                    {m.part_hint && (
-                      <span
-                        className="rounded bg-amber-400/20 px-2 py-0.5 text-xs text-amber-200"
-                        title={`名稱含分集標記:${m.part_hint}(僅供參考,實際檔案數以下載後為準)`}
+                <TableRow
+                  key={m.link}
+                  className={sent ? "bg-emerald-400/5" : undefined}
+                >
+                  <TableCell className="px-3">
+                    <Checkbox
+                      checked={selected.has(m.link)}
+                      onCheckedChange={() => toggle(m.link)}
+                      aria-label={`選取 ${m.name || m.link}`}
+                    />
+                  </TableCell>
+                  <TableCell className="px-3">
+                    <div className="break-all font-mono text-xs text-foreground/80">
+                      {m.name || m.link}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {m.is_hd && <StatusBadge tone="info">高清</StatusBadge>}
+                      {m.has_subtitle && (
+                        <StatusBadge tone="danger">字幕</StatusBadge>
+                      )}
+                      {m.part_hint && (
+                        <span
+                          className="rounded bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-300"
+                          title={`名稱含分集標記:${m.part_hint}(僅供參考,實際檔案數以下載後為準)`}
+                        >
+                          可能分集
+                        </span>
+                      )}
+                      {sent && (
+                        <StatusBadge tone="success">已送過</StatusBadge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-3 text-foreground/70">
+                    {m.size}
+                  </TableCell>
+                  <TableCell className="px-3 text-muted-foreground">
+                    {m.date}
+                  </TableCell>
+                  <TableCell className="px-3">
+                    <div className="flex gap-1">
+                      <Button
+                        size="sm"
+                        onClick={() => sendOne(m)}
+                        disabled={busy}
                       >
-                        可能分集
-                      </span>
-                    )}
-                    {sent && (
-                      <span className="rounded bg-emerald-400/20 px-2 py-0.5 text-xs text-emerald-200">
-                        已送過
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-white/70">{m.size}</td>
-                <td className="px-3 py-2 text-white/50">{m.date}</td>
-                <td className="px-3 py-2">
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => sendOne(m)}
-                      disabled={busy}
-                      className="btn-primary disabled:opacity-50"
-                    >
-                      送
-                    </button>
-                    <a
-                      href={m.link}
-                      className="btn-ghost"
-                      title="用本地下載軟體開啟"
-                    >
-                      開啟
-                    </a>
-                  </div>
-                </td>
-              </tr>
+                        送
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        asChild
+                        title="用本地下載軟體開啟"
+                      >
+                        <a href={m.link}>開啟</a>
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
               );
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
     </div>
   );

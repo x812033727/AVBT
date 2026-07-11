@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
 import { toast } from "@/components/Toast";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { Button } from "@/components/ui/button";
 import {
   api,
   imgProxy,
@@ -85,11 +87,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
   }
 
   if (error) {
-    return (
-      <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-        {error}
-      </div>
-    );
+    return <ErrorBox message={error} />;
   }
   if (!data) {
     return (
@@ -115,15 +113,18 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             <img
               src={imgProxy(data.cover)}
               alt={data.code}
+              loading="lazy"
               referrerPolicy="no-referrer"
-              className="w-full rounded-lg border border-white/10"
+              className="w-full rounded-lg border border-border"
             />
           )}
         </div>
-        <div className="space-y-3">
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
           <div>
-            <div className="text-sm font-mono text-accent">{data.code}</div>
-            <h1 className="text-xl font-semibold">{data.title}</h1>
+            <div className="font-mono text-sm text-primary">{data.code}</div>
+            <h1 className="text-xl font-semibold text-foreground">
+              {data.title}
+            </h1>
           </div>
           <dl className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 text-sm">
             <Info k="發行日期" v={data.release_date} />
@@ -134,7 +135,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             <RefInfo k="系列" kind="series" ref={data.series} />
             {(cloudCount || pcloudCount) && (
               <>
-                <dt className="text-white/40">雲端影片</dt>
+                <dt className="text-muted-foreground">雲端影片</dt>
                 <dd className="space-x-2">
                   {cloudCount && (
                     <CloudCountLabel label="PikPak" result={cloudCount} />
@@ -153,12 +154,15 @@ export default function MoviePage({ params }: { params: { code: string } }) {
                   <Link
                     key={a.name}
                     href={`/star/${encodeURIComponent(a.id)}`}
-                    className="tag hover:bg-accent/30 hover:text-white"
+                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80 transition hover:border-primary hover:text-primary"
                   >
                     {a.name}
                   </Link>
                 ) : (
-                  <span key={a.name} className="tag">
+                  <span
+                    key={a.name}
+                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
+                  >
                     {a.name}
                   </span>
                 )
@@ -172,12 +176,15 @@ export default function MoviePage({ params }: { params: { code: string } }) {
                   <Link
                     key={g.name}
                     href={`/genre/${encodeURIComponent(g.id)}`}
-                    className="tag hover:bg-accent/30 hover:text-white"
+                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80 transition hover:border-primary hover:text-primary"
                   >
                     {g.name}
                   </Link>
                 ) : (
-                  <span key={g.name} className="tag">
+                  <span
+                    key={g.name}
+                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
+                  >
                     {g.name}
                   </span>
                 )
@@ -185,15 +192,23 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             </div>
           )}
           <div className="flex gap-2 pt-1">
-            <button onClick={() => addToCollection("wishlist")} className="btn-ghost">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => addToCollection("wishlist")}
+            >
               加入待看
-            </button>
-            <button onClick={() => addToCollection("done")} className="btn-ghost">
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => addToCollection("done")}
+            >
               標記完成
-            </button>
+            </Button>
           </div>
           {savingMsg && (
-            <div className="text-sm text-white/60">{savingMsg}</div>
+            <div className="text-sm text-muted-foreground">{savingMsg}</div>
           )}
         </div>
       </div>
@@ -211,14 +226,15 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         <section>
           <h2 className="mb-2 text-lg font-semibold">樣品圖</h2>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5">
-            {data.samples.map((s) => (
+            {data.samples.map((s, i) => (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 key={s}
                 src={imgProxy(s)}
-                alt=""
+                alt={`${code} 樣品圖 ${i + 1}`}
+                loading="lazy"
                 referrerPolicy="no-referrer"
-                className="rounded border border-white/10"
+                className="rounded border border-border"
               />
             ))}
           </div>
@@ -232,8 +248,8 @@ function Info({ k, v }: { k: string; v: string }) {
   if (!v) return null;
   return (
     <>
-      <dt className="text-white/40">{k}</dt>
-      <dd className="text-white/80">{v}</dd>
+      <dt className="text-muted-foreground">{k}</dt>
+      <dd className="text-foreground/80">{v}</dd>
     </>
   );
 }
@@ -250,12 +266,12 @@ function RefInfo({
   if (!ref || !ref.name) return null;
   return (
     <>
-      <dt className="text-white/40">{k}</dt>
-      <dd className="text-white/80">
+      <dt className="text-muted-foreground">{k}</dt>
+      <dd className="text-foreground/80">
         {ref.id ? (
           <Link
             href={`/${kind}/${encodeURIComponent(ref.id)}`}
-            className="hover:text-accent hover:underline"
+            className="hover:text-primary hover:underline"
           >
             {ref.name}
           </Link>
@@ -281,13 +297,13 @@ function CloudCountLabel({
     (result.source === "transfer" ? "\n(依轉存紀錄計算)" : "");
   return (
     <span title={tip.trim() || undefined}>
-      <span className="text-white/40">{label} </span>
+      <span className="text-muted-foreground">{label} </span>
       {result.video_count > 1 ? (
         <span className="text-amber-300">{result.video_count} 部(分集)</span>
       ) : result.video_count === 1 ? (
-        <span className="text-white/80">1 部(單一影片)</span>
+        <span className="text-foreground/80">1 部(單一影片)</span>
       ) : (
-        <span className="text-white/50">下載中</span>
+        <span className="text-muted-foreground/70">下載中</span>
       )}
     </span>
   );

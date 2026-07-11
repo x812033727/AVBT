@@ -2,9 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { Bookmark } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import { RowSkeleton } from "@/components/Skeleton";
 import { confirmDialog, toast } from "@/components/Toast";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   api,
   imgProxy,
@@ -201,27 +206,34 @@ export default function CollectionPage() {
           <button
             key={t.value}
             onClick={() => setStatus(t.value)}
-            className={status === t.value ? "btn-primary" : "btn-ghost"}
+            className={
+              "rounded-full border px-3 py-1 text-sm transition " +
+              (status === t.value
+                ? "border-primary bg-primary/10 font-medium text-primary"
+                : "border-border text-muted-foreground hover:border-primary hover:text-primary")
+            }
           >
             {t.label}
           </button>
         ))}
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           onClick={fetchCounts}
           disabled={counting || !countable.length}
-          className="btn-ghost disabled:opacity-50"
           title="向 PikPak 查詢下載中/完成項目的實際影片檔數(分集/單一)"
         >
           {counting ? "查詢中…" : "查詢影片數"}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           onClick={syncStatus}
           disabled={syncing}
-          className="btn-ghost disabled:opacity-50"
           title="依雲端實況調整狀態:已送 PikPak → 下載中;檔案已在雲端/已歸檔 → 完成。只往前推進,不會降級"
         >
           {syncing ? "同步中…" : "依雲端狀態同步"}
-        </button>
+        </Button>
         <div className="ml-auto">
           <BulkSendButton
             streamPath="/api/collection/send-wishlist/stream"
@@ -234,52 +246,50 @@ export default function CollectionPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} />}
 
       {items.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
-          <label className="flex items-center gap-1 text-white/70">
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={selectAll}
-              className="h-4 w-4 accent-accent"
-            />
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+          <label className="flex items-center gap-2 text-foreground/70">
+            <Checkbox checked={allSelected} onCheckedChange={selectAll} />
             {allSelected ? "全部取消" : `全選 (${items.length})`}
           </label>
           {selected.size > 0 && (
             <>
-              <span className="text-white/40">|</span>
-              <span className="text-white/60">已選 {selected.size}</span>
+              <span className="text-muted-foreground/50">|</span>
+              <span className="text-muted-foreground">
+                已選 {selected.size}
+              </span>
               <div className="flex gap-1">
-                <button
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => batchStatus("wishlist")}
-                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
                 >
                   改待看
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => batchStatus("downloading")}
-                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
                 >
                   改下載中
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => batchStatus("done")}
-                  className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20"
                 >
                   改完成
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={batchDelete}
-                  className="rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                  className="border-red-500/40 text-red-300 hover:bg-red-500/10 hover:text-red-300"
                 >
                   刪除
-                </button>
+                </Button>
               </div>
               <div className="ml-auto">
                 <BulkSendButton
@@ -302,9 +312,11 @@ export default function CollectionPage() {
       {loading && !items.length && <RowSkeleton count={5} />}
 
       {!loading && !items.length && (
-        <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
-          目前沒有收藏項目
-        </div>
+        <EmptyState
+          icon={Bookmark}
+          title="目前沒有收藏項目"
+          hint="在影片詳情頁按「加入待看」就會出現在這裡"
+        />
       )}
 
       <div className="grid gap-3">
@@ -312,23 +324,22 @@ export default function CollectionPage() {
           <div
             key={it.code}
             className={
-              "flex gap-3 rounded-lg border bg-panel p-3 transition " +
-              (selected.has(it.code)
-                ? "border-accent/60"
-                : "border-white/10")
+              "flex gap-3 rounded-lg border bg-card p-3 transition " +
+              (selected.has(it.code) ? "border-primary/60" : "border-border")
             }
           >
-            <input
-              type="checkbox"
+            <Checkbox
               checked={selected.has(it.code)}
-              onChange={() => toggle(it.code)}
-              className="h-4 w-4 flex-none accent-accent self-start mt-1"
+              onCheckedChange={() => toggle(it.code)}
+              aria-label={`選取 ${it.code}`}
+              className="mt-1 flex-none self-start"
             />
             {it.cover && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={imgProxy(it.cover)}
                 alt={it.code}
+                loading="lazy"
                 referrerPolicy="no-referrer"
                 className="h-24 w-36 flex-none rounded object-cover"
               />
@@ -336,19 +347,22 @@ export default function CollectionPage() {
             <div className="flex-1">
               <Link
                 href={`/movie/${encodeURIComponent(it.code)}`}
-                className="font-mono text-sm font-bold text-accent hover:underline"
+                className="font-mono text-sm font-bold text-primary hover:underline"
               >
                 {it.code}
               </Link>
-              <div className="text-sm text-white/80">{it.title}</div>
-              <div className="mt-1 flex flex-wrap gap-1 text-xs text-white/40">
+              <div className="text-sm text-foreground/80">{it.title}</div>
+              <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
                 {it.release_date && <span>{it.release_date}</span>}
                 {it.duration && <span>{it.duration}</span>}
                 <CountBadge state={counts[it.code]} />
               </div>
               <div className="mt-2 flex flex-wrap gap-1">
                 {it.actresses.map((a) => (
-                  <span key={a} className="tag">
+                  <span
+                    key={a}
+                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
+                  >
                     {a}
                   </span>
                 ))}
@@ -358,18 +372,20 @@ export default function CollectionPage() {
               <select
                 value={it.status}
                 onChange={(e) => setItemStatus(it, e.target.value)}
-                className="rounded bg-white/5 px-2 py-1 text-xs text-white/80"
+                className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground/80"
               >
                 <option value="wishlist">待看</option>
                 <option value="downloading">下載中</option>
                 <option value="done">完成</option>
               </select>
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => remove(it.code)}
-                className="rounded bg-red-500/20 px-2 py-1 text-xs text-red-300 hover:bg-red-500/30"
+                className="border-red-500/40 text-red-300 hover:bg-red-500/10 hover:text-red-300"
               >
                 刪除
-              </button>
+              </Button>
             </div>
           </div>
         ))}
@@ -384,13 +400,14 @@ function CountBadge({
   state: VideoCountResult | "loading" | undefined;
 }) {
   if (state === undefined) return null;
-  if (state === "loading") return <span className="text-white/30">…</span>;
+  if (state === "loading")
+    return <span className="text-muted-foreground/50">…</span>;
   if (!state.ok) return null;
   const tip = state.video_names.join("\n") || undefined;
   if (state.video_count > 1) {
     return (
       <span
-        className="rounded bg-amber-400/20 px-1.5 py-0.5 text-amber-200"
+        className="rounded bg-amber-500/20 px-1.5 py-0.5 font-medium text-amber-300"
         title={tip}
       >
         多集 {state.video_count}
@@ -399,7 +416,7 @@ function CountBadge({
   }
   if (state.video_count === 1) {
     return (
-      <span className="text-white/50" title={tip}>
+      <span className="text-muted-foreground" title={tip}>
         單一影片
       </span>
     );

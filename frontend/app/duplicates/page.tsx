@@ -1,10 +1,22 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { CopyCheck, Folder } from "lucide-react";
 import CloudFolderPicker, {
   type CloudFolderSelection,
 } from "@/components/CloudFolderPicker";
 import { confirmDialog, toast } from "@/components/Toast";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   api,
   streamNdjson,
@@ -194,8 +206,10 @@ export default function DuplicatesPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-semibold text-white">跨雲重複番號比對</h1>
-        <p className="mt-1 text-sm text-white/50">
+        <h1 className="text-lg font-semibold text-foreground">
+          跨雲重複番號比對
+        </h1>
+        <p className="mt-1 text-sm text-muted-foreground">
           各選一個資料夾,遞迴掃描整個子樹,列出在 PikPak 與 pCloud
           兩邊都存在的番號。掃描為唯讀;勾選後可把其中一邊的重複檔移到該雲端的垃圾桶。
         </p>
@@ -214,25 +228,25 @@ export default function DuplicatesPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <div className="text-sm font-medium text-white/80">PikPak 路徑</div>
+          <div className="text-sm font-medium text-foreground/80">
+            PikPak 路徑
+          </div>
           <CloudFolderPicker provider="pikpak" onChange={setPikpakSel} />
         </div>
         <div className="space-y-2">
-          <div className="text-sm font-medium text-white/80">pCloud 路徑</div>
+          <div className="text-sm font-medium text-foreground/80">
+            pCloud 路徑
+          </div>
           <CloudFolderPicker provider="pcloud" onChange={setPcloudSel} />
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          className="btn-primary"
-          onClick={run}
-          disabled={running || !bothReady}
-        >
+        <Button onClick={run} disabled={running || !bothReady}>
           {running ? "比對中…" : "開始比對"}
-        </button>
+        </Button>
         {(progress.pikpak || progress.pcloud) && (
-          <div className="text-xs text-white/50">
+          <div className="text-xs text-muted-foreground">
             {progress.pikpak && <div>PikPak:{progress.pikpak}</div>}
             {progress.pcloud && <div>pCloud:{progress.pcloud}</div>}
           </div>
@@ -250,35 +264,40 @@ export default function DuplicatesPage() {
       )}
 
       {(counts.pikpak > 0 || counts.pcloud > 0) && (
-        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-panel/95 px-4 py-3 shadow-lg backdrop-blur">
-          <span className="text-sm text-white/70">
+        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur">
+          <span className="text-sm text-foreground/70">
             已選 PikPak {counts.pikpak} ・ pCloud {counts.pcloud}
           </span>
           {counts.pikpak > 0 && (
-            <button
-              className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-300"
               onClick={() => deleteSelected("pikpak")}
               disabled={deleting}
             >
               刪除已選 PikPak 檔案
-            </button>
+            </Button>
           )}
           {counts.pcloud > 0 && (
-            <button
-              className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-300"
               onClick={() => deleteSelected("pcloud")}
               disabled={deleting}
             >
               刪除已選 pCloud 檔案
-            </button>
+            </Button>
           )}
-          <button
-            className="btn-ghost text-sm"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setSelected(new Set())}
             disabled={deleting}
           >
             清除選取
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -300,20 +319,22 @@ function ResultPanel({
 }) {
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-white/5 bg-white/[0.03] px-3 py-2 text-sm text-white/70">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground/70">
         <span>
-          <span className="text-white/40">PikPak 番號</span> {result.pikpak_codes}
-          <span className="ml-1 text-white/30">
+          <span className="text-muted-foreground">PikPak 番號</span>{" "}
+          {result.pikpak_codes}
+          <span className="ml-1 text-muted-foreground/60">
             ({result.pikpak_items} 項)
           </span>
         </span>
         <span>
-          <span className="text-white/40">pCloud 番號</span> {result.pcloud_codes}
-          <span className="ml-1 text-white/30">
+          <span className="text-muted-foreground">pCloud 番號</span>{" "}
+          {result.pcloud_codes}
+          <span className="ml-1 text-muted-foreground/60">
             ({result.pcloud_items} 項)
           </span>
         </span>
-        <span className="font-medium text-accent">
+        <span className="font-medium text-primary">
           重複 {result.duplicate_count}
         </span>
         {(result.pikpak_partial || result.pcloud_partial) && (
@@ -322,7 +343,7 @@ function ResultPanel({
         {result.duplicate_count > 0 && (
           <button
             onClick={onCopy}
-            className="ml-auto rounded border border-white/10 px-2 py-0.5 text-xs text-white/70 hover:bg-white/10"
+            className="ml-auto rounded border border-border px-2 py-0.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
           >
             複製番號清單
           </button>
@@ -330,61 +351,61 @@ function ResultPanel({
       </div>
 
       {result.duplicate_count === 0 ? (
-        <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
-          沒有發現跨雲重複的番號
-        </div>
+        <EmptyState icon={CopyCheck} title="沒有發現跨雲重複的番號" />
       ) : (
-        <div className="overflow-hidden rounded-lg border border-white/10">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/40">
-              <tr>
-                <th className="w-40 px-3 py-2">番號</th>
-                <th className="px-3 py-2">
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-40 px-3 text-xs uppercase tracking-wide">
+                  番號
+                </TableHead>
+                <TableHead className="px-3 text-xs uppercase tracking-wide">
                   <span className="mr-2">PikPak 路徑</span>
                   <button
-                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] normal-case text-white/50 hover:bg-white/10"
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     onClick={() => onSelectAll("pikpak", true)}
                   >
                     全選
                   </button>
-                </th>
-                <th className="px-3 py-2">
+                </TableHead>
+                <TableHead className="px-3 text-xs uppercase tracking-wide">
                   <span className="mr-2">pCloud 路徑</span>
                   <button
-                    className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] normal-case text-white/50 hover:bg-white/10"
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px] normal-case text-muted-foreground transition hover:bg-muted hover:text-foreground"
                     onClick={() => onSelectAll("pcloud", true)}
                   >
                     全選
                   </button>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {result.duplicates.map((d) => (
-                <tr key={d.code} className="border-t border-white/5 align-top">
-                  <td className="px-3 py-2 font-mono font-medium text-white/90">
+                <TableRow key={d.code} className="align-top">
+                  <TableCell className="px-3 align-top font-mono font-medium text-foreground/90">
                     {d.code}
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 align-top">
                     <FileList
                       side="pikpak"
                       files={d.pikpak_files}
                       selected={selected}
                       onToggle={onToggle}
                     />
-                  </td>
-                  <td className="px-3 py-2">
+                  </TableCell>
+                  <TableCell className="px-3 align-top">
                     <FileList
                       side="pcloud"
                       files={d.pcloud_files}
                       selected={selected}
                       onToggle={onToggle}
                     />
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>
@@ -402,21 +423,26 @@ function FileList({
   selected: Set<string>;
   onToggle: (side: Side, id: string, on: boolean) => void;
 }) {
-  if (!files.length) return <span className="text-white/30">—</span>;
+  if (!files.length) return <span className="text-muted-foreground/50">—</span>;
   return (
     <ul className="space-y-0.5">
       {files.map((f) => {
         const key = `${side}:${f.id}`;
         return (
           <li key={key} className="flex items-start gap-1.5">
-            <input
-              type="checkbox"
+            <Checkbox
               className="mt-0.5"
               checked={selected.has(key)}
-              onChange={(e) => onToggle(side, f.id, e.target.checked)}
+              onCheckedChange={(v) => onToggle(side, f.id, v === true)}
+              aria-label={`選取 ${f.path}`}
             />
-            <span className="break-all font-mono text-xs text-white/60">
-              {f.is_folder ? "📁 " : ""}
+            <span className="break-all font-mono text-xs text-muted-foreground">
+              {f.is_folder && (
+                <Folder
+                  className="mr-1 inline-block h-3.5 w-3.5 align-[-2px]"
+                  aria-hidden
+                />
+              )}
               {f.path}
             </span>
           </li>

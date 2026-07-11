@@ -317,6 +317,20 @@ class PresenceCodeLookup(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class PresenceFileItem(BaseModel):
+    id: str
+    name: str
+    size: int | None = None
+    path: str = ""
+
+
+class PresenceCodeFiles(BaseModel):
+    code: str
+    files: list[PresenceFileItem] = Field(default_factory=list)
+    partial: bool = False
+    source: str = ""
+
+
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True
 

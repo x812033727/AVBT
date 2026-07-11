@@ -6,7 +6,9 @@ import {
   TRACKED_LABELS,
   type MissingCodesResult,
   type MissingSummaryItem,
+  type PresenceCodeFiles,
   type PresenceCodeLookup,
+  type PresenceFileItem,
   type TrackedKind,
   type TrackedListing,
 } from "@/lib/api";
@@ -27,9 +29,13 @@ export default function TrackedList({
   batchActive,
   lookups,
   lookupBusy,
+  codeFiles,
+  codeFilesBusy,
   onCheckNow,
   onToggleExpand,
   onLookup,
+  onLoadFiles,
+  onPlay,
   onChanged,
 }: {
   items: TrackedListing[];
@@ -44,9 +50,13 @@ export default function TrackedList({
   batchActive: boolean;
   lookups: Map<string, PresenceCodeLookup>;
   lookupBusy: Set<string>;
+  codeFiles: Map<string, PresenceCodeFiles>;
+  codeFilesBusy: Set<string>;
   onCheckNow: (it: TrackedListing) => void;
   onToggleExpand: (it: TrackedListing) => void;
   onLookup: (code: string) => void;
+  onLoadFiles: (code: string) => void;
+  onPlay: (file: PresenceFileItem) => void;
   onChanged: () => void;
 }) {
   if (!items.length) {
@@ -95,9 +105,13 @@ export default function TrackedList({
             detailLoading={detailLoading.has(key)}
             lookups={lookups}
             lookupBusy={lookupBusy}
+            codeFiles={codeFiles}
+            codeFilesBusy={codeFilesBusy}
             onCheckNow={() => onCheckNow(it)}
             onToggleExpand={() => onToggleExpand(it)}
             onLookup={onLookup}
+            onLoadFiles={onLoadFiles}
+            onPlay={onPlay}
             onChanged={onChanged}
           />
         );

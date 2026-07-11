@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import BatchScanModal from "@/components/BatchScanModal";
 import { toast } from "@/components/Toast";
+import VideoPlayerModal from "@/components/VideoPlayerModal";
 import { ErrorBox } from "@/components/shared/ErrorBox";
 import AddTrackedForm from "@/components/tracked/AddTrackedForm";
 import TrackedList from "@/components/tracked/TrackedList";
@@ -17,6 +18,7 @@ import {
   type MissingCodesResult,
   type MissingSummary,
   type MissingSummaryItem,
+  type PresenceCodeFiles,
   type PresenceCodeLookup,
   type TrackedKind,
   type TrackedListing,
@@ -56,6 +58,15 @@ export default function TrackedPage() {
     new Map()
   );
   const [lookupBusy, setLookupBusy] = useState<Set<string>>(new Set());
+  // 番號 → PikPak 影片檔(播放用),與正在查詢中的番號;playing 餵給
+  // 頁尾共用的 VideoPlayerModal(同 /pikpak 頁的模式)。
+  const [codeFiles, setCodeFiles] = useState<Map<string, PresenceCodeFiles>>(
+    new Map()
+  );
+  const [codeFilesBusy, setCodeFilesBusy] = useState<Set<string>>(new Set());
+  const [playing, setPlaying] = useState<{ id: string; name: string } | null>(
+    null
+  );
 
   const load = useCallback(async () => {
     setError(null);
@@ -385,6 +396,37 @@ export default function TrackedPage() {
     }
   }
 
+  // 查一個番號在 PikPak 上的影片檔。恰好一支直接開播;多支只快取結果,
+  // 由 MissingDetailPanel 展開檔案列表讓使用者挑;已查過的再點視為重播。
+  async function loadCodeFiles(code: string) {
+    if (codeFilesBusy.has(code)) return;
+    const cached = codeFiles.get(code);
+    if (cached) {
+      if (cached.files.length === 1) setPlaying(cached.files[0]);
+      return;
+    }
+    setCodeFilesBusy((s) => new Set(s).add(code));
+    try {
+      const res = await api.get<PresenceCodeFiles>(
+        `/api/pikpak/presence/codes/${encodeURIComponent(code)}/files`
+      );
+      setCodeFiles((m) => new Map(m).set(code, res));
+      if (res.files.length === 1) {
+        setPlaying(res.files[0]);
+      } else if (res.files.length === 0) {
+        toast.error("PikPak 上找不到影片檔");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "查詢影片失敗");
+    } finally {
+      setCodeFilesBusy((s) => {
+        const n = new Set(s);
+        n.delete(code);
+        return n;
+      });
+    }
+  }
+
   function openBatchCheckAll() {
     // The actual streaming + UI happens in <BatchScanModal mode="check-all" />.
     // On done, we refresh local state (loadMissing + load).
@@ -463,9 +505,13 @@ export default function TrackedPage() {
         batchActive={batchModalMode !== null}
         lookups={lookups}
         lookupBusy={lookupBusy}
+        codeFiles={codeFiles}
+        codeFilesBusy={codeFilesBusy}
         onCheckNow={checkNow}
         onToggleExpand={toggleExpand}
         onLookup={lookupCode}
+        onLoadFiles={loadCodeFiles}
+        onPlay={setPlaying}
         onChanged={load}
       />
 
@@ -475,6 +521,12 @@ export default function TrackedPage() {
         onClose={() => setBatchModalMode(null)}
         onDone={onBatchModalDone}
         onProgress={patchRowFromEvent}
+      />
+
+      <VideoPlayerModal
+        open={playing !== null}
+        file={playing}
+        onClose={() => setPlaying(null)}
       />
     </div>
   );

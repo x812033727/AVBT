@@ -1,20 +1,13 @@
 // Shared helpers for the settings page sections.
+// 格式化實作已上移至 lib/format.ts;此檔僅保留 settings 專用的包裝與型別,
+// 待 settings 頁遷移完成後移除。
+
+import { fmtBytes as baseFmtBytes, fmtDateTime } from "@/lib/format";
 
 export type SetMsg = (m: { kind: "ok" | "err"; text: string } | null) => void;
 
-export function fmtBytes(n?: number | null) {
-  if (!n) return "-";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(2)} ${u[i]}`;
-}
+export const fmtBytes = baseFmtBytes;
 
 export function fmt(d: string | null): string {
-  if (!d) return "從未執行";
-  return new Date(d.endsWith("Z") ? d : d + "Z").toLocaleString();
+  return fmtDateTime(d, "從未執行");
 }

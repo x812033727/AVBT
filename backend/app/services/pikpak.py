@@ -8,6 +8,8 @@ operations we need: login, offline_download, list tasks/files, delete, etc.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -53,6 +55,26 @@ _INVALID_TOKEN_MARKERS = (
     "captcha_invalid",
     "token has been disabled",
 )
+
+
+def _backfill_user_id(client: PikPakApi) -> None:
+    """pikpakapi's ``decode_token()`` restores only the access/refresh
+    tokens and leaves ``user_id`` as None. ``captcha_init`` then sends
+    ``"user_id": null`` and PikPak's server rejects it with a proto
+    error — breaking ``get_download_url`` (the only captcha-gated call,
+    i.e. every playback/download link) on every token-restored client.
+    Recover the id from the access-token JWT's ``sub`` claim; a later
+    token refresh re-sets it from the server response anyway."""
+    if getattr(client, "user_id", None):
+        return
+    try:
+        payload = (client.access_token or "").split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        sub = json.loads(base64.urlsafe_b64decode(payload)).get("sub") or ""
+        if sub:
+            client.user_id = sub
+    except Exception:  # noqa: BLE001 — leave unset; refresh will fill it
+        logger.debug("could not backfill PikPak user_id from access token")
 
 
 def _is_invalid_token_error(exc: BaseException) -> bool:
@@ -190,6 +212,7 @@ class PikPakService:
             if token:
                 try:
                     self._client = PikPakApi(**self._build_kwargs(encoded_token=token))
+                    _backfill_user_id(self._client)
                     self._username = getattr(self._client, "username", "") or ""
                     return self._client
                 except Exception:  # noqa: BLE001

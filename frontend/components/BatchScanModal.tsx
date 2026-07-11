@@ -1,9 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Check, TriangleAlert, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
+import { ErrorBox } from "@/components/shared/ErrorBox";
 import { streamNdjson } from "@/lib/api";
 
-type Progress = {
+type Progress_ = {
   current: number;
   total: number;
   kind: string;
@@ -49,7 +59,7 @@ export default function BatchScanModal({
   const [busy, setBusy] = useState(false);
   const [total, setTotal] = useState(0);
   const [skipped, setSkipped] = useState(0);
-  const [progress, setProgress] = useState<Progress[]>([]);
+  const [progress, setProgress] = useState<Progress_[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -122,8 +132,6 @@ export default function BatchScanModal({
     onClose();
   }
 
-  if (!open) return null;
-
   const percent = total ? Math.round((progress.length / total) * 100) : 0;
   const recent = progress.slice(-12).reverse();
   const errorCount = progress.filter((p) => p.error).length;
@@ -134,26 +142,21 @@ export default function BatchScanModal({
       : "";
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) close();
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        // Dialog 的 ✕ / Esc / 點遮罩都會走這裡;busy 時 close() 內部會
+        // 擋下,行為與舊版手寫遮罩一致(串流中不可關閉,僅能「取消」)。
+        if (!o) close();
       }}
     >
-      <div className="w-full max-w-2xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
-        <div className="flex items-center">
-          <h2 className="text-lg font-semibold">{cfg.title}</h2>
-          <button
-            className="ml-auto text-white/40 hover:text-white disabled:opacity-30"
-            onClick={close}
-            disabled={busy}
-          >
-            ✕
-          </button>
-        </div>
+      <DialogContent className="max-w-2xl" aria-describedby={undefined}>
+        <DialogHeader>
+          <DialogTitle>{cfg.title}</DialogTitle>
+        </DialogHeader>
 
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-white/60">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>
               {progress.length} / {total || "?"}
               {total > 0 && ` (${percent}%)`}
@@ -163,47 +166,40 @@ export default function BatchScanModal({
               <span className="text-red-300">失敗 {errorCount}</span>
             )}
           </div>
-          <div className="h-2 overflow-hidden rounded bg-white/10">
-            <div
-              className="h-full bg-accent transition-[width]"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
+          <Progress value={percent} />
           {busy && currentItem && (
             <div className="truncate rounded-md border border-blue-400/30 bg-blue-500/5 px-2 py-1 text-xs text-blue-200">
               處理中: <span className="font-mono">{currentItem}</span>
             </div>
           )}
-          <ul className="max-h-72 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
+          <ul className="max-h-72 overflow-y-auto rounded-md border border-border bg-background/50 p-2 text-xs">
             {recent.length === 0 && (
-              <li className="text-white/40">
+              <li className="text-muted-foreground/70">
                 {busy ? "等待第一筆…" : "尚無資料"}
               </li>
             )}
             {recent.map((p) => (
               <li
                 key={`${p.kind}:${p.id}:${p.current}`}
-                className="flex items-baseline gap-2 py-0.5"
+                className="flex items-center gap-2 py-0.5"
               >
-                <span className="w-12 text-white/40">
+                <span className="w-12 text-muted-foreground/70">
                   {p.current}/{p.total}
                 </span>
-                <span
-                  className={
-                    p.error
-                      ? "text-red-300"
-                      : (p.missing_count ?? 0) > 0
-                        ? "text-amber-300"
-                        : "text-emerald-300"
-                  }
-                >
-                  {p.error
-                    ? "✗"
-                    : (p.missing_count ?? 0) > 0
-                      ? "⚠"
-                      : "✓"}
-                </span>
-                <span className="truncate text-white/70">
+                {p.error ? (
+                  <X className="h-3 w-3 shrink-0 text-red-300" aria-hidden />
+                ) : (p.missing_count ?? 0) > 0 ? (
+                  <TriangleAlert
+                    className="h-3 w-3 shrink-0 text-amber-300"
+                    aria-hidden
+                  />
+                ) : (
+                  <Check
+                    className="h-3 w-3 shrink-0 text-emerald-300"
+                    aria-hidden
+                  />
+                )}
+                <span className="truncate text-foreground/80">
                   {p.name || `${p.kind}/${p.id}`}
                 </span>
                 {p.error ? (
@@ -211,17 +207,17 @@ export default function BatchScanModal({
                 ) : (
                   <>
                     {p.missing_count !== undefined && (
-                      <span className="text-white/50">
+                      <span className="text-muted-foreground">
                         缺漏 {p.missing_count}
                       </span>
                     )}
                     {p.pages_scanned !== undefined && p.pages_scanned > 0 && (
-                      <span className="text-white/40">
+                      <span className="text-muted-foreground/70">
                         ({p.pages_scanned} 頁)
                       </span>
                     )}
                     {p.new_codes && p.new_codes.length > 0 && (
-                      <span className="font-mono text-accent">
+                      <span className="font-mono text-primary">
                         +{p.new_codes.length}: {p.new_codes.slice(0, 3).join(", ")}
                         {p.new_codes.length > 3 ? "…" : ""}
                       </span>
@@ -233,36 +229,33 @@ export default function BatchScanModal({
           </ul>
         </div>
 
-        {errorMsg && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-            {errorMsg}
-          </div>
-        )}
+        {errorMsg && <ErrorBox message={errorMsg} />}
 
         {done && (
-          <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+          <div className="space-y-1 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm">
             <div>
               完成 <strong>{progress.length}</strong> 個 listing
               {skipped > 0 && ` (跳過 ${skipped} 個齊全的)`}
             </div>
             {errorCount > 0 && (
-              <div className="text-red-300">✗ 失敗 {errorCount}</div>
+              <div className="flex items-center gap-1 text-red-300">
+                <X className="h-3.5 w-3.5" aria-hidden />
+                失敗 {errorCount}
+              </div>
             )}
           </div>
         )}
 
         <div className="flex justify-end gap-2">
           {busy ? (
-            <button className="btn-ghost" onClick={cancel}>
+            <Button variant="ghost" onClick={cancel}>
               取消
-            </button>
+            </Button>
           ) : (
-            <button className="btn-primary" onClick={close}>
-              關閉
-            </button>
+            <Button onClick={close}>關閉</Button>
           )}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

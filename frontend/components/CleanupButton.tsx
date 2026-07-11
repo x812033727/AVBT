@@ -1,7 +1,27 @@
 "use client";
 
 import { useRef, useState } from "react";
+import {
+  FileText,
+  Folder,
+  FolderOutput,
+  Pencil,
+  SkipForward,
+  Sparkles,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { streamNdjson } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Progress as ProgressBar } from "@/components/ui/progress";
 
 type Progress = {
   current: number;
@@ -21,11 +41,14 @@ type Result = {
   dry_run: boolean;
 };
 
-const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = {
-  rename: { text: "✎ 改名", cls: "text-blue-300" },
-  flatten: { text: "📤 攤平", cls: "text-emerald-300" },
-  skip: { text: "⏭ 略過", cls: "text-white/50" },
-  error: { text: "✗ 失敗", cls: "text-red-300" },
+const ACTION_LABEL: Record<
+  Progress["action"],
+  { icon: LucideIcon; text: string; cls: string }
+> = {
+  rename: { icon: Pencil, text: "改名", cls: "text-blue-300" },
+  flatten: { icon: FolderOutput, text: "攤平", cls: "text-emerald-300" },
+  skip: { icon: SkipForward, text: "略過", cls: "text-muted-foreground" },
+  error: { icon: X, text: "失敗", cls: "text-red-300" },
 };
 
 const REASON_LABEL: Record<string, string> = {
@@ -104,8 +127,9 @@ export default function CleanupButton({
 
   return (
     <>
-      <button
-        className="btn-ghost disabled:opacity-30"
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={() => setOpen(true)}
         disabled={disabled}
         title={
@@ -114,146 +138,126 @@ export default function CleanupButton({
             : "把此資料夾下的 BT 髒名字正規化"
         }
       >
-        🧹 整理此資料夾
-      </button>
+        <Sparkles aria-hidden />
+        整理此資料夾
+      </Button>
 
-      {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) close();
-          }}
-        >
-          <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
-            <div className="flex items-center">
-              <h2 className="text-lg font-semibold">
-                整理「{folder_name}」
-              </h2>
-              <button
-                className="ml-auto text-white/40 hover:text-white"
-                onClick={close}
-              >
-                ✕
-              </button>
+      <Dialog open={open} onOpenChange={(o) => !o && close()}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>整理「{folder_name}」</DialogTitle>
+          </DialogHeader>
+
+          <p className="text-xs text-muted-foreground">
+            只動此資料夾的直接子項目。檔案改名為{" "}
+            <span className="font-mono">CODE.ext</span>；資料夾內如果只有一個影片，會自動攤平。
+          </p>
+
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={dryRun}
+              onCheckedChange={(v) => setDryRun(v === true)}
+              disabled={busy}
+            />
+            <span>只預覽（不實際修改）</span>
+          </label>
+
+          {error && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {error}
             </div>
+          )}
 
-            <p className="text-xs text-white/50">
-              只動此資料夾的直接子項目。檔案改名為{" "}
-              <span className="font-mono">CODE.ext</span>；資料夾內如果只有一個影片，會自動攤平。
-            </p>
-
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
-                disabled={busy}
-              />
-              <span>只預覽（不實際修改）</span>
-            </label>
-
-            {error && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {error}
+          {(busy || result) && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>
+                  {progress.length} / {total} ({percent}%)
+                  {result?.dry_run && " ・ 預覽模式"}
+                </span>
+                <span>
+                  改名 {progress.filter((p) => p.action === "rename").length} ／
+                  攤平 {progress.filter((p) => p.action === "flatten").length} ／
+                  略過 {progress.filter((p) => p.action === "skip").length} ／
+                  失敗 {progress.filter((p) => p.action === "error").length}
+                </span>
               </div>
-            )}
+              <ProgressBar value={percent} className="h-2" />
+              <ul className="max-h-56 overflow-y-auto rounded-md border border-border bg-background/50 p-2 text-xs">
+                {recent.length === 0 && (
+                  <li className="text-muted-foreground/70">等待第一筆…</li>
+                )}
+                {recent.map((p) => {
+                  const lbl = ACTION_LABEL[p.action];
+                  const KindIcon = p.kind === "folder" ? Folder : FileText;
+                  const reasonTxt =
+                    p.reason && REASON_LABEL[p.reason]
+                      ? `（${REASON_LABEL[p.reason]}）`
+                      : p.reason
+                      ? `（${p.reason}）`
+                      : "";
+                  return (
+                    <li
+                      key={p.current}
+                      className="flex items-center gap-2 py-0.5"
+                    >
+                      <span className={`inline-flex shrink-0 items-center gap-1 ${lbl.cls}`}>
+                        <lbl.icon className="h-3 w-3" aria-hidden />
+                        {lbl.text}
+                        {reasonTxt}
+                      </span>
+                      <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
+                        <KindIcon className="h-3 w-3 shrink-0" aria-hidden />
+                        <span className="truncate">{p.source}</span>
+                      </span>
+                      {p.target && p.target !== p.source && (
+                        <>
+                          <span className="text-muted-foreground/40">→</span>
+                          <span className="truncate font-mono text-primary">
+                            {p.target}
+                          </span>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
-            {(busy || result) && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-white/60">
-                  <span>
-                    {progress.length} / {total} ({percent}%)
-                    {result?.dry_run && " ・ 預覽模式"}
-                  </span>
-                  <span>
-                    改名 {progress.filter((p) => p.action === "rename").length} ／
-                    攤平 {progress.filter((p) => p.action === "flatten").length} ／
-                    略過 {progress.filter((p) => p.action === "skip").length} ／
-                    失敗 {progress.filter((p) => p.action === "error").length}
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded bg-white/10">
-                  <div
-                    className="h-full bg-accent transition-[width]"
-                    style={{ width: `${percent}%` }}
-                  />
-                </div>
-                <ul className="max-h-56 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
-                  {recent.length === 0 && (
-                    <li className="text-white/40">等待第一筆…</li>
-                  )}
-                  {recent.map((p) => {
-                    const lbl = ACTION_LABEL[p.action];
-                    const reasonTxt =
-                      p.reason && REASON_LABEL[p.reason]
-                        ? `（${REASON_LABEL[p.reason]}）`
-                        : p.reason
-                        ? `（${p.reason}）`
-                        : "";
-                    return (
-                      <li
-                        key={p.current}
-                        className="flex items-baseline gap-2 py-0.5"
-                      >
-                        <span className={lbl.cls}>
-                          {lbl.text}
-                          {reasonTxt}
-                        </span>
-                        <span className="truncate text-white/60">
-                          {p.kind === "folder" ? "📁 " : "📄 "}
-                          {p.source}
-                        </span>
-                        {p.target && p.target !== p.source && (
-                          <>
-                            <span className="text-white/30">→</span>
-                            <span className="truncate font-mono text-accent">
-                              {p.target}
-                            </span>
-                          </>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-
-            {result && (
-              <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
-                <div>
-                  共 <strong>{result.total}</strong> 個項目
-                  {result.dry_run && (
-                    <span className="ml-2 text-amber-300/80">（僅預覽，未修改）</span>
-                  )}
-                </div>
-                <div className="text-blue-300">✎ 改名 {result.renamed}</div>
-                <div className="text-emerald-300">📤 攤平 {result.flattened}</div>
-                <div className="text-white/60">⏭ 略過 {result.skipped}</div>
-                {result.errors > 0 && (
-                  <div className="text-red-300">✗ 失敗 {result.errors}</div>
+          {result && (
+            <div className="space-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
+              <div>
+                共 <strong>{result.total}</strong> 個項目
+                {result.dry_run && (
+                  <span className="ml-2 text-amber-300/80">（僅預覽，未修改）</span>
                 )}
               </div>
-            )}
-
-            <div className="flex justify-end gap-2">
-              {busy ? (
-                <button className="btn-ghost" onClick={cancel}>
-                  取消
-                </button>
-              ) : (
-                <>
-                  <button className="btn-ghost" onClick={close}>
-                    關閉
-                  </button>
-                  <button className="btn-primary" onClick={submit}>
-                    {dryRun ? "預覽" : "執行"}
-                  </button>
-                </>
+              <div className="text-blue-300">改名 {result.renamed}</div>
+              <div className="text-emerald-300">攤平 {result.flattened}</div>
+              <div className="text-muted-foreground">略過 {result.skipped}</div>
+              {result.errors > 0 && (
+                <div className="text-red-300">失敗 {result.errors}</div>
               )}
             </div>
-          </div>
-        </div>
-      )}
+          )}
+
+          <DialogFooter>
+            {busy ? (
+              <Button variant="ghost" onClick={cancel}>
+                取消
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" onClick={close}>
+                  關閉
+                </Button>
+                <Button onClick={submit}>{dryRun ? "預覽" : "執行"}</Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

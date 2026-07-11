@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Folder } from "lucide-react";
 import {
   api,
   type PCloudEnqueueResult,
@@ -8,6 +9,16 @@ import {
   type PCloudStatus,
 } from "@/lib/api";
 import { toast } from "@/components/Toast";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 
 type Crumb = { id: string; name: string };
 
@@ -156,72 +167,63 @@ export default function PCloudSendModal({
     }
   }
 
-  if (!open) return null;
-
   const folderEntries = entries.filter((e) => e.kind === "folder");
 
   return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl rounded-lg border border-white/10 bg-panel shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-          <div className="text-sm font-medium">
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-base">
             {mode === "folder"
               ? `送整個資料夾「${folderName || folderId}」到 pCloud`
               : `送 ${fileCount} 個檔案到 pCloud`}
-          </div>
-          <button onClick={onClose} className="text-white/60 hover:text-white">
-            ✕
-          </button>
-        </div>
+          </DialogTitle>
+        </DialogHeader>
 
         {!status?.logged_in ? (
-          <div className="space-y-3 p-6 text-center">
-            <div className="text-sm text-white/70">尚未登入 pCloud。</div>
-            <a
-              href="/pcloud"
-              className="inline-block rounded-md border border-accent/40 bg-accent/10 px-3 py-1.5 text-sm text-accent hover:bg-accent/20"
-            >
-              前往 /pcloud 登入
-            </a>
+          <div className="space-y-3 py-4 text-center">
+            <div className="text-sm text-muted-foreground">尚未登入 pCloud。</div>
+            <Button asChild variant="outline">
+              <a href="/pcloud">前往 /pcloud 登入</a>
+            </Button>
           </div>
         ) : (
-          <div className="space-y-3 p-4">
-            <div className="flex flex-wrap items-center gap-1 text-sm text-white/60">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
               {crumbs.map((c, i) => (
                 <span key={`${c.id}-${i}`} className="flex items-center gap-1">
-                  {i > 0 && <span className="text-white/30">/</span>}
-                  <button className="hover:text-accent" onClick={() => gotoCrumb(i)}>
+                  {i > 0 && <span className="text-muted-foreground/40">/</span>}
+                  <button
+                    type="button"
+                    className="transition-colors hover:text-primary"
+                    onClick={() => gotoCrumb(i)}
+                  >
                     {c.name}
                   </button>
                 </span>
               ))}
             </div>
 
-            <div className="max-h-[34vh] min-h-[10rem] overflow-auto rounded-md border border-white/10">
+            <div className="max-h-[34vh] min-h-[10rem] overflow-auto rounded-md border border-border">
               {loading ? (
-                <div className="px-3 py-6 text-center text-sm text-white/40">
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground/70">
                   載入中…
                 </div>
               ) : !folderEntries.length ? (
-                <div className="px-3 py-6 text-center text-sm text-white/40">
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground/70">
                   此目錄沒有子資料夾
                 </div>
               ) : (
-                <ul className="divide-y divide-white/5 text-sm">
+                <ul className="divide-y divide-border/50 text-sm">
                   {folderEntries.map((f) => (
                     <li key={`f-${f.id}`}>
                       <button
+                        type="button"
                         onClick={() => openFolder(f)}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/5"
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted"
                       >
-                        <span>📁</span>
-                        <span className="truncate text-white/90">{f.name}</span>
+                        <Folder className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                        <span className="truncate text-foreground">{f.name}</span>
                       </button>
                     </li>
                   ))}
@@ -230,49 +232,48 @@ export default function PCloudSendModal({
             </div>
 
             <div className="flex gap-1">
-              <input
+              <Input
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
                 placeholder="在此目錄下建立新資料夾…"
-                className="flex-1 rounded-md border border-white/10 bg-panel px-2 py-1 text-sm outline-none focus:border-accent"
+                className="h-8 flex-1"
               />
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={createFolder}
-                className="btn-ghost"
                 disabled={creating || !newFolderName.trim()}
               >
                 {creating ? "建立中…" : "建立"}
-              </button>
+              </Button>
             </div>
 
             <div className="space-y-1">
-              <label className="block text-xs text-white/60">
+              <label className="block text-xs text-muted-foreground">
                 目標路徑(可直接輸入,會自動建立)
               </label>
-              <input
+              <Input
                 value={pathOverride}
                 onChange={(e) => setPathOverride(e.target.value)}
                 placeholder={currentPath()}
-                className="w-full rounded-md border border-white/10 bg-panel px-2 py-1 font-mono text-sm outline-none focus:border-accent"
+                className="h-8 font-mono"
               />
             </div>
 
-            <div className="flex flex-wrap gap-3 text-xs text-white/70">
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
               {mode === "folder" && (
-                <label className="flex items-center gap-1">
-                  <input
-                    type="checkbox"
+                <label className="flex items-center gap-1.5">
+                  <Checkbox
                     checked={preserveSubfolders}
-                    onChange={(e) => setPreserveSubfolders(e.target.checked)}
+                    onCheckedChange={(v) => setPreserveSubfolders(v === true)}
                   />
                   保留子資料夾結構
                 </label>
               )}
-              <label className="flex items-center gap-1">
-                <input
-                  type="checkbox"
+              <label className="flex items-center gap-1.5">
+                <Checkbox
                   checked={deleteSource}
-                  onChange={(e) => setDeleteSource(e.target.checked)}
+                  onCheckedChange={(v) => setDeleteSource(v === true)}
                 />
                 傳輸成功後將 PikPak 原檔移到垃圾桶
               </label>
@@ -280,12 +281,11 @@ export default function PCloudSendModal({
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
-          <button className="btn-ghost" onClick={onClose}>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
             取消
-          </button>
-          <button
-            className="btn-primary"
+          </Button>
+          <Button
             onClick={submit}
             disabled={
               !status?.logged_in ||
@@ -294,9 +294,9 @@ export default function PCloudSendModal({
             }
           >
             {submitting ? "排入中…" : "開始傳輸"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

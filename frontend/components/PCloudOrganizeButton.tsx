@@ -1,7 +1,29 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  File,
+  FileOutput,
+  Folder,
+  Package,
+  SkipForward,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Progress as ProgressBar } from "@/components/ui/progress";
 import { api } from "@/lib/api";
+import type { StatusTone } from "@/lib/status";
 
 type Progress = {
   current: number;
@@ -51,11 +73,14 @@ type Job = {
   error: string | null;
 };
 
-const ACTION_LABEL: Record<Progress["action"], { text: string; cls: string }> = {
-  move: { text: "📦 歸類", cls: "text-emerald-300" },
-  flatten: { text: "📤 取出主檔", cls: "text-sky-300" },
-  skip: { text: "⏭ 略過", cls: "text-white/50" },
-  error: { text: "✗ 失敗", cls: "text-red-300" },
+const ACTION_LABEL: Record<
+  Progress["action"],
+  { icon: LucideIcon; text: string; cls: string }
+> = {
+  move: { icon: Package, text: "歸類", cls: "text-emerald-300" },
+  flatten: { icon: FileOutput, text: "取出主檔", cls: "text-sky-300" },
+  skip: { icon: SkipForward, text: "略過", cls: "text-muted-foreground/70" },
+  error: { icon: X, text: "失敗", cls: "text-red-300" },
 };
 
 const REASON_LABEL: Record<string, string> = {
@@ -74,11 +99,11 @@ const KIND_LABEL: Record<string, string> = {
   director: "導演",
 };
 
-const STATUS_LABEL: Record<JobStatus, { text: string; cls: string }> = {
-  running: { text: "執行中", cls: "text-amber-300" },
-  done: { text: "已完成", cls: "text-emerald-300" },
-  error: { text: "錯誤", cls: "text-red-300" },
-  cancelled: { text: "已取消", cls: "text-white/60" },
+const STATUS_LABEL: Record<JobStatus, { text: string; tone: StatusTone }> = {
+  running: { text: "執行中", tone: "warning" },
+  done: { text: "已完成", tone: "success" },
+  error: { text: "錯誤", tone: "danger" },
+  cancelled: { text: "已取消", tone: "muted" },
 };
 
 export default function PCloudOrganizeButton({
@@ -281,8 +306,10 @@ export default function PCloudOrganizeButton({
 
   return (
     <>
-      <button
-        className="btn-ghost relative disabled:opacity-30"
+      <Button
+        variant="ghost"
+        size="sm"
+        className="relative"
         onClick={() => setOpen(true)}
         disabled={disabled}
         title={
@@ -291,252 +318,247 @@ export default function PCloudOrganizeButton({
             : "依番號自動搬到 AVBT/<系列>/<追蹤名稱>/ 之下"
         }
       >
-        📦 歸類此資料夾
+        <Package aria-hidden />
+        歸類此資料夾
         {activeBg && (
           <span
-            className="absolute -top-1 -right-1 h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400"
+            className="absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full bg-amber-400"
             title="此資料夾有歸類任務在背景執行中"
           />
         )}
-      </button>
+      </Button>
 
-      {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) close();
-          }}
-        >
-          <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold">
-                歸類「{folder_name}」
-              </h2>
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          if (!v) close();
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              歸類「{folder_name}」
               {job && (
-                <span
-                  className={`rounded px-2 py-0.5 text-xs ${STATUS_LABEL[job.status].cls}`}
-                >
+                <StatusBadge tone={STATUS_LABEL[job.status].tone}>
                   {STATUS_LABEL[job.status].text}
-                </span>
+                </StatusBadge>
               )}
-              <button
-                className="ml-auto text-white/40 hover:text-white"
-                onClick={close}
-                title={
-                  busy
-                    ? "關閉視窗但工作會在背景繼續，下次開啟會自動接回"
-                    : "關閉"
-                }
-              >
-                ✕
-              </button>
-            </div>
+            </DialogTitle>
+          </DialogHeader>
 
-            <p className="text-xs text-white/50">
-              掃此資料夾的直接子項目。子資料夾會「鑽進去」(遞迴最多 6 層)把每支影片
-              都挖出來,各自依番號改名為 <span className="font-mono">&lt;番號&gt;.&lt;副檔名&gt;</span>,
-              依 JavBus 查到的 <span className="font-mono">系列 → 發行商 → 製作商</span>{" "}
-              順序搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>;
-              同番號的重複 / 低畫質版本只留最大那支,其餘連同 sample / nfo / 種子
-              隨包裝資料夾送進回收桶。資料夾名沒番號也會鑽進去借裡面影片的番號,
-              一個資料夾裡有多部不同番號作品也會分別取出。
-              {" "}
-              <span className="text-amber-300/70">JavBus 查無分類時,影片照樣從子資料夾「原地取出」</span>,
-              不會卡在裡面;查不到或搬移失敗的那支會保留,不會誤刪。
-              {" "}
-              <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
-            </p>
+          <p className="text-xs text-muted-foreground">
+            掃此資料夾的直接子項目。子資料夾會「鑽進去」(遞迴最多 6 層)把每支影片
+            都挖出來,各自依番號改名為 <span className="font-mono">&lt;番號&gt;.&lt;副檔名&gt;</span>,
+            依 JavBus 查到的 <span className="font-mono">系列 → 發行商 → 製作商</span>{" "}
+            順序搬到 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/</span>;
+            同番號的重複 / 低畫質版本只留最大那支,其餘連同 sample / nfo / 種子
+            隨包裝資料夾送進回收桶。資料夾名沒番號也會鑽進去借裡面影片的番號,
+            一個資料夾裡有多部不同番號作品也會分別取出。
+            {" "}
+            <span className="text-amber-300/70">JavBus 查無分類時,影片照樣從子資料夾「原地取出」</span>,
+            不會卡在裡面;查不到或搬移失敗的那支會保留,不會誤刪。
+            {" "}
+            <span className="text-amber-300/70">關掉視窗工作會在背景繼續執行</span>。
+          </p>
 
-            {!job && (
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={dryRun}
-                  onChange={(e) => setDryRun(e.target.checked)}
-                />
-                <span>只預覽（不實際修改，也不建立目標資料夾）</span>
-              </label>
-            )}
+          {!job && (
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={dryRun}
+                onCheckedChange={(v) => setDryRun(v === true)}
+              />
+              <span>只預覽（不實際修改，也不建立目標資料夾）</span>
+            </label>
+          )}
 
-            {error && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {error}
+          {error && <ErrorBox message={error} />}
+
+          {job && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>
+                  {/* events can exceed total (one folder → many
+                      extractions), so show "已處理 N" rather than a
+                      possibly-odd "N / total". */}
+                  已處理 {job.events.length}
+                  {job.total > 0 ? ` / 共 ${job.total} 項 (${percent}%)` : ""}
+                  {job.dry_run && " ・ 預覽模式"}
+                </span>
+                <span>
+                  歸類 {job.events.filter((p) => p.action === "move").length} ／
+                  取出 {job.events.filter((p) => p.action === "flatten").length} ／
+                  略過 {job.events.filter((p) => p.action === "skip").length} ／
+                  失敗 {job.events.filter((p) => p.action === "error").length}
+                </span>
               </div>
-            )}
-
-            {job && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-white/60">
-                  <span>
-                    {/* events can exceed total (one folder → many
-                        extractions), so show "已處理 N" rather than a
-                        possibly-odd "N / total". */}
-                    已處理 {job.events.length}
-                    {job.total > 0 ? ` / 共 ${job.total} 項 (${percent}%)` : ""}
-                    {job.dry_run && " ・ 預覽模式"}
-                  </span>
-                  <span>
-                    歸類 {job.events.filter((p) => p.action === "move").length} ／
-                    取出 {job.events.filter((p) => p.action === "flatten").length} ／
-                    略過 {job.events.filter((p) => p.action === "skip").length} ／
-                    失敗 {job.events.filter((p) => p.action === "error").length}
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded bg-white/10">
-                  <div
-                    className="h-full bg-accent transition-[width]"
-                    style={{ width: `${percent}%` }}
+              <ProgressBar value={percent} className="h-2" />
+              {processing && (
+                <div className="flex items-center gap-2 rounded-md border border-amber-400/20 bg-amber-400/5 px-2 py-1 text-xs text-amber-200/80">
+                  <span
+                    className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400"
+                    aria-hidden
                   />
+                  <span>
+                    正在查 JavBus（{processing.current}/{job.total}）：
+                  </span>
+                  <span className="truncate font-mono">{processing.source}</span>
                 </div>
-                {processing && (
-                  <div className="flex items-center gap-2 rounded-md border border-amber-400/20 bg-amber-400/5 px-2 py-1 text-xs text-amber-200/80">
-                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
-                    <span>
-                      ⏳ 正在查 JavBus（{processing.current}/{job.total}）：
-                    </span>
-                    <span className="truncate font-mono">{processing.source}</span>
-                  </div>
+              )}
+              <ul className="max-h-72 overflow-y-auto rounded-md border border-border bg-background/50 p-2 text-xs">
+                {recent.length === 0 && !processing && (
+                  <li className="text-muted-foreground/70">等待第一筆…</li>
                 )}
-                <ul className="max-h-72 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
-                  {recent.length === 0 && !processing && (
-                    <li className="text-white/40">等待第一筆…</li>
-                  )}
-                  {recent.map((p) => {
-                    const lbl = ACTION_LABEL[p.action];
-                    const reasonTxt =
-                      p.reason && REASON_LABEL[p.reason]
-                        ? `（${REASON_LABEL[p.reason]}）`
-                        : p.reason
-                        ? `（${p.reason}）`
-                        : "";
-                    const kindTag = p.listing_kind
-                      ? KIND_LABEL[p.listing_kind] || p.listing_kind
-                      : null;
-                    return (
-                      <li
-                        key={p.current}
-                        className="flex flex-col gap-0.5 py-0.5"
-                      >
-                        <div className="flex items-baseline gap-2">
-                          <span className={lbl.cls}>
-                            {lbl.text}
-                            {reasonTxt}
-                          </span>
-                          <span className="truncate text-white/60">
-                            {p.kind === "folder" ? "📁 " : "📄 "}
-                            {p.source}
-                          </span>
-                        </div>
-                        {(p.action === "move" || p.action === "flatten") &&
-                          (p.target_path || p.uncategorized) && (
-                          <div className="ml-8 flex items-baseline gap-1 text-white/50">
-                            <span className="text-white/30">→</span>
-                            {p.uncategorized ? (
-                              <>
-                                <span className="rounded bg-amber-500/10 px-1 text-[10px] text-amber-300">
-                                  原地取出
-                                </span>
-                                <span className="truncate font-mono text-accent">
-                                  {p.target_name}
-                                </span>
-                                <span className="text-[10px] text-white/40">
-                                  （JavBus 查無分類）
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                {kindTag && (
-                                  <span className="rounded bg-emerald-500/10 px-1 text-[10px] text-emerald-300">
-                                    {kindTag}
-                                  </span>
-                                )}
-                                <span className="truncate font-mono text-accent">
-                                  {p.target_path}
-                                  {p.target_name ? `/${p.target_name}` : ""}
-                                </span>
-                                {p.would_create && (
-                                  <span className="text-[10px] text-amber-300/80">
-                                    （將建立）
-                                  </span>
-                                )}
-                              </>
-                            )}
-                            {p.action === "flatten" &&
-                              typeof p.extras_count === "number" &&
-                              p.extras_count > 0 && (
-                                <span className="text-[10px] text-white/40">
-                                  （清掉 {p.extras_count} 個額外項目）
+                {recent.map((p) => {
+                  const lbl = ACTION_LABEL[p.action];
+                  const ActionIcon = lbl.icon;
+                  const reasonTxt =
+                    p.reason && REASON_LABEL[p.reason]
+                      ? `（${REASON_LABEL[p.reason]}）`
+                      : p.reason
+                      ? `（${p.reason}）`
+                      : "";
+                  const kindTag = p.listing_kind
+                    ? KIND_LABEL[p.listing_kind] || p.listing_kind
+                    : null;
+                  return (
+                    <li key={p.current} className="flex flex-col gap-0.5 py-0.5">
+                      <div className="flex items-baseline gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1 ${lbl.cls}`}
+                        >
+                          <ActionIcon
+                            className="h-3 w-3 shrink-0"
+                            aria-hidden
+                          />
+                          {lbl.text}
+                          {reasonTxt}
+                        </span>
+                        <span className="inline-flex min-w-0 items-center gap-1 truncate text-muted-foreground">
+                          {p.kind === "folder" ? (
+                            <Folder className="h-3 w-3 shrink-0" aria-hidden />
+                          ) : (
+                            <File className="h-3 w-3 shrink-0" aria-hidden />
+                          )}
+                          <span className="truncate">{p.source}</span>
+                        </span>
+                      </div>
+                      {(p.action === "move" || p.action === "flatten") &&
+                        (p.target_path || p.uncategorized) && (
+                        <div className="ml-8 flex items-baseline gap-1 text-muted-foreground/70">
+                          <span className="text-muted-foreground/40">→</span>
+                          {p.uncategorized ? (
+                            <>
+                              <span className="rounded bg-amber-500/10 px-1 text-[10px] text-amber-300">
+                                原地取出
+                              </span>
+                              <span className="truncate font-mono text-primary">
+                                {p.target_name}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground/60">
+                                （JavBus 查無分類）
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              {kindTag && (
+                                <span className="rounded bg-emerald-500/10 px-1 text-[10px] text-emerald-300">
+                                  {kindTag}
                                 </span>
                               )}
-                          </div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
+                              <span className="truncate font-mono text-primary">
+                                {p.target_path}
+                                {p.target_name ? `/${p.target_name}` : ""}
+                              </span>
+                              {p.would_create && (
+                                <span className="text-[10px] text-amber-300/80">
+                                  （將建立）
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {p.action === "flatten" &&
+                            typeof p.extras_count === "number" &&
+                            p.extras_count > 0 && (
+                              <span className="text-[10px] text-muted-foreground/60">
+                                （清掉 {p.extras_count} 個額外項目）
+                              </span>
+                            )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
-            {job?.result && (
-              <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
-                <div>
-                  共 <strong>{job.result.total}</strong> 個項目
-                  {job.result.dry_run && (
-                    <span className="ml-2 text-amber-300/80">（僅預覽，未修改）</span>
-                  )}
+          {job?.result && (
+            <div className="space-y-1 rounded-md border border-border bg-card px-3 py-2 text-sm">
+              <div>
+                共 <strong>{job.result.total}</strong> 個項目
+                {job.result.dry_run && (
+                  <span className="ml-2 text-amber-300/80">
+                    （僅預覽，未修改）
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1 text-emerald-300">
+                <Package className="h-3.5 w-3.5" aria-hidden />
+                已歸類 {job.result.moved}
+              </div>
+              {job.result.flattened > 0 && (
+                <div className="flex items-center gap-1 text-sky-300">
+                  <FileOutput className="h-3.5 w-3.5" aria-hidden />
+                  已取出主檔 {job.result.flattened}
                 </div>
-                <div className="text-emerald-300">📦 已歸類 {job.result.moved}</div>
-                {job.result.flattened > 0 && (
-                  <div className="text-sky-300">
-                    📤 已取出主檔 {job.result.flattened}
-                  </div>
-                )}
-                <div className="text-white/60">⏭ 略過 {job.result.skipped}</div>
-                {job.result.errors > 0 && (
-                  <div className="text-red-300">✗ 失敗 {job.result.errors}</div>
-                )}
+              )}
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <SkipForward className="h-3.5 w-3.5" aria-hidden />
+                略過 {job.result.skipped}
               </div>
-            )}
-
-            {job?.error && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-                {job.error}
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2">
-              {busy ? (
-                <button className="btn-ghost" onClick={cancel}>
-                  取消任務
-                </button>
-              ) : (
-                <>
-                  <button className="btn-ghost" onClick={close}>
-                    關閉
-                  </button>
-                  {!job && (
-                    <button className="btn-primary" onClick={submit}>
-                      {dryRun ? "預覽" : "執行"}
-                    </button>
-                  )}
-                  {job && job.status !== "running" && (
-                    <button
-                      className="btn-primary"
-                      onClick={() => {
-                        setJob(null);
-                        setJobId(null);
-                        setError(null);
-                      }}
-                    >
-                      再來一次
-                    </button>
-                  )}
-                </>
+              {job.result.errors > 0 && (
+                <div className="flex items-center gap-1 text-red-300">
+                  <X className="h-3.5 w-3.5" aria-hidden />
+                  失敗 {job.result.errors}
+                </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
+          )}
+
+          {job?.error && <ErrorBox message={job.error} />}
+
+          <DialogFooter>
+            {busy ? (
+              <Button variant="ghost" size="sm" onClick={cancel}>
+                取消任務
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost" size="sm" onClick={close}>
+                  關閉
+                </Button>
+                {!job && (
+                  <Button size="sm" onClick={submit}>
+                    {dryRun ? "預覽" : "執行"}
+                  </Button>
+                )}
+                {job && job.status !== "running" && (
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setJob(null);
+                      setJobId(null);
+                      setError(null);
+                    }}
+                  >
+                    再來一次
+                  </Button>
+                )}
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

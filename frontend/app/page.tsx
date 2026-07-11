@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
+import { Archive, Check, Search, TriangleAlert } from "lucide-react";
 import {
   api,
   imgProxy,
@@ -14,28 +15,11 @@ import {
   type TrackedListing,
   type TrackerStatus,
 } from "@/lib/api";
-
-function fmtBytes(n?: number | null) {
-  if (!n) return "-";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(2)} ${u[i]}`;
-}
-
-function fmtRel(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
-  const ms = Date.now() - d.getTime();
-  if (ms < 60_000) return "剛剛";
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分鐘前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小時前`;
-  return `${Math.floor(ms / 86_400_000)} 天前`;
-}
+import { fmtBytes, fmtRel } from "@/lib/format";
+import { pikpakPhaseTone } from "@/lib/status";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type Stats = {
   pikpak: PikPakStatus | null;
@@ -47,7 +31,7 @@ type Stats = {
   history: HistoryPage | null;
 };
 
-export default function DashboardPage() {
+export default function HomePage() {
   const router = useRouter();
   const [q, setQ] = useState("");
   const [stats, setStats] = useState<Stats>({
@@ -107,16 +91,22 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <form onSubmit={search} className="flex flex-wrap items-center gap-2">
-        <input
-          autoFocus
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="輸入番號 / 女優 / 關鍵字"
-          className="flex-1 min-w-[260px] rounded-md border border-white/10 bg-panel px-4 py-3 text-base outline-none focus:border-accent"
-        />
-        <button type="submit" className="btn-primary px-5 py-3">
+        <div className="relative min-w-[260px] flex-1">
+          <Search
+            className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="輸入番號 / 女優 / 關鍵字"
+            className="h-12 pl-10 text-base"
+          />
+        </div>
+        <Button type="submit" size="lg" className="h-12 px-6">
           搜尋
-        </button>
+        </Button>
       </form>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -125,7 +115,10 @@ export default function DashboardPage() {
           title="PikPak"
           value={
             stats.pikpak?.logged_in ? (
-              <span className="text-emerald-300">✓ 已登入</span>
+              <span className="inline-flex items-center gap-1.5 text-emerald-300">
+                <Check className="h-5 w-5" aria-hidden />
+                已登入
+              </span>
             ) : (
               <span className="text-amber-300">未登入</span>
             )
@@ -141,8 +134,8 @@ export default function DashboardPage() {
           title="離線任務"
           value={
             <>
-              <span className="text-accent">{runningTasks}</span>
-              <span className="text-white/40"> / {stats.tasks.length}</span>
+              <span className="text-primary">{runningTasks}</span>
+              <span className="text-muted-foreground"> / {stats.tasks.length}</span>
             </>
           }
           sub={`${failedTasks} 失敗 ・ ${stats.tasks.length - runningTasks - failedTasks} 完成`}
@@ -153,7 +146,7 @@ export default function DashboardPage() {
           value={
             <>
               <span>{wishlistCount}</span>
-              <span className="text-white/40"> / {stats.collection.length}</span>
+              <span className="text-muted-foreground"> / {stats.collection.length}</span>
             </>
           }
           sub={`待看 ${wishlistCount} ・ 下載中 ${downloadingCount} ・ 完成 ${doneCount}`}
@@ -165,9 +158,9 @@ export default function DashboardPage() {
             <>
               <span>{stats.tracked.length}</span>
               {totalNew > 0 && (
-                <span className="ml-2 rounded bg-amber-500/20 px-2 py-0.5 text-sm text-amber-300">
+                <StatusBadge tone="warning" className="ml-2 align-middle text-sm">
                   {totalNew} 新
-                </span>
+                </StatusBadge>
               )}
             </>
           }
@@ -176,73 +169,74 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <section className="space-y-2 rounded-lg border border-white/10 bg-panel p-4">
+        <section className="space-y-2 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center">
-            <h2 className="text-sm font-semibold text-white/80">最近送出</h2>
+            <h2 className="text-sm font-semibold text-foreground/80">最近送出</h2>
             <Link
               href="/history"
-              className="ml-auto text-xs text-white/40 hover:text-accent"
+              className="ml-auto text-xs text-muted-foreground transition hover:text-primary"
             >
               全部紀錄 →
             </Link>
           </div>
           {!stats.history?.items.length ? (
-            <div className="text-sm text-white/40">還沒送過任何磁力</div>
+            <div className="text-sm text-muted-foreground">還沒送過任何磁力</div>
           ) : (
             <ul className="space-y-1 text-sm">
-              {stats.history.items.slice(0, 8).map((it) => (
-                <li
-                  key={it.id}
-                  className="flex items-baseline gap-2 border-b border-white/5 py-1"
-                >
-                  {it.code ? (
-                    <Link
-                      href={`/movie/${encodeURIComponent(it.code)}`}
-                      className="font-mono text-xs text-accent hover:underline"
-                    >
-                      {it.code}
-                    </Link>
-                  ) : (
-                    <span className="font-mono text-xs text-white/30">-</span>
-                  )}
-                  <span className="truncate flex-1 text-xs text-white/70">
-                    {it.name || "(未命名)"}
-                  </span>
-                  <span
-                    className={
-                      "rounded px-2 py-0.5 text-xs " +
-                      (it.phase === "PHASE_TYPE_COMPLETE"
-                        ? "bg-emerald-400/20 text-emerald-200"
-                        : it.phase === "PHASE_TYPE_ERROR"
-                        ? "bg-red-500/20 text-red-300"
-                        : "bg-white/10 text-white/60")
-                    }
+              {stats.history.items.slice(0, 8).map((it) => {
+                const phase = pikpakPhaseTone(it.phase);
+                return (
+                  <li
+                    key={it.id}
+                    className="flex items-baseline gap-2 border-b border-border/50 py-1"
                   >
-                    {it.phase.replace("PHASE_TYPE_", "") || "—"}
-                  </span>
-                  {it.archived && (
-                    <span className="text-xs text-emerald-300/80">📦</span>
-                  )}
-                  <span className="text-xs text-white/30">{fmtRel(it.created_at)}</span>
-                </li>
-              ))}
+                    {it.code ? (
+                      <Link
+                        href={`/movie/${encodeURIComponent(it.code)}`}
+                        className="font-mono text-xs text-primary hover:underline"
+                      >
+                        {it.code}
+                      </Link>
+                    ) : (
+                      <span className="font-mono text-xs text-muted-foreground/50">-</span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate text-xs text-foreground/70">
+                      {it.name || "(未命名)"}
+                    </span>
+                    <StatusBadge tone={phase.tone}>{phase.label}</StatusBadge>
+                    {it.archived && (
+                      <Archive
+                        className="h-3.5 w-3.5 self-center text-emerald-300/80"
+                        aria-label="已歸檔"
+                      />
+                    )}
+                    <span className="text-xs text-muted-foreground/70">
+                      {fmtRel(it.created_at)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
 
-        <section className="space-y-2 rounded-lg border border-white/10 bg-panel p-4">
+        <section className="space-y-2 rounded-lg border border-border bg-card p-4">
           <div className="flex items-center">
-            <h2 className="text-sm font-semibold text-white/80">追蹤中</h2>
+            <h2 className="text-sm font-semibold text-foreground/80">追蹤中</h2>
             <Link
               href="/tracked"
-              className="ml-auto text-xs text-white/40 hover:text-accent"
+              className="ml-auto text-xs text-muted-foreground transition hover:text-primary"
             >
               管理 →
             </Link>
           </div>
           {!stats.tracked.length ? (
-            <div className="text-sm text-white/40">
-              還沒追蹤任何女優。到 <Link href="/search" className="text-accent">搜尋</Link> 找一個進去點「追蹤」。
+            <div className="text-sm text-muted-foreground">
+              還沒追蹤任何女優。到{" "}
+              <Link href="/search" className="text-primary">
+                搜尋
+              </Link>{" "}
+              找一個進去點「追蹤」。
             </div>
           ) : (
             <ul className="space-y-2 text-sm">
@@ -253,29 +247,30 @@ export default function DashboardPage() {
                     <img
                       src={imgProxy(t.avatar)}
                       alt={t.name}
+                      loading="lazy"
                       referrerPolicy="no-referrer"
                       className="h-8 w-8 flex-none rounded-full object-cover"
                     />
                   ) : (
-                    <div className="grid h-8 w-8 flex-none place-items-center rounded-full bg-white/10 text-xs text-white/30">
+                    <div className="grid h-8 w-8 flex-none place-items-center rounded-full bg-muted text-xs text-muted-foreground/60">
                       ?
                     </div>
                   )}
                   <Link
                     href={`/star/${encodeURIComponent(t.id)}`}
-                    className="truncate hover:text-accent"
+                    className="truncate transition hover:text-primary"
                   >
                     {t.name || t.id}
                   </Link>
                   {t.auto_send && (
-                    <span className="text-xs text-white/30">自動</span>
+                    <span className="text-xs text-muted-foreground/70">自動</span>
                   )}
                   {t.new_count > 0 && (
-                    <span className="ml-auto rounded bg-amber-500/20 px-2 py-0.5 text-xs text-amber-300">
+                    <StatusBadge tone="warning" className="ml-auto">
                       {t.new_count} 新
-                    </span>
+                    </StatusBadge>
                   )}
-                  <span className="text-xs text-white/30">
+                  <span className="text-xs text-muted-foreground/70">
                     {fmtRel(t.last_checked_at)}
                   </span>
                 </li>
@@ -284,66 +279,89 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <section className="space-y-2 rounded-lg border border-white/10 bg-panel p-4">
-          <h2 className="text-sm font-semibold text-white/80">自動歸檔</h2>
-          {stats.archiver ? (
-            <div className="space-y-1 text-sm text-white/70">
+        <StatusSection
+          title="自動歸檔"
+          data={stats.archiver}
+          renderBody={(a) => (
+            <>
               <div>
-                狀態：
-                {stats.archiver.enabled ? (
+                狀態:
+                {a.enabled ? (
                   <span className="text-emerald-300">啟用</span>
                 ) : (
-                  <span className="text-white/40">關閉</span>
+                  <span className="text-muted-foreground">關閉</span>
                 )}
-                <span className="ml-2 text-xs text-white/40">
-                  每 {stats.archiver.interval_seconds}s 掃一次
+                <span className="ml-2 text-xs text-muted-foreground">
+                  每 {a.interval_seconds}s 掃一次
                 </span>
               </div>
-              <div className="text-xs text-white/50">
-                累計歸檔 {stats.archiver.archived_total} ・ 最後執行{" "}
-                {fmtRel(stats.archiver.last_run)}
+              <div className="text-xs text-muted-foreground">
+                累計歸檔 {a.archived_total} ・ 最後執行 {fmtRel(a.last_run)}
               </div>
-              <div className="text-xs text-white/40">
-                目標：<span className="font-mono">{stats.archiver.archive_folder}/&lt;番號&gt;</span>
+              <div className="text-xs text-muted-foreground/80">
+                目標:<span className="font-mono">{a.archive_folder}/&lt;番號&gt;</span>
               </div>
-              {stats.archiver.last_error && (
-                <div className="text-xs text-amber-300/80">⚠ {stats.archiver.last_error}</div>
+              {a.last_error && (
+                <div className="flex items-center gap-1 text-xs text-amber-300/90">
+                  <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
+                  {a.last_error}
+                </div>
               )}
-            </div>
-          ) : (
-            <div className="text-sm text-white/40">載入中…</div>
+            </>
           )}
-        </section>
+        />
 
-        <section className="space-y-2 rounded-lg border border-white/10 bg-panel p-4">
-          <h2 className="text-sm font-semibold text-white/80">女優掃描</h2>
-          {stats.tracker ? (
-            <div className="space-y-1 text-sm text-white/70">
+        <StatusSection
+          title="女優掃描"
+          data={stats.tracker}
+          renderBody={(t) => (
+            <>
               <div>
-                狀態：
-                {stats.tracker.enabled ? (
+                狀態:
+                {t.enabled ? (
                   <span className="text-emerald-300">啟用</span>
                 ) : (
-                  <span className="text-white/40">關閉</span>
+                  <span className="text-muted-foreground">關閉</span>
                 )}
-                <span className="ml-2 text-xs text-white/40">
-                  每 {stats.tracker.interval_seconds}s 掃一次
+                <span className="ml-2 text-xs text-muted-foreground">
+                  每 {t.interval_seconds}s 掃一次
                 </span>
               </div>
-              <div className="text-xs text-white/50">
-                最後執行 {fmtRel(stats.tracker.last_run)} ・ 那次找到{" "}
-                {stats.tracker.last_new_total} 部新作品
+              <div className="text-xs text-muted-foreground">
+                最後執行 {fmtRel(t.last_run)} ・ 那次找到 {t.last_new_total} 部新作品
               </div>
-              {stats.tracker.last_error && (
-                <div className="text-xs text-amber-300/80">⚠ {stats.tracker.last_error}</div>
+              {t.last_error && (
+                <div className="flex items-center gap-1 text-xs text-amber-300/90">
+                  <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
+                  {t.last_error}
+                </div>
               )}
-            </div>
-          ) : (
-            <div className="text-sm text-white/40">載入中…</div>
+            </>
           )}
-        </section>
+        />
       </div>
     </div>
+  );
+}
+
+function StatusSection<T>({
+  title,
+  data,
+  renderBody,
+}: {
+  title: string;
+  data: T | null;
+  renderBody: (data: T) => React.ReactNode;
+}) {
+  return (
+    <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+      <h2 className="text-sm font-semibold text-foreground/80">{title}</h2>
+      {data ? (
+        <div className="space-y-1 text-sm text-foreground/70">{renderBody(data)}</div>
+      ) : (
+        <div className="text-sm text-muted-foreground">載入中…</div>
+      )}
+    </section>
   );
 }
 
@@ -361,11 +379,11 @@ function Tile({
   return (
     <Link
       href={href}
-      className="block rounded-lg border border-white/10 bg-panel p-4 transition hover:border-accent/50"
+      className="block rounded-lg border border-border bg-card p-4 transition hover:border-primary/50"
     >
-      <div className="text-xs uppercase tracking-wide text-white/40">{title}</div>
-      <div className="mt-1 text-2xl font-bold">{value}</div>
-      <div className="mt-1 truncate text-xs text-white/50">{sub}</div>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums">{value}</div>
+      <div className="mt-1 truncate text-xs text-muted-foreground">{sub}</div>
     </Link>
   );
 }

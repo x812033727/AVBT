@@ -1,31 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, type QueueStatus } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
+import type { StatusTone } from "@/lib/status";
+import { StatusBadge } from "@/components/shared/StatusBadge";
 
-const STATUS_STYLES: Record<string, string> = {
-  sent: "text-emerald-300",
-  skipped_no_magnet: "text-white/40",
-  skipped_already_sent: "text-white/40",
-  failed: "text-red-300",
-  cancelled: "text-white/30",
+const STATUS_VIEW: Record<string, { tone: StatusTone; label: string }> = {
+  sent: { tone: "success", label: "已送" },
+  skipped_no_magnet: { tone: "muted", label: "無磁力" },
+  skipped_already_sent: { tone: "muted", label: "已送過" },
+  failed: { tone: "danger", label: "失敗" },
+  cancelled: { tone: "muted", label: "取消" },
 };
-
-const STATUS_LABEL: Record<string, string> = {
-  sent: "✓ 已送",
-  skipped_no_magnet: "⏭ 無磁力",
-  skipped_already_sent: "⏭ 已送過",
-  failed: "✗ 失敗",
-  cancelled: "○ 取消",
-};
-
-function formatTime(iso: string): string {
-  try {
-    return new Date(iso + (iso.endsWith("Z") ? "" : "Z")).toLocaleTimeString();
-  } catch {
-    return iso;
-  }
-}
 
 function statusUnchanged(prev: QueueStatus, next: QueueStatus): boolean {
   // The panel only renders pending count, processing list, totals and
@@ -87,43 +75,52 @@ export default function DownloadQueuePanel({ refreshMs = 6000 }: { refreshMs?: n
   if (!status) return null;
 
   const active = status.pending + status.processing.length;
+  const skippedTotal =
+    status.totals.skipped_already_sent + status.totals.skipped_no_magnet;
 
   return (
-    <div className="rounded-md border border-white/10 bg-white/5">
+    <div className="rounded-md border border-border bg-muted/30">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs hover:bg-white/5"
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition hover:bg-muted/50"
       >
-        <span className="font-semibold text-white/80">下載佇列</span>
+        <span className="font-semibold text-foreground/80">下載佇列</span>
         {active > 0 ? (
           <>
-            <span className="rounded bg-accent/20 px-1.5 py-0.5 font-mono text-accent">
+            <span className="rounded bg-primary/20 px-1.5 py-0.5 font-mono text-primary">
               {status.processing.length} / {status.concurrency} 進行 · {status.pending} 待送
             </span>
-            <span className="text-white/40">
+            <span className="text-muted-foreground">
               {status.processing.slice(0, 3).map((p) => p.code).join("  ")}
               {status.processing.length > 3 && " …"}
             </span>
           </>
         ) : (
-          <span className="text-white/50">閒置</span>
+          <span className="text-muted-foreground">閒置</span>
         )}
-        <span className="ml-auto text-white/40">
-          累計 ✓{status.totals.sent} ⏭{status.totals.skipped_already_sent + status.totals.skipped_no_magnet} ✗{status.totals.failed}
+        <span className="ml-auto text-muted-foreground tabular-nums">
+          累計 <span className="text-emerald-300">{status.totals.sent} 送</span>{" "}
+          <span className="text-muted-foreground/70">{skippedTotal} 略過</span>{" "}
+          <span className="text-red-300">{status.totals.failed} 失敗</span>
         </span>
-        <span className="text-white/40">{open ? "▾" : "▸"}</span>
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+        )}
       </button>
 
       {open && (
-        <div className="space-y-3 border-t border-white/10 px-3 py-2 text-xs">
+        <div className="space-y-3 border-t border-border px-3 py-2 text-xs">
           {status.processing.length > 0 && (
             <div>
-              <div className="mb-1 text-white/50">處理中</div>
+              <div className="mb-1 text-muted-foreground">處理中</div>
               <ul className="space-y-0.5">
                 {status.processing.map((p) => (
                   <li key={p.code + p.source} className="flex gap-2">
-                    <span className="font-mono text-accent">{p.code}</span>
-                    <span className="text-white/40">{p.source}</span>
+                    <span className="font-mono text-primary">{p.code}</span>
+                    <span className="text-muted-foreground">{p.source}</span>
                   </li>
                 ))}
               </ul>
@@ -132,32 +129,36 @@ export default function DownloadQueuePanel({ refreshMs = 6000 }: { refreshMs?: n
 
           {status.recent.length > 0 && (
             <div>
-              <div className="mb-1 text-white/50">最近 {status.recent.length} 筆</div>
+              <div className="mb-1 text-muted-foreground">最近 {status.recent.length} 筆</div>
               <ul className="max-h-48 space-y-0.5 overflow-y-auto">
-                {status.recent.slice(0, 20).map((r, i) => (
-                  <li key={i} className="flex items-baseline gap-2">
-                    <span className="font-mono text-white/30 text-[10px]">
-                      {formatTime(r.at)}
-                    </span>
-                    <span className="font-mono text-accent">{r.code}</span>
-                    <span className={STATUS_STYLES[r.status] ?? "text-white/60"}>
-                      {STATUS_LABEL[r.status] ?? r.status}
-                    </span>
-                    {r.magnet_name && (
-                      <span className="truncate text-white/40">{r.magnet_name}</span>
-                    )}
-                    {r.message && !r.magnet_name && (
-                      <span className="truncate text-white/40">{r.message}</span>
-                    )}
-                    <span className="ml-auto text-white/30">{r.source}</span>
-                  </li>
-                ))}
+                {status.recent.slice(0, 20).map((r, i) => {
+                  const view = STATUS_VIEW[r.status] ?? {
+                    tone: "neutral" as StatusTone,
+                    label: r.status,
+                  };
+                  return (
+                    <li key={i} className="flex items-baseline gap-2">
+                      <span className="font-mono text-[10px] text-muted-foreground/70">
+                        {fmtTime(r.at)}
+                      </span>
+                      <span className="font-mono text-primary">{r.code}</span>
+                      <StatusBadge tone={view.tone}>{view.label}</StatusBadge>
+                      {r.magnet_name && (
+                        <span className="truncate text-muted-foreground">{r.magnet_name}</span>
+                      )}
+                      {r.message && !r.magnet_name && (
+                        <span className="truncate text-muted-foreground">{r.message}</span>
+                      )}
+                      <span className="ml-auto text-muted-foreground/70">{r.source}</span>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
 
           {!status.processing.length && !status.recent.length && (
-            <div className="text-white/40">尚無下載紀錄</div>
+            <div className="text-muted-foreground">尚無下載紀錄</div>
           )}
         </div>
       )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Check, TriangleAlert } from "lucide-react";
 import { confirmDialog } from "@/components/Toast";
 import {
   api,
@@ -13,7 +14,11 @@ import ChangePasswordSection from "@/components/settings/ChangePasswordSection";
 import NotifySection from "@/components/settings/NotifySection";
 import PCloudSection from "@/components/settings/PCloudSection";
 import ReorganizeSection from "@/components/settings/ReorganizeSection";
-import { fmt, fmtBytes } from "@/components/settings/shared";
+import { fmtBytes, fmtDateTime } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 
 export default function SettingsPage() {
   const [pikpak, setPikpak] = useState<PikPakStatus | null>(null);
@@ -190,7 +195,7 @@ export default function SettingsPage() {
           className={
             "whitespace-pre-wrap rounded-md border px-3 py-2 text-sm leading-relaxed " +
             (msg.kind === "ok"
-              ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
               : "border-red-500/30 bg-red-500/10 text-red-300")
           }
         >
@@ -198,76 +203,72 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-semibold">PikPak 帳號</h2>
         <div className="space-y-1 text-sm">
           <div>
             狀態：
             {pikpak?.logged_in ? (
-              <span className="text-emerald-300">
-                ✓ 已登入 {pikpak.username && `(${pikpak.username})`}
+              <span className="inline-flex items-center gap-1 text-emerald-300">
+                <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                已登入 {pikpak.username && `(${pikpak.username})`}
               </span>
             ) : (
               <span className="text-amber-300">未登入</span>
             )}
           </div>
           {pikpak?.quota && (
-            <div className="text-xs text-white/60">
+            <div className="text-xs text-muted-foreground">
               空間：已用 {fmtBytes(pikpak.quota.used)} /{" "}
               {fmtBytes(pikpak.quota.limit)}
             </div>
           )}
           {pikpak?.quota_error && (
-            <div className="text-xs text-amber-300/80">
-              ⚠ 配額查詢失敗：{pikpak.quota_error}
+            <div className="inline-flex items-center gap-1 text-xs text-amber-300/80">
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              配額查詢失敗：{pikpak.quota_error}
             </div>
           )}
-          <div className="text-xs text-white/40">
+          <div className="text-xs text-muted-foreground/70">
             Token 檔案：{pikpak?.has_stored_token ? "存在" : "無"} ・ .env 預設：
             {pikpak?.has_env_credentials ? "有" : "無"}
           </div>
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
-          <input
+          <Input
             type="email"
             placeholder="username / email"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
           />
-          <input
+          <Input
             type="password"
             placeholder="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
           />
         </div>
         <div className="flex gap-2">
-          <button
-            className="btn-primary disabled:opacity-50"
-            onClick={login}
-            disabled={busy}
-          >
+          <Button onClick={login} disabled={busy}>
             {busy ? "登入中…" : "登入並儲存"}
-          </button>
+          </Button>
           {pikpak?.logged_in && (
-            <button className="btn-ghost" onClick={logout} disabled={busy}>
+            <Button variant="outline" onClick={logout} disabled={busy}>
               登出
-            </button>
+            </Button>
           )}
         </div>
-        <p className="text-xs text-white/40">
+        <p className="text-xs text-muted-foreground/70">
           帳密只用來換取 token，token 存在 <span className="font-mono">data/pikpak_token.txt</span>
           ，重啟後自動載入。
         </p>
 
-        <div className="border-t border-white/10 pt-3">
-          <h3 className="text-sm font-semibold text-white/80">
+        <div className="border-t border-border pt-3">
+          <h3 className="text-sm font-semibold text-foreground/80">
             或直接貼 Token 登入
           </h3>
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-muted-foreground/70">
             如果你從其他 PikPak 工具取得 encoded_token，可以直接貼進來免再次輸入帳密。
           </p>
           <textarea
@@ -275,27 +276,26 @@ export default function SettingsPage() {
             onChange={(e) => setTokenInput(e.target.value)}
             placeholder="貼上 encoded_token …"
             rows={3}
-            className="mt-2 w-full rounded-md border border-white/10 bg-ink px-3 py-2 text-xs font-mono outline-none focus:border-accent"
+            className="mt-2 w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
-          <div className="mt-2 flex gap-2">
-            <button
-              className="btn-primary disabled:opacity-50"
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
               onClick={loginWithToken}
               disabled={busy || !tokenInput.trim()}
             >
               使用此 Token
-            </button>
+            </Button>
             {storedToken && (
               <>
-                <button
-                  className="btn-ghost"
+                <Button
+                  variant="outline"
                   onClick={() => setShowToken((s) => !s)}
                 >
                   {showToken ? "隱藏目前 Token" : "顯示目前 Token"}
-                </button>
-                <button className="btn-ghost" onClick={copyToken}>
+                </Button>
+                <Button variant="outline" onClick={copyToken}>
                   複製目前 Token
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -304,123 +304,136 @@ export default function SettingsPage() {
               readOnly
               value={storedToken}
               rows={3}
-              className="mt-2 w-full rounded-md border border-white/10 bg-ink/50 px-3 py-2 text-xs font-mono text-white/60 outline-none"
+              className="mt-2 w-full rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground outline-none"
               onFocus={(e) => e.target.select()}
             />
           )}
         </div>
       </section>
 
-      <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-semibold">自動歸檔</h2>
         {archiver ? (
           <>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2">
+              <Switch
+                id="archiver-enabled"
                 checked={archiver.enabled}
-                onChange={(e) => toggleArchiver(e.target.checked)}
+                onCheckedChange={(v) => toggleArchiver(v)}
               />
-              啟用（每 {archiver.interval_seconds} 秒掃一次）
-            </label>
-            <div className="text-xs text-white/60">
+              <Label htmlFor="archiver-enabled" className="text-sm font-normal">
+                啟用（每 {archiver.interval_seconds} 秒掃一次）
+              </Label>
+            </div>
+            <div className="text-xs text-muted-foreground">
               路徑：
               <span className="font-mono">{archiver.archive_folder}/&lt;番號&gt;</span>
             </div>
-            <div className="text-xs text-white/60">
-              累計歸檔：{archiver.archived_total} ・ 最後執行 {fmt(archiver.last_run)}
+            <div className="text-xs text-muted-foreground">
+              累計歸檔：{archiver.archived_total} ・ 最後執行{" "}
+              {fmtDateTime(archiver.last_run, "從未執行")}
             </div>
             {archiver.last_error && (
-              <div className="text-xs text-amber-300/80">⚠ {archiver.last_error}</div>
+              <div className="inline-flex items-center gap-1 text-xs text-amber-300/80">
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {archiver.last_error}
+              </div>
             )}
-            <button
-              className="btn-ghost"
-              onClick={runArchiverNow}
-              disabled={busy}
-            >
-              立即執行
-            </button>
+            <div>
+              <Button variant="outline" onClick={runArchiverNow} disabled={busy}>
+                立即執行
+              </Button>
+            </div>
 
-            <div className="mt-3 border-t border-white/10 pt-3 space-y-1">
-              <div className="text-sm font-medium text-white/80">
+            <div className="mt-3 space-y-1 border-t border-border pt-3">
+              <div className="text-sm font-medium text-foreground/80">
                 自動整理新下載
               </div>
-              <div className="text-xs text-white/60">
+              <div className="text-xs text-muted-foreground">
                 掃描來源：<span className="font-mono">{archiver.task_folder}/</span>
                 {archiver.sweep_fallback_root && (
                   <> + <span className="font-mono">AVBT/</span> 根（撈 App 直送）</>
                 )}
               </div>
-              <div className="text-xs text-white/60">
+              <div className="text-xs text-muted-foreground">
                 完成後搬到{" "}
                 <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;/</span>
                 ,wrapper 自動扁平、廣告進 PikPak 垃圾桶
                 （每 {archiver.sweep_interval_seconds} 秒一次）
               </div>
-              <div className="text-xs text-white/60">
+              <div className="text-xs text-muted-foreground">
                 累計搬移：{archiver.sweep_swept_total} ・ 上次
                 {" "}
-                {fmt(archiver.last_sweep_at)}
+                {fmtDateTime(archiver.last_sweep_at, "從未執行")}
                 {archiver.last_sweep_at != null
                   ? `（搬了 ${archiver.last_sweep_moved} 個）`
                   : ""}
               </div>
               {archiver.last_sweep_error && (
-                <div className="text-xs text-amber-300/80">
-                  ⚠ {archiver.last_sweep_error}
+                <div className="inline-flex items-center gap-1 text-xs text-amber-300/80">
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {archiver.last_sweep_error}
                 </div>
               )}
-              <button
-                className="btn-ghost"
-                onClick={sweepRootNow}
-                disabled={busy}
-              >
-                掃描 TASK 並搬移
-              </button>
+              <div>
+                <Button variant="outline" onClick={sweepRootNow} disabled={busy}>
+                  掃描 TASK 並搬移
+                </Button>
+              </div>
             </div>
           </>
         ) : (
-          <div className="text-sm text-white/40">載入中…</div>
+          <div className="text-sm text-muted-foreground/70">載入中…</div>
         )}
       </section>
 
-      <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-semibold">女優追蹤</h2>
         {tracker ? (
           <>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2">
+              <Switch
+                id="tracker-enabled"
                 checked={tracker.enabled}
-                onChange={(e) => toggleTracker(e.target.checked)}
+                onCheckedChange={(v) => toggleTracker(v)}
               />
-              啟用（每 {tracker.interval_seconds} 秒掃一次）
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+              <Label htmlFor="tracker-enabled" className="text-sm font-normal">
+                啟用（每 {tracker.interval_seconds} 秒掃一次）
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="tracker-backfill"
                 checked={tracker.backfill_enabled}
-                onChange={(e) => toggleBackfill(e.target.checked)}
+                onCheckedChange={(v) => toggleBackfill(v)}
               />
-              缺漏自動補檔
-              <span className="text-xs text-white/40">
-                auto_send 全掃時把歷史缺漏一併送 PikPak（每輪每目錄最多{" "}
-                {tracker.backfill_batch_limit > 0 ? tracker.backfill_batch_limit : "不限"}{" "}
-                筆）；關閉後仍會更新缺漏數
-              </span>
-            </label>
-            <div className="text-xs text-white/60">
-              最後執行 {fmt(tracker.last_run)} ・ 上次找到 {tracker.last_new_total} 部新作品
+              <Label htmlFor="tracker-backfill" className="text-sm font-normal">
+                缺漏自動補檔
+                <span className="ml-2 text-xs font-normal text-muted-foreground/70">
+                  auto_send 全掃時把歷史缺漏一併送 PikPak（每輪每目錄最多{" "}
+                  {tracker.backfill_batch_limit > 0 ? tracker.backfill_batch_limit : "不限"}{" "}
+                  筆）；關閉後仍會更新缺漏數
+                </span>
+              </Label>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              最後執行 {fmtDateTime(tracker.last_run, "從未執行")} ・ 上次找到{" "}
+              {tracker.last_new_total} 部新作品
             </div>
             {tracker.last_error && (
-              <div className="text-xs text-amber-300/80">⚠ {tracker.last_error}</div>
+              <div className="inline-flex items-center gap-1 text-xs text-amber-300/80">
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {tracker.last_error}
+              </div>
             )}
-            <button className="btn-ghost" onClick={runTrackerNow} disabled={busy}>
-              立即執行
-            </button>
+            <div>
+              <Button variant="outline" onClick={runTrackerNow} disabled={busy}>
+                立即執行
+              </Button>
+            </div>
           </>
         ) : (
-          <div className="text-sm text-white/40">載入中…</div>
+          <div className="text-sm text-muted-foreground/70">載入中…</div>
         )}
       </section>
 
@@ -434,8 +447,8 @@ export default function SettingsPage() {
 
       <ChangePasswordSection setMsg={setMsg} />
 
-      <section className="space-y-1 rounded-lg border border-white/10 bg-panel p-4 text-xs text-white/60">
-        <h2 className="text-sm font-semibold text-white/80">其他設定（環境變數）</h2>
+      <section className="space-y-1 rounded-lg border border-border bg-card p-4 text-xs text-muted-foreground">
+        <h2 className="text-sm font-semibold text-foreground/80">其他設定（環境變數）</h2>
         <p>
           以下設定必須在 <span className="font-mono">backend/.env</span> 修改後重啟：
         </p>

@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import type { SetMsg } from "./types";
 
 const NOTIFY_EVENTS: { key: string; label: string; hint: string }[] = [
   { key: "tracked_new", label: "追蹤新作", hint: "追蹤的女優/系列出現新作品" },
@@ -27,11 +31,7 @@ type NotifySettings = {
   };
 };
 
-export default function NotifySection({
-  setMsg,
-}: {
-  setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
-}) {
+export default function NotifySection({ setMsg }: { setMsg: SetMsg }) {
   const [conf, setConf] = useState<NotifySettings | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -80,48 +80,55 @@ export default function NotifySection({
   }
 
   return (
-    <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+    <section className="space-y-3 rounded-lg border border-border bg-card p-4">
       <h2 className="text-lg font-semibold">通知</h2>
       {conf ? (
         <>
-          <div className="text-xs text-white/60">
+          <div className="text-xs text-muted-foreground">
             Webhook：
             {conf.webhook_configured ? (
               <span className="text-emerald-300">已設定</span>
             ) : (
-              <span className="text-white/40">未設定（.env WEBHOOK_URL）</span>
+              <span className="text-muted-foreground/70">未設定（.env WEBHOOK_URL）</span>
             )}
             {" ・ "}Telegram：
             {conf.telegram_configured ? (
               <span className="text-emerald-300">已設定</span>
             ) : (
-              <span className="text-white/40">
+              <span className="text-muted-foreground/70">
                 未設定（.env TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID）
               </span>
             )}
           </div>
           <div className="space-y-2">
             {NOTIFY_EVENTS.map((ev) => (
-              <label key={ev.key} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
+              <div key={ev.key} className="flex items-center gap-2">
+                <Switch
+                  id={`notify-${ev.key}`}
                   checked={conf.toggles[ev.key] ?? true}
-                  onChange={(e) => toggle(ev.key, e.target.checked)}
+                  onCheckedChange={(v) => toggle(ev.key, v)}
                 />
-                {ev.label}
-                <span className="text-xs text-white/40">{ev.hint}</span>
-              </label>
+                <Label
+                  htmlFor={`notify-${ev.key}`}
+                  className="text-sm font-normal"
+                >
+                  {ev.label}
+                  <span className="ml-2 text-xs text-muted-foreground/70">
+                    {ev.hint}
+                  </span>
+                </Label>
+              </div>
             ))}
           </div>
-          <button
-            className="btn-ghost disabled:opacity-50"
+          <Button
+            variant="outline"
             onClick={sendTest}
             disabled={busy || (!conf.webhook_configured && !conf.telegram_configured)}
           >
             {busy ? "發送中…" : "發送測試通知"}
-          </button>
+          </Button>
           {conf.queue && (
-            <div className="text-xs text-white/50">
+            <div className="text-xs text-muted-foreground/80">
               本次啟動以來：已送 {conf.queue.sent} ・ 失敗 {conf.queue.failed} ・ 佇列中{" "}
               {conf.queue.pending}
               {conf.queue.dropped > 0 && (
@@ -134,7 +141,7 @@ export default function NotifySection({
           )}
         </>
       ) : (
-        <div className="text-sm text-white/40">載入中…</div>
+        <div className="text-sm text-muted-foreground/70">載入中…</div>
       )}
     </section>
   );

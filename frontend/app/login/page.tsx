@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, setToken } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ErrorBox } from "@/components/shared/ErrorBox";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -52,7 +55,7 @@ export default function LoginPage() {
 
   if (checking) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-sm text-white/40">
+      <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
         載入中…
       </div>
     );
@@ -60,43 +63,33 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm space-y-5 rounded-xl border border-white/10 bg-panel p-6 shadow-xl">
+      <div className="w-full max-w-sm space-y-5 rounded-xl border border-border bg-card p-6 shadow-xl">
         <div className="text-center">
-          <div className="text-2xl font-bold tracking-wide text-accent">AVBT</div>
-          <p className="mt-1 text-sm text-white/50">請登入以繼續</p>
+          <div className="text-2xl font-bold tracking-wide text-primary">AVBT</div>
+          <p className="mt-1 text-sm text-muted-foreground">請登入以繼續</p>
         </div>
         <form onSubmit={submit} className="space-y-3">
-          <input
+          <Input
             autoFocus
             type="text"
             placeholder="帳號"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
           />
-          <input
+          <Input
             type="password"
             placeholder="密碼"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
           />
-          {error && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-              {error}
-            </div>
-          )}
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn-primary w-full justify-center py-2 disabled:opacity-50"
-          >
+          {error && <ErrorBox message={error} />}
+          <Button type="submit" disabled={busy} className="w-full">
             {busy ? "登入中…" : "登入"}
-          </button>
+          </Button>
         </form>
-        <p className="text-center text-xs text-white/30">
+        <p className="text-center text-xs text-muted-foreground/60">
           忘記密碼?在伺服器上執行{" "}
-          <code className="rounded bg-white/5 px-1">
+          <code className="rounded bg-muted px-1">
             touch backend/data/reset_password
           </code>{" "}
           後重啟即可重新設定

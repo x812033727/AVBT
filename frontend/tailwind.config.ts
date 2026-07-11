@@ -37,14 +37,11 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // 過渡別名(PR10 收斂):讓既有 *-ink / *-panel / *-accent class 繼續等值渲染。
-        // 注意:此處 accent = 橘主色(--primary),與 shadcn 語意的 --accent(中性
-        // hover 底色)不同;components/ui/* 內的 accent 用法已替換為 muted。
-        ink: "hsl(var(--background))",
-        panel: "hsl(var(--card))",
+        // accent 為 shadcn 標準語意(中性 hover 底色)。components/ui/* 目前以
+        // muted 表達同一語意,兩者等值;新元件用哪個皆可。
         accent: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
         },
       },
       borderRadius: {

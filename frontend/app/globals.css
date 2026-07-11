@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    /* 值與原 hex 等值換算:ink #0f1115 / panel #1a1d24 / accent #f97316 */
+    /* 原始色 DNA:底 #0f1115 / 面板 #1a1d24 / 主色橘 #f97316(= --primary) */
     --background: 220 17% 7%;
     --foreground: 220 14% 91%;
     --card: 222 16% 12%;
@@ -39,24 +39,4 @@
   a {
     color: inherit;
   }
-}
-
-/* 過渡期 class:尚未遷移到 components/ui 的頁面仍依賴,PR10 收尾時移除 */
-.btn {
-  @apply inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium transition;
-}
-.btn-primary {
-  @apply btn bg-accent text-black hover:bg-orange-400;
-}
-.btn-ghost {
-  @apply btn border border-white/10 text-white/80 hover:bg-white/5;
-}
-.tag {
-  @apply rounded bg-white/5 px-2 py-0.5 text-xs text-white/70;
-}
-.tag-hd {
-  @apply rounded bg-blue-500/20 px-2 py-0.5 text-xs text-blue-300;
-}
-.tag-sub {
-  @apply rounded bg-red-500/20 px-2 py-0.5 text-xs text-red-300;
 }

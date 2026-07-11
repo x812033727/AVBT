@@ -2,16 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body {
-  background: #0f1115;
-  color: #e6e8ec;
+@layer base {
+  :root {
+    /* 值與原 hex 等值換算:ink #0f1115 / panel #1a1d24 / accent #f97316 */
+    --background: 220 17% 7%;
+    --foreground: 220 14% 91%;
+    --card: 222 16% 12%;
+    --card-foreground: 220 14% 91%;
+    --popover: 222 16% 10%;
+    --popover-foreground: 220 14% 91%;
+    --primary: 24.6 95% 53.1%;
+    --primary-foreground: 220 17% 7%;
+    --secondary: 222 14% 16%;
+    --secondary-foreground: 220 14% 91%;
+    --muted: 222 14% 16%;
+    --muted-foreground: 220 9% 62%;
+    --accent: 222 14% 18%;
+    --accent-foreground: 220 14% 95%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 14% 17%;
+    --input: 220 14% 17%;
+    --ring: 24.6 95% 53.1%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  a {
+    color: inherit;
+  }
 }
 
-a {
-  color: inherit;
-}
-
+/* 過渡期 class:尚未遷移到 components/ui 的頁面仍依賴,PR10 收尾時移除 */
 .btn {
   @apply inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm font-medium transition;
 }

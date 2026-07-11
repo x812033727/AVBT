@@ -45,6 +45,7 @@ async def test_init_db_sets_flags_and_indexes(tmp_path, monkeypatch):
         "ix_collected_movies_status",
         "ix_collected_movies_updated_at",
         "ix_pcloud_transfer_created_at",
+        "ix_movie_detail_cache_fetched_at",
     } <= indexes
 
 

@@ -68,9 +68,9 @@ def _archive_leaf(code: str) -> str:
     return _safe_code(extract_jav_code_full(code) or code)
 
 
-# A small per-pass cache so two completed tasks with the same code don't
-# trigger two JavBus fetches.
-_detail_cache: dict[str, object] = {}
+# Detail lookups delegate caching to the scraper: its in-memory cache
+# (30-min TTL + in-flight coalescing) dedups within a pass, and the
+# persistent movie_detail_cache table dedups across passes and restarts.
 
 # file_ids whose archive failure was already notified — the archive loop
 # retries every minute, so without this a permanently-stuck file would
@@ -111,22 +111,19 @@ async def resolve_listing_loose(
     JavBus gives us. Default priority matches the user-requested
     fallback chain: series → label (發行商) → studio (製作商).
 
-    Shares ``_detail_cache`` with the strict resolver, so a single
-    pCloud pass and a concurrent PikPak archiver pass don't re-fetch
-    the same code twice.
+    Caching is the scraper's job (in-memory + persistent table), so a
+    single pCloud pass and a concurrent PikPak archiver pass don't
+    re-fetch the same code twice.
 
     Returns ``(kind, safe_name)`` or ``None`` when JavBus has no
     detail at all (fetch failure / 404) **or** has detail but none of
     the requested kinds are populated.
     """
-    detail = _detail_cache.get(code)
-    if detail is None:
-        try:
-            detail = await scraper.fetch_detail_resolved(code)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("fetch_detail(%s) failed: %s", code, exc)
-            return None
-        _detail_cache[code] = detail
+    try:
+        detail = await scraper.fetch_detail_resolved(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fetch_detail(%s) failed: %s", code, exc)
+        return None
 
     kinds = _detail_kinds(detail)  # type: ignore[arg-type]
     for kind in priority:
@@ -144,7 +141,7 @@ async def resolve_listing_loose(
 async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     """Decide which tracked listing a JAV code belongs to.
 
-    Looks up the code in JavBus (with ``_detail_cache`` memoisation),
+    Looks up the code in JavBus (cached by the scraper itself),
     enumerates the candidate ``(kind, slug, name)`` triples from the
     movie detail, then walks ``_KIND_PRIORITY`` and returns the FIRST
     triple whose ``(kind, slug)`` exists in the ``TrackedListing`` table.
@@ -158,14 +155,11 @@ async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     refs, or no listing kind matches a tracked row. Callers decide what
     that means (archiver falls back to ``pikpak_archive_folder``; pCloud
     organize skips with ``reason=no_tracked_match``)."""
-    detail = _detail_cache.get(code)
-    if detail is None:
-        try:
-            detail = await scraper.fetch_detail_resolved(code)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("fetch_detail(%s) failed: %s", code, exc)
-            return None
-        _detail_cache[code] = detail
+    try:
+        detail = await scraper.fetch_detail_resolved(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fetch_detail(%s) failed: %s", code, exc)
+        return None
 
     kinds = _detail_kinds(detail)  # type: ignore[arg-type]
     if not kinds:
@@ -829,8 +823,6 @@ async def archive_once() -> int:
         return 0
 
     moved = 0
-    # Reset per-pass detail cache.
-    _detail_cache.clear()
     async with SessionLocal() as session:
         rows = (
             await session.execute(

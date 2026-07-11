@@ -154,6 +154,16 @@ class Settings(BaseSettings):
     javbus_detail_cache_ttl_seconds: int = 1800
     javbus_detail_cache_max: int = 2000
 
+    # Persistent detail cache (movie_detail_cache table). Survives
+    # restarts, so codes already scraped aren't re-fetched across tracker
+    # cycles / archiver passes / reboots. Recent releases keep gaining
+    # magnets, so they expire fast; old releases are static and stay
+    # fresh for a month. Disable to fall back to in-memory only.
+    javbus_persist_cache_enabled: bool = True
+    javbus_persist_ttl_recent_seconds: int = 86400
+    javbus_persist_ttl_old_seconds: int = 2_592_000
+    javbus_persist_recent_days: int = 90
+
     # Parallel page-walk batch size for listing scans (missing detection
     # and bulk send-all). Set to 1 to restore strict sequential walks.
     javbus_page_batch_size: int = 3

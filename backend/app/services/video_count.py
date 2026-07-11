@@ -37,10 +37,13 @@ _MAX_SUBFOLDERS = 5  # nested-level scan cap inside one task folder
 
 def summarize_children(children) -> dict:
     """Split a folder listing into video/file counts plus subfolder ids
-    (for the one-level recursion in count_for_file_id)."""
+    (for the one-level recursion in count_for_file_id). ``video_files``
+    keeps the ids alongside the names so playback lookups can reuse the
+    same listing; counting callers just ignore it."""
     video_count = 0
     total_files = 0
     video_names: list[str] = []
+    video_files: list[dict] = []
     subfolder_ids: list[str] = []
     for child in children:
         if getattr(child, "kind", "") == "drive#folder":
@@ -52,9 +55,17 @@ def summarize_children(children) -> dict:
             video_count += 1
             if len(video_names) < _MAX_NAMES:
                 video_names.append(child.name)
+                video_files.append(
+                    {
+                        "id": child.id,
+                        "name": child.name,
+                        "size": getattr(child, "size", None),
+                    }
+                )
     return {
         "video_count": video_count,
         "video_names": video_names,
+        "video_files": video_files,
         "total_files": total_files,
         "subfolder_ids": subfolder_ids,
     }
@@ -184,6 +195,124 @@ async def count_for_code(code: str) -> dict:
     if not result.get("ok"):
         return {"ok": False, "error": "PikPak 上找不到此番號(任務檔案已搬移)"}
     return result
+
+
+async def files_for_code(code: str) -> dict:
+    """Resolve a code to its playable PikPak video files: [{id, name,
+    size, path}]. Same traversal as :func:`count_for_code` (presence
+    paths first — archived task file_ids dangle), but keeps the file
+    ids so the frontend can ask ``/api/pikpak/files/{id}/url`` for a
+    streaming link."""
+    code = normalize_code(code) or (code or "").strip().upper()
+    if not code:
+        return {"ok": False, "error": "無效番號"}
+
+    await presence_index.get()
+    paths = presence_index.paths_for(code)[:_MAX_PATHS]
+
+    files: list[dict] = []
+    seen_ids: set[str] = set()
+    any_partial = False
+
+    def _add(entry: dict, path: str) -> None:
+        if not entry.get("id") or entry["id"] in seen_ids:
+            return
+        seen_ids.add(entry["id"])
+        files.append({**entry, "path": path})
+
+    for path in paths:
+        parent, _, leaf = path.rpartition("/")
+        try:
+            if is_video(leaf):
+                # Presence recorded a bare video file. Paths carry no
+                # ids, so list the parent folder and match by name.
+                folder_id = await pikpak_service.lookup_folder_id(parent)
+                if not folder_id:
+                    continue
+                children, partial = await pikpak_service.list_all_files(folder_id)
+                any_partial = any_partial or bool(partial)
+                for child in children:
+                    if (
+                        getattr(child, "kind", "") != "drive#folder"
+                        and child.name == leaf
+                    ):
+                        _add(
+                            {
+                                "id": child.id,
+                                "name": child.name,
+                                "size": getattr(child, "size", None),
+                            },
+                            path,
+                        )
+                continue
+            folder_id = await pikpak_service.lookup_folder_id(path)
+            if not folder_id:
+                continue
+            children, partial = await pikpak_service.list_all_files(folder_id)
+            any_partial = any_partial or bool(partial)
+            for entry in summarize_children(children)["video_files"]:
+                _add(entry, f"{path}/{entry['name']}")
+        except Exception as exc:  # noqa: BLE001 — one stale path shouldn't kill the lookup
+            logger.debug("files-for-code %s via %s failed: %s", code, path, exc)
+            continue
+
+    if files:
+        return {
+            "ok": True,
+            "code": code,
+            "files": files,
+            "partial": any_partial,
+            "source": "presence",
+        }
+
+    # Presence knows nothing — fall back to the newest offline task.
+    file_id = await _latest_task_file_id(code)
+    if not file_id:
+        return {"ok": False, "error": "PikPak 上找不到此番號"}
+    try:
+        children, partial = await pikpak_service.list_all_files(file_id)
+    except Exception as exc:  # noqa: BLE001 — dangling id surfaces as not-found
+        logger.debug("files-for-code task listing %s failed: %s", file_id, exc)
+        children, partial = [], False
+    if children:
+        for entry in summarize_children(children)["video_files"]:
+            _add(entry, entry["name"])
+        if files:
+            return {
+                "ok": True,
+                "code": code,
+                "files": files,
+                "partial": bool(partial),
+                "source": "task",
+            }
+        return {"ok": False, "error": "PikPak 上找不到此番號"}
+    # Empty listing: maybe the task content is a single bare file.
+    try:
+        meta = await pikpak_service.file_meta(file_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("files-for-code file_meta %s failed: %s", file_id, exc)
+        meta = {}
+    if (
+        meta
+        and meta.get("name")
+        and meta.get("kind") != "drive#folder"
+        and is_video(meta["name"])
+    ):
+        return {
+            "ok": True,
+            "code": code,
+            "files": [
+                {
+                    "id": file_id,
+                    "name": meta["name"],
+                    "size": meta.get("size"),
+                    "path": meta["name"],
+                }
+            ],
+            "partial": False,
+            "source": "task",
+        }
+    return {"ok": False, "error": "PikPak 上找不到此番號(任務檔案已搬移)"}
 
 
 async def count_for_code_pcloud(code: str) -> dict:

@@ -504,6 +504,20 @@ export type PresenceCodeLookup = {
   paths: string[];
 };
 
+export type PresenceFileItem = {
+  id: string;
+  name: string;
+  size?: number | null;
+  path: string;
+};
+
+export type PresenceCodeFiles = {
+  code: string;
+  files: PresenceFileItem[];
+  partial?: boolean;
+  source?: string;
+};
+
 // ---------- pCloud transfer queue ----------
 
 export type PCloudTransfer = {

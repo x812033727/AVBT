@@ -54,6 +54,9 @@ def test_summarize_children_counts_videos_and_subfolders():
     assert s["total_files"] == 3
     assert s["video_names"] == ["ABC-123_1.mp4", "ABC-123_2.mkv"]
     assert s["subfolder_ids"] == ["d"]
+    # Ids ride along for playback lookups; non-videos and folders excluded.
+    assert [e["id"] for e in s["video_files"]] == ["1", "2"]
+    assert s["video_files"][0]["name"] == "ABC-123_1.mp4"
 
 
 async def test_count_for_file_id_folder_with_nested_level(monkeypatch):
@@ -160,6 +163,101 @@ async def test_count_for_code_falls_back_to_task(monkeypatch):
     assert res["ok"] is True
     assert res["video_count"] == 1
     assert res["source"] == "task"
+
+
+# ---------- files_for_code (playback lookups) ----------
+
+
+async def test_files_for_code_folder_leaf(monkeypatch):
+    fake = FakePikPak(
+        tree={"fid": [f("v1", "ABC-123_1.mp4"), f("v2", "ABC-123_2.mp4"), f("j", "cover.jpg")]},
+        paths={"AVBT/系列/某系列/ABC-123": "fid"},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(
+        vc, "presence_index", FakePresence({"ABC-123": ["AVBT/系列/某系列/ABC-123"]})
+    )
+    res = await vc.files_for_code("ABC-123")
+    assert res["ok"] is True
+    assert res["source"] == "presence"
+    assert [x["id"] for x in res["files"]] == ["v1", "v2"]
+    assert res["files"][0]["path"] == "AVBT/系列/某系列/ABC-123/ABC-123_1.mp4"
+
+
+async def test_files_for_code_bare_file_leaf_resolved_via_parent(monkeypatch):
+    fake = FakePikPak(
+        tree={"done": [f("v9", "ABC-123.mp4"), f("x", "OTHER-1.mp4")]},
+        paths={"AVBT/已完成": "done"},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(
+        vc, "presence_index", FakePresence({"ABC-123": ["AVBT/已完成/ABC-123.mp4"]})
+    )
+    res = await vc.files_for_code("ABC-123")
+    assert res["ok"] is True
+    assert [x["id"] for x in res["files"]] == ["v9"]
+    assert res["files"][0]["path"] == "AVBT/已完成/ABC-123.mp4"
+
+
+async def test_files_for_code_dedupes_across_copies(monkeypatch):
+    fake = FakePikPak(
+        tree={
+            "a": [f("v1", "ABC-123.mp4")],
+            "b": [f("v1", "ABC-123.mp4"), f("v2", "ABC-123_2.mp4")],
+        },
+        paths={"AVBT/已完成/ABC-123": "a", "AVBT/女優/某人/ABC-123": "b"},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(
+        vc,
+        "presence_index",
+        FakePresence({"ABC-123": ["AVBT/已完成/ABC-123", "AVBT/女優/某人/ABC-123"]}),
+    )
+    res = await vc.files_for_code("ABC-123")
+    assert sorted(x["id"] for x in res["files"]) == ["v1", "v2"]
+
+
+async def test_files_for_code_falls_back_to_task_folder(monkeypatch):
+    fake = FakePikPak(tree={"tf": [f("v1", "ZZZ-999.mp4"), f("n", "note.txt")]})
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(vc, "presence_index", FakePresence({}))
+
+    async def latest(code):
+        return "tf"
+
+    monkeypatch.setattr(vc, "_latest_task_file_id", latest)
+    res = await vc.files_for_code("ZZZ-999")
+    assert res["ok"] is True
+    assert res["source"] == "task"
+    assert [x["id"] for x in res["files"]] == ["v1"]
+
+
+async def test_files_for_code_falls_back_to_bare_task_file(monkeypatch):
+    fake = FakePikPak(
+        metas={"vid": {"id": "vid", "name": "ZZZ-999.mp4", "kind": "drive#file"}}
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(vc, "presence_index", FakePresence({}))
+
+    async def latest(code):
+        return "vid"
+
+    monkeypatch.setattr(vc, "_latest_task_file_id", latest)
+    res = await vc.files_for_code("ZZZ-999")
+    assert res["ok"] is True
+    assert res["files"][0]["id"] == "vid"
+
+
+async def test_files_for_code_not_found_anywhere(monkeypatch):
+    monkeypatch.setattr(vc, "pikpak_service", FakePikPak())
+    monkeypatch.setattr(vc, "presence_index", FakePresence({}))
+
+    async def no_task(code):
+        return ""
+
+    monkeypatch.setattr(vc, "_latest_task_file_id", no_task)
+    res = await vc.files_for_code("ZZZ-999")
+    assert res["ok"] is False
 
 
 # ---------- pCloud (transfer-record based) ----------

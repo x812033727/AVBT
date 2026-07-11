@@ -1,37 +1,117 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { Check, TriangleAlert } from "lucide-react";
+import { Check, Play, TriangleAlert } from "lucide-react";
 import type {
   MissingCodesResult,
   MovieListItem,
+  PresenceCodeFiles,
   PresenceCodeLookup,
+  PresenceFileItem,
   TrackedListing,
 } from "@/lib/api";
 
-// 追蹤列展開後的「缺漏 / 多餘番號」明細面板。純展示元件:資料
-// (detail / lookups)與查詢動作(onLookup)都由 page 層持有並下傳,
-// 收合再展開時才能沿用 page 層的快取。
+// 一次先渲染這麼多筆已下載番號,點「顯示全部」才放開 — 大列表(數百部)
+// 全量渲染會卡頓,而且每列的播放查詢本來就是點了才發。
+const PRESENT_PREVIEW = 50;
+
+function fmtSize(size?: number | null) {
+  if (typeof size !== "number" || size <= 0) return "";
+  return `${(size / 1024 ** 3).toFixed(1)} GB`;
+}
+
+// 追蹤列展開後的「缺漏 / 已下載 / 多餘番號」明細面板。純展示元件:資料
+// (detail / lookups / codeFiles)與查詢動作(onLookup / onLoadFiles)都由
+// page 層持有並下傳,收合再展開時才能沿用 page 層的快取。
 export default function MissingDetailPanel({
   tracked,
   detail,
   loading,
   lookups,
   lookupBusy,
+  codeFiles,
+  codeFilesBusy,
   onLookup,
+  onLoadFiles,
+  onPlay,
 }: {
   tracked: TrackedListing;
   detail: MissingCodesResult | null;
   loading: boolean;
   lookups: Map<string, PresenceCodeLookup>;
   lookupBusy: Set<string>;
+  codeFiles: Map<string, PresenceCodeFiles>;
+  codeFilesBusy: Set<string>;
   onLookup: (code: string) => void;
+  onLoadFiles: (code: string) => void;
+  onPlay: (file: PresenceFileItem) => void;
 }) {
+  const [showPresent, setShowPresent] = useState(false);
+  const [presentLimit, setPresentLimit] = useState(PRESENT_PREVIEW);
+
   function expectedPath(code: string) {
     // expected_root comes from the backend so it matches the actual
     // archiver sanitization (preserves kana, spaces, etc.).
     return `${detail?.expected_root || `AVBT/${tracked.kind}/${tracked.name || tracked.id}`}/${code}`;
   }
+
+  function playButton(code: string) {
+    const busy = codeFilesBusy.has(code);
+    return (
+      <button
+        onClick={() => onLoadFiles(code)}
+        disabled={busy}
+        className="inline-flex items-center gap-1 text-emerald-300 hover:underline disabled:opacity-40"
+      >
+        <Play className="h-3 w-3 shrink-0" aria-hidden />
+        {busy ? "查詢中…" : "播放"}
+      </button>
+    );
+  }
+
+  // 查過檔案後的結果區:多支列出逐檔播放;單支也照列(重播入口);
+  // 空結果標示找不到。點列表裡的「播放」直接開 VideoPlayerModal。
+  function filesBlock(code: string) {
+    const res = codeFiles.get(code);
+    if (!res) return null;
+    return (
+      <div className="mt-1 pl-2 text-[11px]">
+        {res.files.length === 0 ? (
+          <span className="inline-flex items-center gap-1 text-amber-300/80">
+            <TriangleAlert className="h-3 w-3 shrink-0" aria-hidden />
+            PikPak 上找不到影片檔
+          </span>
+        ) : (
+          <div className="space-y-0.5">
+            {res.files.map((f) => (
+              <div key={f.id} className="flex items-center gap-2">
+                <button
+                  onClick={() => onPlay(f)}
+                  className="inline-flex shrink-0 items-center gap-1 text-emerald-300 hover:underline"
+                >
+                  <Play className="h-3 w-3" aria-hidden />
+                  播放
+                </button>
+                <span
+                  className="truncate font-mono text-foreground/70"
+                  title={f.path || f.name}
+                >
+                  {f.name}
+                </span>
+                {fmtSize(f.size) && (
+                  <span className="shrink-0 text-muted-foreground/60">
+                    {fmtSize(f.size)}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (loading && !detail) {
     return (
       <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
@@ -40,14 +120,9 @@ export default function MissingDetailPanel({
     );
   }
   if (!detail) return null;
-  if (!detail.missing.length && !detail.extras.length) {
-    return (
-      <div className="flex items-center gap-1 border-t border-border px-4 py-3 text-xs text-emerald-300/80">
-        <Check className="h-3.5 w-3.5" aria-hidden />
-        已無缺漏、也沒有多餘番號
-      </div>
-    );
-  }
+
+  const presentShown = detail.present_codes.slice(0, presentLimit);
+
   return (
     <div className="border-t border-border px-4 py-3 text-xs">
       <div className="mb-2 space-y-1">
@@ -79,6 +154,12 @@ export default function MissingDetailPanel({
           </span>
         </div>
       </div>
+      {!detail.missing.length && !detail.extras.length && (
+        <div className="mb-2 flex items-center gap-1 text-emerald-300/80">
+          <Check className="h-3.5 w-3.5" aria-hidden />
+          已無缺漏、也沒有多餘番號
+        </div>
+      )}
       <ul className="divide-y divide-border/60">
         {detail.missing.map((m: MovieListItem) => {
           const lookup = lookups.get(m.code);
@@ -144,6 +225,45 @@ export default function MissingDetailPanel({
           );
         })}
       </ul>
+      {detail.present_codes.length > 0 && (
+        <div className="mt-3 border-t border-border/60 pt-2">
+          <button
+            onClick={() => setShowPresent((v) => !v)}
+            className="mb-1 text-emerald-300/90 hover:underline"
+          >
+            已下載 ({detail.present_codes.length}){" "}
+            {showPresent ? "▲ 收合" : "▼ 展開播放"}
+          </button>
+          {showPresent && (
+            <>
+              <ul className="divide-y divide-border/60">
+                {presentShown.map((code) => (
+                  <li key={code} className="py-1.5">
+                    <div className="flex items-center gap-3">
+                      <Link
+                        href={`/movie/${encodeURIComponent(code)}`}
+                        className="font-mono text-primary hover:underline"
+                      >
+                        {code}
+                      </Link>
+                      <span className="ml-auto">{playButton(code)}</span>
+                    </div>
+                    {filesBlock(code)}
+                  </li>
+                ))}
+              </ul>
+              {detail.present_codes.length > presentLimit && (
+                <button
+                  onClick={() => setPresentLimit(detail.present_codes.length)}
+                  className="mt-1 text-muted-foreground hover:underline"
+                >
+                  顯示全部(還有 {detail.present_codes.length - presentLimit} 部)
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {detail.extras.length > 0 && (
         <div className="mt-3 border-t border-border/60 pt-2">
           <div className="mb-1 text-muted-foreground">
@@ -162,6 +282,7 @@ export default function MissingDetailPanel({
                   >
                     {e.code}
                   </Link>
+                  <span className="ml-auto">{playButton(e.code)}</span>
                 </div>
                 {e.paths.map((p) => (
                   <div
@@ -171,6 +292,7 @@ export default function MissingDetailPanel({
                     ・{p}
                   </div>
                 ))}
+                {filesBlock(e.code)}
               </li>
             ))}
           </ul>

@@ -13,6 +13,7 @@ from ..schemas import (
     PikPakLogin,
     PikPakQuota,
     PikPakTask,
+    PresenceCodeFiles,
     PresenceCodeLookup,
     PresenceDetail,
     PresenceStatus,
@@ -440,6 +441,24 @@ async def presence_lookup_code(code: str):
     if presence_index.status().get("built_at") is None:
         await presence_index.get()
     return PresenceCodeLookup(code=code, paths=presence_index.paths_for(code))
+
+
+@router.get("/presence/codes/{code}/files", response_model=PresenceCodeFiles)
+async def presence_code_files(code: str):
+    """Playable PikPak video files for a code. Each entry's ``id`` feeds
+    ``GET /api/pikpak/files/{id}/url`` for a streaming link."""
+    try:
+        result = await video_count_svc.files_for_code(code)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "找不到影片"))
+    return PresenceCodeFiles(
+        code=result["code"],
+        files=result["files"],
+        partial=bool(result.get("partial")),
+        source=result.get("source", ""),
+    )
 
 
 @router.post("/reorganize")

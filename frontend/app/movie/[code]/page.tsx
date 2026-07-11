@@ -2,15 +2,18 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { Play } from "lucide-react";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
 import { toast } from "@/components/Toast";
+import VideoPlayerModal from "@/components/VideoPlayerModal";
 import { ErrorBox } from "@/components/shared/ErrorBox";
 import { Button } from "@/components/ui/button";
 import {
   api,
   imgProxy,
   type MovieDetail,
+  type PresenceCodeFiles,
   type VideoCountResponse,
   type VideoCountResult,
 } from "@/lib/api";
@@ -23,6 +26,12 @@ export default function MoviePage({ params }: { params: { code: string } }) {
   const [pcloudCount, setPcloudCount] = useState<VideoCountResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingMsg, setSavingMsg] = useState<string | null>(null);
+  // PikPak 播放:點「播放」才查檔案列表;單支直接開播,多支列出讓使用者挑。
+  const [files, setFiles] = useState<PresenceCodeFiles | null>(null);
+  const [filesBusy, setFilesBusy] = useState(false);
+  const [playing, setPlaying] = useState<{ id: string; name: string } | null>(
+    null
+  );
 
   useEffect(() => {
     let alive = true;
@@ -62,6 +71,27 @@ export default function MoviePage({ params }: { params: { code: string } }) {
       alive = false;
     };
   }, [code]);
+
+  async function loadFiles() {
+    if (filesBusy) return;
+    if (files) {
+      if (files.files.length === 1) setPlaying(files.files[0]);
+      return;
+    }
+    setFilesBusy(true);
+    try {
+      const res = await api.get<PresenceCodeFiles>(
+        `/api/pikpak/presence/codes/${encodeURIComponent(code)}/files`
+      );
+      setFiles(res);
+      if (res.files.length === 1) setPlaying(res.files[0]);
+      else if (res.files.length === 0) toast.error("PikPak 上找不到影片檔");
+    } catch (e: any) {
+      toast.error(e.message || "查詢影片失敗");
+    } finally {
+      setFilesBusy(false);
+    }
+  }
 
   async function addToCollection(status: string) {
     if (!data) return;
@@ -136,12 +166,45 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             {(cloudCount || pcloudCount) && (
               <>
                 <dt className="text-muted-foreground">雲端影片</dt>
-                <dd className="space-x-2">
-                  {cloudCount && (
-                    <CloudCountLabel label="PikPak" result={cloudCount} />
-                  )}
-                  {pcloudCount && (
-                    <CloudCountLabel label="pCloud" result={pcloudCount} />
+                <dd className="space-y-1">
+                  <div className="space-x-2">
+                    {cloudCount && (
+                      <CloudCountLabel label="PikPak" result={cloudCount} />
+                    )}
+                    {cloudCount && cloudCount.video_count > 0 && (
+                      <button
+                        onClick={loadFiles}
+                        disabled={filesBusy}
+                        className="inline-flex items-center gap-1 text-xs text-emerald-300 hover:underline disabled:opacity-40"
+                      >
+                        <Play className="h-3 w-3" aria-hidden />
+                        {filesBusy ? "查詢中…" : "播放"}
+                      </button>
+                    )}
+                    {pcloudCount && (
+                      <CloudCountLabel label="pCloud" result={pcloudCount} />
+                    )}
+                  </div>
+                  {files && files.files.length > 1 && (
+                    <div className="space-y-0.5 text-xs">
+                      {files.files.map((f) => (
+                        <div key={f.id} className="flex items-center gap-2">
+                          <button
+                            onClick={() => setPlaying(f)}
+                            className="inline-flex shrink-0 items-center gap-1 text-emerald-300 hover:underline"
+                          >
+                            <Play className="h-3 w-3" aria-hidden />
+                            播放
+                          </button>
+                          <span
+                            className="truncate font-mono text-foreground/70"
+                            title={f.path || f.name}
+                          >
+                            {f.name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </dd>
               </>
@@ -240,6 +303,12 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           </div>
         </section>
       )}
+
+      <VideoPlayerModal
+        open={playing !== null}
+        file={playing}
+        onClose={() => setPlaying(null)}
+      />
     </div>
   );
 }

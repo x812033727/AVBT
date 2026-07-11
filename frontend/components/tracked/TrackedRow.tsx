@@ -18,7 +18,9 @@ import {
   imgProxy,
   type MissingCodesResult,
   type MissingSummaryItem,
+  type PresenceCodeFiles,
   type PresenceCodeLookup,
+  type PresenceFileItem,
   type TrackedKind,
   type TrackedListing,
 } from "@/lib/api";
@@ -54,9 +56,13 @@ export default function TrackedRow({
   detailLoading,
   lookups,
   lookupBusy,
+  codeFiles,
+  codeFilesBusy,
   onCheckNow,
   onToggleExpand,
   onLookup,
+  onLoadFiles,
+  onPlay,
   onChanged,
 }: {
   item: TrackedListing;
@@ -71,9 +77,13 @@ export default function TrackedRow({
   detailLoading: boolean;
   lookups: Map<string, PresenceCodeLookup>;
   lookupBusy: Set<string>;
+  codeFiles: Map<string, PresenceCodeFiles>;
+  codeFilesBusy: Set<string>;
   onCheckNow: () => void;
   onToggleExpand: () => void;
   onLookup: (code: string) => void;
+  onLoadFiles: (code: string) => void;
+  onPlay: (file: PresenceFileItem) => void;
   onChanged: () => void;
 }) {
   async function remove() {
@@ -284,7 +294,11 @@ export default function TrackedRow({
           loading={detailLoading}
           lookups={lookups}
           lookupBusy={lookupBusy}
+          codeFiles={codeFiles}
+          codeFilesBusy={codeFilesBusy}
           onLookup={onLookup}
+          onLoadFiles={onLoadFiles}
+          onPlay={onPlay}
         />
       )}
     </div>

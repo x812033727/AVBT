@@ -518,6 +518,42 @@ export type PresenceCodeFiles = {
   source?: string;
 };
 
+// ---------- 女優(已下載作品的女優索引) ----------
+
+export type ActressIndexItem = {
+  name: string;
+  id: string;
+  count: number;
+  avatar: string;
+  sample_cover: string;
+};
+
+export type ActressBackfillStatus = {
+  enabled: boolean;
+  pending: number;
+  done_total: number;
+  failed_total: number;
+  avatar_pending: number;
+  avatar_done: number;
+  last_run_at: string | null;
+  last_error: string;
+};
+
+export type ActressIndexOut = {
+  actresses: ActressIndexItem[];
+  downloaded_total: number;
+  indexed_total: number;
+  backfill: ActressBackfillStatus;
+};
+
+export type ActressWorksOut = {
+  name: string;
+  id: string;
+  avatar: string;
+  count: number;
+  works: MovieListItem[];
+};
+
 // ---------- pCloud transfer queue ----------
 
 export type PCloudTransfer = {

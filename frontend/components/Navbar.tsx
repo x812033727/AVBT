@@ -17,6 +17,7 @@ import {
   Search,
   Settings,
   Star,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { clearToken } from "@/lib/api";
@@ -35,6 +36,7 @@ const TABS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/search", label: "搜尋", icon: Search },
   { href: "/collection", label: "收藏", icon: Star },
   { href: "/tracked", label: "追蹤", icon: Radar },
+  { href: "/actresses", label: "女優", icon: Users },
   { href: "/missing", label: "缺漏", icon: PackageSearch },
   { href: "/pikpak", label: "PikPak", icon: CloudDownload },
   { href: "/pcloud", label: "pCloud", icon: Cloud },

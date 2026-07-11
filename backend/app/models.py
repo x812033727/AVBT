@@ -38,6 +38,21 @@ class MovieDetailCache(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ActressAvatar(Base):
+    """Persistent avatar cache for the 女優 browse page.
+
+    One row per JavBus star id. ``avatar`` may be empty — a negative
+    marker meaning "profile fetched but no avatar", kept so the backfill
+    doesn't re-fetch the same profile every cycle (a long staleness
+    window in detail_backfill allows eventual retries)."""
+    __tablename__ = "actress_avatar"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    avatar: Mapped[str] = mapped_column(String(1024), default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class TrackedListing(Base):
     """One JavBus listing axis we want to watch for new works.
 

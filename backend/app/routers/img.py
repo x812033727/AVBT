@@ -15,10 +15,11 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from ..config import img_proxy_allowed_hosts, settings
 from ..scrapers.javbus import DEFAULT_COOKIES, USER_AGENT
+from ..services import img_cache
 
 router = APIRouter(prefix="/api/img", tags=["img"])
 
@@ -148,6 +149,21 @@ async def proxy_image(url: str = Query(..., min_length=8)):
     if not await _safe_url(url):
         raise HTTPException(status_code=400, detail="非法的 URL")
 
+    # Disk cache is keyed on the requested URL (pre-redirect). Cache
+    # lookup happens only after the SSRF check above.
+    original_url = url
+    hit = await img_cache.lookup(original_url)
+    if hit is not None:
+        path, media_type = hit
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "X-Img-Cache": "hit",
+            },
+        )
+
     resp = await _fetch(url)
     hops = 0
     while resp.status_code in _REDIRECT_CODES and hops < 3:
@@ -164,7 +180,11 @@ async def proxy_image(url: str = Query(..., min_length=8)):
         raise HTTPException(status_code=resp.status_code, detail="upstream non-200")
 
     ctype = resp.headers.get("content-type", "image/jpeg")
-    if not ctype.startswith("image/"):
+    if ctype.startswith("image/"):
+        # Only genuine image responses are cached; store() skips types
+        # it can't encode as an extension.
+        await img_cache.store(original_url, resp.content, ctype)
+    else:
         ctype = "image/jpeg"
 
     return Response(
@@ -173,5 +193,6 @@ async def proxy_image(url: str = Query(..., min_length=8)):
         headers={
             "Cache-Control": "public, max-age=86400",
             "X-Proxy-Status": str(resp.status_code),
+            "X-Img-Cache": "miss",
         },
     )

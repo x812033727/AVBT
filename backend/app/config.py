@@ -193,6 +193,14 @@ class Settings(BaseSettings):
     # 檢查防止它被當開放代理 / SSRF 跳板。
     img_proxy_allowed_hosts: str = ""
 
+    # 圖片磁碟快取:代理抓回的圖存到 data/img_cache(compose volume 內,
+    # 重建映像不掉),同一張圖第二次起直接從磁碟回,不再打上游 CDN。
+    # 超過上限時依 mtime(LRU)淘汰最舊的直到降回上限的 90%。
+    img_cache_enabled: bool = True
+    img_cache_dir: str = "./data/img_cache"
+    img_cache_max_gb: float = 2.0
+    img_cache_evict_interval_seconds: int = 300
+
     # ----- 自動資料庫備份 -----
     # 每隔 N 小時把 SQLite 用 online-backup API 複製到
     # data/backups/avbt-<timestamp>.db,保留最新 keep 份。

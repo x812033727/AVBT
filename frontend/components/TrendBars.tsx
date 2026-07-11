@@ -38,7 +38,7 @@ export default function TrendBars({ points }: { points: TrendPoint[] }) {
                 y={H - sentH}
                 width={bw}
                 height={sentH}
-                className="fill-white/20"
+                className="fill-muted-foreground/25"
                 rx={1}
               />
               <rect
@@ -46,14 +46,14 @@ export default function TrendBars({ points }: { points: TrendPoint[] }) {
                 y={H - archH}
                 width={bw}
                 height={archH}
-                className="fill-accent/70"
+                className="fill-primary/70"
                 rx={1}
               />
             </g>
           );
         })}
       </svg>
-      <div className="mt-1 flex items-center justify-between text-xs text-white/40">
+      <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
         <span>{points[0]?.date ?? ""}</span>
         <span>
           {hover

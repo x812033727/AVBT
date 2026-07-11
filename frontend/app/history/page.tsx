@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Check, History, Loader2 } from "lucide-react";
 import {
   api,
   btih,
@@ -11,6 +12,22 @@ import {
   type VideoCountResult,
 } from "@/lib/api";
 import { confirmDialog, toast } from "@/components/Toast";
+import { fmtDateTime } from "@/lib/format";
+import { pikpakPhaseTone } from "@/lib/status";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorBox } from "@/components/shared/ErrorBox";
+import { StatusBadge } from "@/components/shared/StatusBadge";
 
 const PAGE_SIZE = 50;
 
@@ -28,11 +45,8 @@ const PHASE_OPTIONS = [
   { value: "PHASE_TYPE_ERROR", label: "ERROR" },
 ];
 
-function fmt(d: string | null): string {
-  if (!d) return "-";
-  const date = new Date(d.endsWith("Z") ? d : d + "Z");
-  return date.toLocaleString();
-}
+const SELECT_CLASS =
+  "h-9 rounded-md border border-input bg-background px-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function HistoryListPage() {
   const [code, setCode] = useState("");
@@ -284,32 +298,32 @@ export default function HistoryListPage() {
         }}
       >
         <div>
-          <div className="text-xs text-white/40">番號</div>
-          <input
+          <div className="mb-1 text-xs text-muted-foreground">番號</div>
+          <Input
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder="篩選番號(精確匹配)"
-            className="w-40 rounded-md border border-white/10 bg-panel px-2 py-1 text-sm outline-none focus:border-accent"
+            className="w-40"
           />
         </div>
         <div>
-          <div className="text-xs text-white/40">名稱</div>
-          <input
+          <div className="mb-1 text-xs text-muted-foreground">名稱</div>
+          <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="搜尋檔案名稱"
-            className="w-48 rounded-md border border-white/10 bg-panel px-2 py-1 text-sm outline-none focus:border-accent"
+            className="w-48"
           />
         </div>
         <div>
-          <div className="text-xs text-white/40">狀態</div>
+          <div className="mb-1 text-xs text-muted-foreground">狀態</div>
           <select
             value={phase}
             onChange={(e) => {
               setPhase(e.target.value);
               setOffset(0);
             }}
-            className="rounded-md border border-white/10 bg-panel px-2 py-1 text-sm"
+            className={SELECT_CLASS}
           >
             {PHASE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -319,14 +333,14 @@ export default function HistoryListPage() {
           </select>
         </div>
         <div>
-          <div className="text-xs text-white/40">歸檔狀態</div>
+          <div className="mb-1 text-xs text-muted-foreground">歸檔狀態</div>
           <select
             value={archived}
             onChange={(e) => {
               setArchived(e.target.value);
               setOffset(0);
             }}
-            className="rounded-md border border-white/10 bg-panel px-2 py-1 text-sm"
+            className={SELECT_CLASS}
           >
             {ARCHIVE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -335,188 +349,174 @@ export default function HistoryListPage() {
             ))}
           </select>
         </div>
-        <button type="submit" className="btn-ghost" disabled={loading}>
+        <Button type="submit" variant="outline" disabled={loading}>
           {loading ? "讀取中…" : "刷新"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="btn-ghost"
+          variant="outline"
           disabled={counting || !data?.items.some((it) => countEligible(it) && !counts[it.id])}
           onClick={() => data && fetchCounts(data.items)}
           title="向 PikPak 查詢本頁每筆任務實際的影片檔數(分集/單一)"
         >
           {counting ? "查詢中…" : "查詢本頁影片數"}
-        </button>
+        </Button>
         {data && (
-          <div className="ml-auto text-xs text-white/50">
+          <div className="ml-auto text-xs text-muted-foreground">
             共 {data.total} 筆,第 {page} / {Math.max(totalPages, 1)} 頁
           </div>
         )}
       </form>
 
-      {error && (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBox message={error} onRetry={load} />}
 
       {data && !data.items.length && (
-        <div className="rounded-md border border-white/10 bg-panel px-3 py-8 text-center text-white/50">
-          沒有紀錄
-        </div>
+        <EmptyState icon={History} title="沒有紀錄" />
       )}
 
       {data && !!data.items.length && (
-        <div className="overflow-hidden rounded-lg border border-white/10">
-          <table className="w-full text-sm">
-            <thead className="bg-white/5 text-left text-xs uppercase tracking-wide text-white/40">
-              <tr>
-                <th className="w-8 px-3 py-2">
-                  <input
-                    type="checkbox"
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <Table>
+            <TableHeader className="bg-muted/40 text-xs uppercase tracking-wide">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="w-8 px-3">
+                  <Checkbox
                     checked={allOnPageSelected}
-                    onChange={(e) => toggleAll(e.target.checked)}
+                    onCheckedChange={(v) => toggleAll(v === true)}
                     title="全選本頁"
+                    aria-label="全選本頁"
                   />
-                </th>
-                <th className="w-32 px-3 py-2">送出時間</th>
-                <th className="w-24 px-3 py-2">番號</th>
-                <th className="px-3 py-2">名稱 / 磁力</th>
-                <th className="w-28 px-3 py-2">狀態</th>
-                <th className="w-32 px-3 py-2">歸檔</th>
-                <th className="w-24 px-3 py-2">影片數</th>
-                <th className="w-16 px-3 py-2">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((it) => (
-                <tr key={it.id} className="border-t border-white/5">
-                  <td className="px-3 py-2">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(it.id)}
-                      onChange={(e) => toggleRow(it.id, e.target.checked)}
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-white/60">
-                    {fmt(it.created_at)}
-                  </td>
-                  <td className="px-3 py-2">
-                    {it.code ? (
-                      <Link
-                        href={`/movie/${encodeURIComponent(it.code)}`}
-                        className="font-mono text-accent hover:underline"
+                </TableHead>
+                <TableHead className="w-32 px-3">送出時間</TableHead>
+                <TableHead className="w-24 px-3">番號</TableHead>
+                <TableHead className="px-3">名稱 / 磁力</TableHead>
+                <TableHead className="w-28 px-3">狀態</TableHead>
+                <TableHead className="w-32 px-3">歸檔</TableHead>
+                <TableHead className="w-24 px-3">影片數</TableHead>
+                <TableHead className="w-16 px-3">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.items.map((it) => {
+                const phaseView = pikpakPhaseTone(it.phase);
+                return (
+                  <TableRow key={it.id}>
+                    <TableCell className="px-3">
+                      <Checkbox
+                        checked={selected.has(it.id)}
+                        onCheckedChange={(v) => toggleRow(it.id, v === true)}
+                        aria-label="選取此列"
+                      />
+                    </TableCell>
+                    <TableCell className="px-3 text-muted-foreground">
+                      {fmtDateTime(it.created_at)}
+                    </TableCell>
+                    <TableCell className="px-3">
+                      {it.code ? (
+                        <Link
+                          href={`/movie/${encodeURIComponent(it.code)}`}
+                          className="font-mono text-primary hover:underline"
+                        >
+                          {it.code}
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground/50">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-3">
+                      <div className="truncate text-foreground/80">
+                        {it.name || "(未命名)"}
+                      </div>
+                      <div className="truncate font-mono text-xs text-muted-foreground/60">
+                        {btih(it.magnet)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="px-3">
+                      <StatusBadge tone={phaseView.tone}>{phaseView.label}</StatusBadge>
+                    </TableCell>
+                    <TableCell className="px-3 text-xs">
+                      {it.archived ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-300">
+                          <Check className="h-3 w-3 shrink-0" aria-hidden />
+                          {fmtDateTime(it.archived_at)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground/50">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-3 text-xs">
+                      <VideoCountCell
+                        state={counts[it.id]}
+                        eligible={countEligible(it)}
+                        onQuery={() => fetchCounts([it])}
+                      />
+                    </TableCell>
+                    <TableCell className="px-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => remove(it.id)}
+                        className="h-7 px-2 text-red-300 hover:bg-red-500/10 hover:text-red-200"
                       >
-                        {it.code}
-                      </Link>
-                    ) : (
-                      <span className="text-white/30">-</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="truncate text-white/80">
-                      {it.name || "(未命名)"}
-                    </div>
-                    <div className="truncate font-mono text-xs text-white/30">
-                      {btih(it.magnet)}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={
-                        "rounded px-2 py-0.5 text-xs " +
-                        (it.phase === "PHASE_TYPE_COMPLETE"
-                          ? "bg-emerald-400/20 text-emerald-200"
-                          : it.phase === "PHASE_TYPE_ERROR"
-                          ? "bg-red-500/20 text-red-300"
-                          : "bg-white/10 text-white/70")
-                      }
-                    >
-                      {it.phase.replace("PHASE_TYPE_", "") || "—"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    {it.archived ? (
-                      <span className="text-emerald-300">
-                        ✓ {fmt(it.archived_at)}
-                      </span>
-                    ) : (
-                      <span className="text-white/30">—</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    <VideoCountCell
-                      state={counts[it.id]}
-                      eligible={countEligible(it)}
-                      onQuery={() => fetchCounts([it])}
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={() => remove(it.id)}
-                      className="text-red-300 hover:underline"
-                    >
-                      刪除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                        刪除
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       )}
 
       {selected.size > 0 && (
-        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-panel/95 px-4 py-3 shadow-lg backdrop-blur">
-          <span className="text-sm text-white/70">已選 {selected.size} 筆</span>
-          <button
-            className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/80 transition hover:bg-white/5 disabled:opacity-50"
-            onClick={batchResend}
-            disabled={busy}
-          >
+        <div className="sticky bottom-3 z-10 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur">
+          <span className="text-sm text-foreground/70">已選 {selected.size} 筆</span>
+          <Button variant="outline" size="sm" onClick={batchResend} disabled={busy}>
             重送磁力
-          </button>
-          <button
-            className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/80 transition hover:bg-white/5 disabled:opacity-50"
-            onClick={batchRearchive}
-            disabled={busy}
-          >
+          </Button>
+          <Button variant="outline" size="sm" onClick={batchRearchive} disabled={busy}>
             重新歸檔
-          </button>
-          <button
-            className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-sm text-red-300 transition hover:bg-red-500/20 disabled:opacity-50"
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-200"
             onClick={batchDelete}
             disabled={busy}
           >
             刪除紀錄
-          </button>
-          <button
-            className="btn-ghost text-sm"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setSelected(new Set())}
             disabled={busy}
           >
             清除選取
-          </button>
+          </Button>
         </div>
       )}
 
       <div className="flex justify-center gap-2">
-        <button
-          className="btn-ghost"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={loading || offset === 0}
           onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
         >
           上一頁
-        </button>
-        <button
-          className="btn-ghost"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           disabled={
             loading || !data || offset + PAGE_SIZE >= (data?.total ?? 0)
           }
           onClick={() => setOffset(offset + PAGE_SIZE)}
         >
           下一頁
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -531,22 +531,28 @@ function VideoCountCell({
   eligible: boolean;
   onQuery: () => void;
 }) {
-  if (!eligible) return <span className="text-white/30">—</span>;
+  if (!eligible) return <span className="text-muted-foreground/50">—</span>;
   if (state === undefined) {
     return (
-      <button
+      <Button
+        variant="outline"
+        size="sm"
         onClick={onQuery}
-        className="rounded border border-white/10 px-2 py-0.5 text-white/50 hover:bg-white/10"
+        className="h-6 px-2 text-xs text-muted-foreground"
         title="向 PikPak 查詢實際影片檔數"
       >
         查
-      </button>
+      </Button>
     );
   }
-  if (state === "loading") return <span className="text-white/40">…</span>;
+  if (state === "loading") {
+    return (
+      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden />
+    );
+  }
   if (!state.ok) {
     return (
-      <span className="text-white/30" title={state.error}>
+      <span className="text-muted-foreground/50" title={state.error}>
         —
       </span>
     );
@@ -557,23 +563,23 @@ function VideoCountCell({
     undefined;
   if (state.video_count > 1) {
     return (
-      <span
-        className="rounded bg-amber-400/20 px-2 py-0.5 text-amber-200"
-        title={tip}
-      >
-        多集 {state.video_count}
+      <span title={tip}>
+        <StatusBadge tone="warning">多集 {state.video_count}</StatusBadge>
       </span>
     );
   }
   if (state.video_count === 1) {
     return (
-      <span className="text-white/60" title={tip}>
+      <span className="text-muted-foreground" title={tip}>
         單一
       </span>
     );
   }
   return (
-    <span className="text-white/40" title="任務裡目前沒有影片檔(可能還在下載)">
+    <span
+      className="text-muted-foreground/70"
+      title="任務裡目前沒有影片檔(可能還在下載)"
+    >
       0
     </span>
   );

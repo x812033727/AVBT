@@ -2,11 +2,27 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  FileText,
+  Folder,
+  FolderOutput,
+  MoveRight,
+  Pencil,
+  SkipForward,
+  Trash2,
+  TriangleAlert,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import {
   api,
   streamNdjson,
   type PresenceDetail,
   type PresenceStatus,
 } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import type { SetMsg } from "./types";
 
 type ReorgProgress = {
   current: number;
@@ -30,13 +46,16 @@ type ReorgResult = {
   dry_run: boolean;
 };
 
-const REORG_ACTION: Record<ReorgProgress["action"], { text: string; cls: string }> = {
-  move: { text: "→ 搬移", cls: "text-blue-300" },
-  rename: { text: "✎ 改名", cls: "text-cyan-300" },
-  flatten: { text: "📤 攤平", cls: "text-emerald-300" },
-  dedupe: { text: "🗑 去重", cls: "text-purple-300" },
-  skip: { text: "⏭ 略過", cls: "text-white/50" },
-  error: { text: "✗ 失敗", cls: "text-red-300" },
+const REORG_ACTION: Record<
+  ReorgProgress["action"],
+  { text: string; cls: string; icon: LucideIcon }
+> = {
+  move: { text: "搬移", cls: "text-blue-300", icon: MoveRight },
+  rename: { text: "改名", cls: "text-cyan-300", icon: Pencil },
+  flatten: { text: "攤平", cls: "text-emerald-300", icon: FolderOutput },
+  dedupe: { text: "去重", cls: "text-purple-300", icon: Trash2 },
+  skip: { text: "略過", cls: "text-muted-foreground", icon: SkipForward },
+  error: { text: "失敗", cls: "text-red-300", icon: X },
 };
 
 const REORG_REASON: Record<string, string> = {
@@ -49,11 +68,7 @@ const REORG_REASON: Record<string, string> = {
   duplicate: "重複（保留較大者）",
 };
 
-export default function ReorganizeSection({
-  setMsg,
-}: {
-  setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
-}) {
+export default function ReorganizeSection({ setMsg }: { setMsg: SetMsg }) {
   const [presence, setPresence] = useState<PresenceDetail | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
@@ -158,15 +173,15 @@ export default function ReorganizeSection({
   const recent = progress.slice(-10).reverse();
 
   return (
-    <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+    <section className="space-y-3 rounded-lg border border-border bg-card p-4">
       <h2 className="text-lg font-semibold">PikPak 資料夾結構整理</h2>
-      <p className="text-xs text-white/50">
+      <p className="text-xs text-muted-foreground/80">
         新下載會自動依追蹤的系列 / 女優分類，歸檔到{" "}
         <span className="font-mono">AVBT/&lt;類別&gt;/&lt;名稱&gt;/&lt;番號&gt;</span>
         。下方可重建索引、或把舊的扁平歸檔搬到新結構。
       </p>
       {presence ? (
-        <div className="space-y-1 text-xs text-white/60">
+        <div className="space-y-1 text-xs text-muted-foreground">
           <div>
             索引狀態：{presence.ready ? (
               <span className="text-emerald-300">已建立</span>
@@ -183,54 +198,50 @@ export default function ReorganizeSection({
             ・TTL {presence.ttl_seconds}s
           </div>
           {presence.last_error && (
-            <div className="text-amber-300/80">⚠ {presence.last_error}</div>
+            <div className="inline-flex items-center gap-1 text-amber-300/80">
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {presence.last_error}
+            </div>
           )}
         </div>
       ) : (
-        <div className="text-sm text-white/40">載入中…</div>
+        <div className="text-sm text-muted-foreground/70">載入中…</div>
       )}
       <div className="flex flex-wrap gap-2">
-        <button
-          className="btn-ghost"
-          onClick={refreshIndex}
-          disabled={refreshing}
-        >
+        <Button variant="outline" onClick={refreshIndex} disabled={refreshing}>
           {refreshing ? "重建索引中…" : "重建索引"}
-        </button>
-        <button
-          className="btn-ghost"
+        </Button>
+        <Button
+          variant="outline"
           onClick={() => setOpen(true)}
           title="掃 AVBT 根目錄 + 舊版「已完成」,依番號對應的追蹤分類搬到 AVBT/<類別>/<名稱>/,並做命名正規化"
         >
           整理 PikPak 資料夾…
-        </button>
-        <button
-          className="btn-ghost"
-          onClick={() => setShowDebug((v) => !v)}
-        >
+        </Button>
+        <Button variant="ghost" onClick={() => setShowDebug((v) => !v)}>
           {showDebug ? "收合偵錯" : "看索引偵錯"}
-        </button>
+        </Button>
       </div>
 
       {showDebug && presence && (
-        <div className="space-y-2 rounded-md border border-white/10 bg-ink/40 p-3 text-xs">
-          <div className="font-semibold text-white/70">
+        <div className="space-y-2 rounded-md border border-border bg-background/60 p-3 text-xs">
+          <div className="font-semibold text-foreground/70">
             掃描的根目錄(共 {presence.roots.length})
           </div>
           {presence.roots.length === 0 ? (
-            <div className="text-white/40">
+            <div className="text-muted-foreground/70">
               索引還沒建立過。請點上方「重建索引」。
             </div>
           ) : (
             <ul className="space-y-0.5 font-mono">
               {presence.roots.map((r) => (
                 <li key={r.path} className="flex flex-wrap gap-2">
-                  <span className="text-white/80">{r.path}</span>
-                  <span className="text-white/40">
+                  <span className="text-foreground/80">{r.path}</span>
+                  <span className="text-muted-foreground/70">
                     leaves={r.leaves} · codes={r.codes}
                     {r.unrecognized > 0 && (
                       <span className="text-amber-300">
-                        {" · ⚠ unrecognized=" + r.unrecognized}
+                        {" · unrecognized=" + r.unrecognized}
                       </span>
                     )}
                   </span>
@@ -238,25 +249,25 @@ export default function ReorganizeSection({
               ))}
             </ul>
           )}
-          <div className="pt-1 font-semibold text-white/70">
+          <div className="pt-1 font-semibold text-foreground/70">
             無法辨識為番號的資料夾名(共 {presence.unrecognized_total}
             ,最多顯示 50 個)
           </div>
           {presence.unrecognized.length === 0 ? (
-            <div className="text-white/40">
-              ✓ 所有掃到的葉節點都成功辨識為番號。
+            <div className="text-muted-foreground/70">
+              所有掃到的葉節點都成功辨識為番號。
             </div>
           ) : (
             <ul className="max-h-64 space-y-0.5 overflow-auto font-mono">
               {presence.unrecognized.map((u, i) => (
                 <li key={i} className="text-amber-200/80">
-                  <span className="text-white/40">{u.parent}/</span>
+                  <span className="text-muted-foreground/70">{u.parent}/</span>
                   {u.name}
                 </li>
               ))}
             </ul>
           )}
-          <div className="pt-1 text-white/40">
+          <div className="pt-1 text-muted-foreground/70">
             說明:索引只會掃 <span className="font-mono">AVBT/star</span>、
             <span className="font-mono">/series</span>、
             <span className="font-mono">/studio</span>、
@@ -276,18 +287,19 @@ export default function ReorganizeSection({
             if (e.target === e.currentTarget) close();
           }}
         >
-          <div className="w-full max-w-xl space-y-4 rounded-xl border border-white/10 bg-panel p-5">
+          <div className="w-full max-w-xl space-y-4 rounded-xl border border-border bg-card p-5">
             <div className="flex items-center">
               <h2 className="text-lg font-semibold">重新整理 PikPak 結構</h2>
               <button
-                className="ml-auto text-white/40 hover:text-white"
+                className="ml-auto text-muted-foreground transition hover:text-foreground"
                 onClick={close}
+                aria-label="關閉"
               >
-                ✕
+                <X className="h-4 w-4" aria-hidden />
               </button>
             </div>
 
-            <div className="space-y-1 text-xs text-white/50">
+            <div className="space-y-1 text-xs text-muted-foreground/80">
               <p>
                 <span className="rounded bg-blue-500/15 px-1 text-[10px] text-blue-300">
                   搬移
@@ -309,29 +321,31 @@ export default function ReorganizeSection({
               </p>
             </div>
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="reorg-dry-run"
                 checked={dryRun}
-                onChange={(e) => setDryRun(e.target.checked)}
+                onCheckedChange={(v) => setDryRun(v === true)}
                 disabled={busy}
               />
-              <span>只預覽（不實際搬移）</span>
-            </label>
+              <Label htmlFor="reorg-dry-run" className="text-sm font-normal">
+                只預覽（不實際搬移）
+              </Label>
+            </div>
 
             {cleanupTargets.length > 0 && (
-              <details className="rounded-md border border-white/10 bg-ink/40 px-3 py-2 text-xs">
-                <summary className="cursor-pointer text-white/70">
+              <details className="rounded-md border border-border bg-background/60 px-3 py-2 text-xs">
+                <summary className="cursor-pointer text-foreground/70">
                   清理階段會掃 {cleanupTargets.length} 個資料夾
                 </summary>
                 <ul className="mt-2 max-h-40 space-y-0.5 overflow-y-auto">
                   {cleanupTargets.map((p) => (
-                    <li key={p} className="truncate font-mono text-white/50">
+                    <li key={p} className="truncate font-mono text-muted-foreground/80">
                       {p}
                     </li>
                   ))}
                 </ul>
-                <p className="mt-2 text-white/40">
+                <p className="mt-2 text-muted-foreground/70">
                   路徑不對？檢查 .env 的{" "}
                   <span className="font-mono">PIKPAK_{"<KIND>"}_FOLDER</span>{" "}
                   設定（例如{" "}
@@ -348,7 +362,7 @@ export default function ReorganizeSection({
 
             {(busy || result) && (
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs text-white/60">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>
                     {progress.length} / {total} ({percent}%)
                     {result?.dry_run && " ・ 預覽模式"}
@@ -362,25 +376,26 @@ export default function ReorganizeSection({
                     錯 {progress.filter((p) => p.action === "error").length}
                   </span>
                 </div>
-                <div className="h-2 overflow-hidden rounded bg-white/10">
+                <div className="h-2 overflow-hidden rounded bg-muted">
                   <div
-                    className="h-full bg-accent transition-[width]"
+                    className="h-full bg-primary transition-[width]"
                     style={{ width: `${percent}%` }}
                   />
                 </div>
-                <ul className="max-h-56 overflow-y-auto rounded-md border border-white/10 bg-ink/50 p-2 text-xs">
+                <ul className="max-h-56 overflow-y-auto rounded-md border border-border bg-background/60 p-2 text-xs">
                   {recent.length === 0 && (
-                    <li className="text-white/40">等待第一筆…</li>
+                    <li className="text-muted-foreground/70">等待第一筆…</li>
                   )}
                   {recent.map((p) => {
                     const lbl = REORG_ACTION[p.action];
+                    const ActionIcon = lbl.icon;
+                    const KindIcon = p.kind === "file" ? FileText : Folder;
                     const reasonTxt =
                       p.reason && REORG_REASON[p.reason]
                         ? `（${REORG_REASON[p.reason]}）`
                         : p.reason
                         ? `（${p.reason}）`
                         : "";
-                    const icon = p.kind === "file" ? "📄" : "📁";
                     const sectionTag =
                       p.section === "cleanup" ? (
                         <span className="rounded bg-purple-500/15 px-1 text-[10px] text-purple-300">
@@ -397,17 +412,19 @@ export default function ReorganizeSection({
                         className="flex items-baseline gap-2 py-0.5"
                       >
                         {sectionTag}
-                        <span className={lbl.cls}>
+                        <span className={`inline-flex items-center gap-1 ${lbl.cls}`}>
+                          <ActionIcon className="h-3 w-3 shrink-0" aria-hidden />
                           {lbl.text}
                           {reasonTxt}
                         </span>
-                        <span className="truncate text-white/60">
-                          {icon} {p.source}
+                        <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
+                          <KindIcon className="h-3 w-3 shrink-0" aria-hidden />
+                          <span className="truncate">{p.source}</span>
                         </span>
                         {p.target && (
                           <>
-                            <span className="text-white/30">→</span>
-                            <span className="truncate font-mono text-accent">
+                            <span className="text-muted-foreground/50">→</span>
+                            <span className="truncate font-mono text-primary">
                               {p.target}
                             </span>
                           </>
@@ -420,7 +437,7 @@ export default function ReorganizeSection({
             )}
 
             {result && (
-              <div className="space-y-1 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+              <div className="space-y-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
                 <div>
                   共 <strong>{result.total}</strong> 個項目
                   {result.dry_run && (
@@ -429,33 +446,51 @@ export default function ReorganizeSection({
                     </span>
                   )}
                 </div>
-                <div className="text-blue-300">→ 搬移 {result.moved}</div>
-                <div className="text-cyan-300">✎ 改名 {result.renamed}</div>
-                <div className="text-emerald-300">📤 攤平 {result.flattened}</div>
-                <div className="text-purple-300">🗑 去重 {result.deduped}</div>
-                <div className="text-white/60">⏭ 略過 {result.skipped}</div>
+                <div className="flex items-center gap-1.5 text-blue-300">
+                  <MoveRight className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  搬移 {result.moved}
+                </div>
+                <div className="flex items-center gap-1.5 text-cyan-300">
+                  <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  改名 {result.renamed}
+                </div>
+                <div className="flex items-center gap-1.5 text-emerald-300">
+                  <FolderOutput className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  攤平 {result.flattened}
+                </div>
+                <div className="flex items-center gap-1.5 text-purple-300">
+                  <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  去重 {result.deduped}
+                </div>
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <SkipForward className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  略過 {result.skipped}
+                </div>
                 {result.errors > 0 && (
-                  <div className="text-red-300">✗ 失敗 {result.errors}</div>
+                  <div className="flex items-center gap-1.5 text-red-300">
+                    <X className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    失敗 {result.errors}
+                  </div>
                 )}
               </div>
             )}
 
             <div className="flex justify-end gap-2">
               {busy ? (
-                <button
-                  className="btn-ghost"
+                <Button
+                  variant="outline"
                   onClick={() => abortRef.current?.abort()}
                 >
                   取消
-                </button>
+                </Button>
               ) : (
                 <>
-                  <button className="btn-ghost" onClick={close}>
+                  <Button variant="ghost" onClick={close}>
                     關閉
-                  </button>
-                  <button className="btn-primary" onClick={runReorg}>
+                  </Button>
+                  <Button onClick={runReorg}>
                     {dryRun ? "預覽" : "執行"}
-                  </button>
+                  </Button>
                 </>
               )}
             </div>

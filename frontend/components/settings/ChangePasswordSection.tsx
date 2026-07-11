@@ -2,12 +2,11 @@
 
 import { useState } from "react";
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import type { SetMsg } from "./types";
 
-export default function ChangePasswordSection({
-  setMsg,
-}: {
-  setMsg: (m: { kind: "ok" | "err"; text: string } | null) => void;
-}) {
+export default function ChangePasswordSection({ setMsg }: { setMsg: SetMsg }) {
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -45,41 +44,34 @@ export default function ChangePasswordSection({
   }
 
   return (
-    <section className="space-y-3 rounded-lg border border-white/10 bg-panel p-4">
+    <section className="space-y-3 rounded-lg border border-border bg-card p-4">
       <h2 className="text-lg font-semibold">登入密碼</h2>
-      <p className="text-xs text-white/50">
+      <p className="text-xs text-muted-foreground/80">
         修改本站登入帳號的密碼。修改後既有登入仍有效,直到 token 過期。
       </p>
       <div className="grid gap-2 sm:grid-cols-3">
-        <input
+        <Input
           type="password"
           placeholder="舊密碼"
           value={oldPassword}
           onChange={(e) => setOldPassword(e.target.value)}
-          className="rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
         />
-        <input
+        <Input
           type="password"
           placeholder="新密碼（至少 6 字元）"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
-          className="rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
         />
-        <input
+        <Input
           type="password"
           placeholder="再次輸入新密碼"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
-          className="rounded-md border border-white/10 bg-ink px-3 py-2 text-sm outline-none focus:border-accent"
         />
       </div>
-      <button
-        className="btn-primary disabled:opacity-50"
-        onClick={submit}
-        disabled={busy}
-      >
+      <Button onClick={submit} disabled={busy}>
         {busy ? "更新中…" : "更新密碼"}
-      </button>
+      </Button>
     </section>
   );
 }

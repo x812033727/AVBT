@@ -22,6 +22,22 @@ class CollectedMovie(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MovieDetailCache(Base):
+    """Persistent cache of scraped JavBus movie details.
+
+    One row per (normalized, uppercased) code, holding the full
+    ``MovieDetail`` as JSON — magnets included. Staleness is decided at
+    read time from ``release_date`` (recent releases expire faster
+    because their magnet list is still growing); expired rows are kept
+    in place as the upsert target for the refreshing fetch."""
+    __tablename__ = "movie_detail_cache"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    detail: Mapped[str] = mapped_column(Text)
+    release_date: Mapped[str] = mapped_column(String(16), default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class TrackedListing(Base):
     """One JavBus listing axis we want to watch for new works.
 

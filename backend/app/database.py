@@ -137,6 +137,9 @@ _MIGRATION_DDL = (
     # pCloud transfer auto-retry bookkeeping.
     "ALTER TABLE pcloud_transfer ADD COLUMN attempts INTEGER DEFAULT 0",
     "ALTER TABLE pcloud_transfer ADD COLUMN next_retry_at DATETIME",
+    # Supports an age-based prune of the persistent detail cache.
+    "CREATE INDEX IF NOT EXISTS ix_movie_detail_cache_fetched_at "
+    "ON movie_detail_cache(fetched_at)",
 )
 
 

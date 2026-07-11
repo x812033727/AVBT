@@ -28,6 +28,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from ..config import settings
+from ..services import detail_cache
 from ..services.scraper_health import scraper_health
 
 logger = logging.getLogger(__name__)
@@ -808,6 +809,15 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     cli = _get_client()
 
     try:
+        if not refresh:
+            # Persistent layer: survives restarts. Inside the try so the
+            # finally below always releases the in-flight event; waiters
+            # then hit the in-memory entry we just refilled.
+            db_hit = await detail_cache.get(code)
+            if db_hit is not None:
+                _detail_cache_put(code, db_hit)
+                return db_hit
+
         html = await _fetch(cli, url)
         if not html:
             scraper_health.record_detail("empty_html")
@@ -840,6 +850,9 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
 
         if detail.title:
             _detail_cache_put(code, detail)
+            # Write-through: refresh=True lands here too, so a forced
+            # refetch also renews the persistent row.
+            await detail_cache.put(code, detail)
         return detail
     except Exception:
         scraper_health.record_detail("error")
@@ -944,8 +957,11 @@ async def fetch_detail_resolved(code: str, *, refresh: bool = False) -> MovieDet
     alt = await fetch_detail(real, refresh=refresh)
     if alt.title:
         # Cache under the queried code too so the next resolve of the same
-        # stripped code is a straight cache hit, not another search.
-        _detail_cache_put((code or "").strip().upper(), alt)
+        # stripped code is a straight cache hit, not another search —
+        # persisted as well, so it survives restarts.
+        queried = (code or "").strip().upper()
+        _detail_cache_put(queried, alt)
+        await detail_cache.put(queried, alt)
         return alt
     return detail
 

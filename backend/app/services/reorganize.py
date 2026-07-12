@@ -785,6 +785,7 @@ async def reorganize_stream(
         "flattened": 0,
         "deduped": 0,
         "skipped": 0,
+        "trashed": 0,
         "errors": 0,
         "dry_run": dry_run,
     }
@@ -904,6 +905,26 @@ async def reorganize_stream(
                         summary["errors"] += 1
                     idx = ev.get("current", idx)
                     yield ev
+                # The old ``<kind>/<name>`` shell is left empty once its
+                # 番號 have moved into the nested 製作商 layout — trash it
+                # (recoverable), but never the kind base itself.
+                if not dry_run:
+                    try:
+                        if await pikpak_service._trash_if_empty(
+                            nd.id, protect_ids=frozenset({kind_id})
+                        ):
+                            summary["trashed"] = summary.get("trashed", 0) + 1
+                            yield {
+                                "type": "progress",
+                                "action": "trash",
+                                "kind": "folder",
+                                "current": idx,
+                                "source": source,
+                                "target": None,
+                                "reason": "空資料夾已刪除",
+                            }
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("trash empty %s failed: %s", source, exc)
 
     # ---- Phase 2: cleanup destinations ----
     for target_path, target_id, children in cleanup_targets:

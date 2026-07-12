@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 _LIST_CONCURRENCY = 4
+# Max folder levels to descend under a kind root when looking for code
+# leaves. The flat layout keeps codes at depth 1 (``<name>/<code>``); the
+# nested 製作商 layout keeps them at depth 2
+# (``<studio>/<series>/<code>``). Descending up to 3 covers both without
+# an unbounded walk into unexpected trees.
+_MAX_KIND_DEPTH = 3
 # Per-folder item ceiling for the paginated walk. The old single-page
 # ``size=500`` call silently truncated large folders (e.g. a busy
 # ``AVBT/已完成``), making present codes look missing.
@@ -209,48 +215,65 @@ class PikPakPresenceIndex:
     async def _collect_kind(
         self, root_path: str, kind_dir_id: str
     ) -> set[str]:
-        """For a kind dir: list name dirs, then list each name dir's
-        children. Leaves may be code-named folders (``DAM-043/``) OR
-        bare video files (``DAM-044.mp4``); both count as the code
-        being present."""
-        name_dirs = await self._list(kind_dir_id)
-        targets = [n for n in name_dirs if n.kind == "drive#folder"]
-        if not targets:
-            self._roots.append(
-                {"path": root_path, "leaves": 0, "codes": 0, "unrecognized": 0}
-            )
-            return set()
+        """Walk a kind dir for code leaves, tolerating variable nesting.
 
-        leaf_lists = await asyncio.gather(
-            *[self._list(n.id) for n in targets], return_exceptions=True
-        )
+        A code leaf may be a code-named folder (``DAM-043/``) OR a bare
+        video file (``DAM-044.mp4``); both count as the code being
+        present. Between the root and the leaves there may be one level
+        of name dirs (flat layout ``<name>/<code>``) or two levels
+        (nested 製作商 layout ``<studio>/<series>/<code>``). We descend
+        into any non-code subfolder up to ``_MAX_KIND_DEPTH`` and record
+        every code we find, so old and new layouts coexist during the
+        migration.
+        """
         codes: set[str] = set()
-        leaves_total = 0
-        unrecognized_count = 0
-        for name_dir, leaves in zip(targets, leaf_lists, strict=True):
-            if isinstance(leaves, Exception):
-                continue
-            parent = f"{root_path}/{name_dir.name}"
-            for leaf in leaves:
-                leaves_total += 1
-                c = normalize_code(leaf.name)
-                if c:
-                    codes.add(c)
-                    self._record(c, f"{parent}/{leaf.name}")
-                else:
-                    unrecognized_count += 1
-                    self._unrecognized.append(
-                        {"parent": parent, "name": leaf.name}
-                    )
+        stats = {"leaves": 0, "unrecognized": 0}
+        await self._walk_kind(root_path, kind_dir_id, 0, codes, stats)
         self._roots.append(
             {
                 "path": root_path,
-                "leaves": leaves_total,
+                "leaves": stats["leaves"],
                 "codes": len(codes),
-                "unrecognized": unrecognized_count,
+                "unrecognized": stats["unrecognized"],
             }
         )
         return codes
+
+    async def _walk_kind(
+        self,
+        path: str,
+        dir_id: str,
+        depth: int,
+        codes: set[str],
+        stats: dict[str, int],
+    ) -> None:
+        children = await self._list(dir_id)
+        recurse: list = []
+        for ch in children:
+            c = normalize_code(ch.name)
+            if c:
+                # A code-named leaf (folder or file) — record it, don't
+                # descend further (the code folder's video lives inside
+                # but presence only needs the code + this path).
+                stats["leaves"] += 1
+                codes.add(c)
+                self._record(c, f"{path}/{ch.name}")
+            elif ch.kind == "drive#folder" and depth < _MAX_KIND_DEPTH:
+                recurse.append(ch)
+            else:
+                stats["leaves"] += 1
+                stats["unrecognized"] += 1
+                self._unrecognized.append({"parent": path, "name": ch.name})
+        if recurse:
+            await asyncio.gather(
+                *[
+                    self._walk_kind(
+                        f"{path}/{ch.name}", ch.id, depth + 1, codes, stats
+                    )
+                    for ch in recurse
+                ],
+                return_exceptions=True,
+            )
 
     async def _collect_legacy(
         self, root_path: str, legacy_dir_id: str

@@ -220,9 +220,13 @@ async def _detail_for_archive(code: str) -> MovieDetail | None:
         return None
 
 
-def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
-    """Build ``<studio_root>/<studio>/<series｜未分類>/<code>`` when the
-    detail has a studio; ``None`` when it has no studio to nest under."""
+def _studio_series_dir(detail: MovieDetail) -> str | None:
+    """Build the ``<studio_root>/<studio>/<series｜未分類>`` folder (no
+    code leaf) when the detail has a studio; ``None`` otherwise.
+
+    kind_base_path("studio") → AVBT/製作商 by default (honours
+    PIKPAK_STUDIO_FOLDER override) — the root of the nested layout. The
+    same relative shape is reused for the pCloud mirror."""
     studio = getattr(detail, "studio", None)
     if not (studio and (getattr(studio, "name", "") or getattr(studio, "id", ""))):
         return None
@@ -237,9 +241,24 @@ def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
         )
     else:
         series_safe = _NO_SERIES_FOLDER
-    # kind_base_path("studio") → AVBT/製作商 by default (honours
-    # PIKPAK_STUDIO_FOLDER override) — the root of the nested layout.
-    return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}/{safe_code}"
+    return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}"
+
+
+def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
+    """``<studio>/<series｜未分類>/<code>`` when the detail has a studio;
+    ``None`` when it has no studio to nest under."""
+    base = _studio_series_dir(detail)
+    return f"{base}/{safe_code}" if base is not None else None
+
+
+async def studio_series_dir_for_code(code: str) -> str | None:
+    """Public helper: resolve a code's ``製作商/<studio>/<series>`` folder
+    (no code leaf) from the detail cache, or ``None`` when it has no
+    studio. Reused by the pCloud organizer to mirror the PikPak layout."""
+    detail = await _detail_for_archive(code)
+    if detail is None:
+        return None
+    return _studio_series_dir(detail)
 
 
 async def _resolve_archive_path_by_code(code: str) -> str:

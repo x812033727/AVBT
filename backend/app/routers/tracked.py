@@ -18,7 +18,7 @@ from ..schemas import (
 )
 from ..scrapers import javbus as scraper
 from ..services import missing as missing_svc
-from ..services import tracker
+from ..services import tracker, tracking_migration
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 
@@ -27,6 +27,24 @@ router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 # before enabling auto_send on one (see tracked page) and the backfill
 # batch limit keeps a giant catalog from flooding the queue.
 _ALLOWED = {"star", "studio", "label", "series", "director", "genre"}
+
+
+@router.post("/migrate/series-to-studio")
+async def migrate_series_to_studio(
+    dry_run: bool = Body(True, embed=True),
+    auto_send: bool = Body(True, embed=True),
+):
+    """Hard-cut: replace all 系列 (series) trackings with the distinct
+    製作商 (studio) they belong to. **Destructive** — defaults to
+    ``dry_run=True`` (preview only). A real run backs up the SQLite DB
+    first and is guarded by an app_meta flag so it can't double-apply.
+
+    ⚠️ After a real run, run the PikPak re-home migration
+    (``POST /api/pikpak/reorganize`` with ``rehome_kinds=true``,
+    dry-run first) to move existing files into 製作商/系列/番號."""
+    return await tracking_migration.migrate_series_to_studio(
+        dry_run=dry_run, auto_send=auto_send
+    )
 
 
 def _to_out(r: TrackedListing) -> TrackedListingOut:

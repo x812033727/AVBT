@@ -128,7 +128,14 @@ async def _enqueue_auto_send(
                 )
                 result = None
             if result and result.total and state.backfill_enabled:
-                limit = settings.tracker_backfill_batch_limit
+                # Studios cover whole-maker catalogs — cap them tighter so
+                # the first full scan after the series→studio cutover
+                # doesn't flood the queue with thousands of codes at once.
+                limit = (
+                    settings.tracker_studio_backfill_batch_limit
+                    if kind == "studio"
+                    else settings.tracker_backfill_batch_limit
+                )
                 added = 0
                 for m in result.missing:
                     if not m.code or m.code in seen:

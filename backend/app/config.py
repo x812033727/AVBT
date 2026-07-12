@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # 每次全掃最多送出的缺漏數(page-1 新作不受限)。超出的部分留給
     # 下一輪 tick 重掃時繼續補,避免一個大目錄瞬間灌爆佇列。<=0 不設限。
     tracker_backfill_batch_limit: int = 100
+    # 製作商(studio)追蹤的每輪缺漏上限,通常遠小於系列——整廠片量可達
+    # 上千,硬切到製作商追蹤後首輪全掃會一次灌爆佇列。用較小的上限把
+    # 整廠回補攤到多輪消化(仍會完整下載,只是不爆量)。<=0 不設限。
+    tracker_studio_backfill_batch_limit: int = 30
 
     # Global download queue: every PikPak offline submission (tracker
     # auto-send, bulk send-all, single magnet) routes through one queue

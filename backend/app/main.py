@@ -18,6 +18,7 @@ from .routers import (
     pcloud,
     pikpak,
     stats,
+    studios,
     tracked,
 )
 from .routers import (
@@ -115,6 +116,7 @@ app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)
 app.include_router(actresses.router, dependencies=_guard)
+app.include_router(studios.router, dependencies=_guard)
 app.include_router(stats.router, dependencies=_guard)
 app.include_router(notify_router.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)

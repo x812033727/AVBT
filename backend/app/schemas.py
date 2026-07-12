@@ -365,6 +365,48 @@ class ActressWorksOut(BaseModel):
     works: list[MovieListItem] = Field(default_factory=list)
 
 
+# ---------- 製作商 (studio) browse ----------
+
+class StudioIndexItem(BaseModel):
+    id: str
+    name: str = ""
+    sample_cover: str = ""
+    series_count: int = 0
+    work_count: int = 0
+
+
+class StudioIndexOut(BaseModel):
+    studios: list[StudioIndexItem] = Field(default_factory=list)
+    downloaded_total: int = 0
+    indexed_total: int = 0
+    backfill: ActressBackfillStatus
+
+
+class StudioSeriesItem(BaseModel):
+    id: str
+    name: str = ""
+    sample_cover: str = ""
+    work_count: int = 0
+
+
+class StudioSeriesOut(BaseModel):
+    studio_id: str
+    studio_name: str = ""
+    sample_cover: str = ""
+    series_count: int = 0
+    work_count: int = 0
+    series: list[StudioSeriesItem] = Field(default_factory=list)
+
+
+class StudioSeriesWorksOut(BaseModel):
+    studio_id: str
+    studio_name: str = ""
+    series_id: str
+    series_name: str = ""
+    count: int = 0
+    works: list[MovieListItem] = Field(default_factory=list)
+
+
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True
 

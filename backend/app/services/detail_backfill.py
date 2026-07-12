@@ -29,7 +29,7 @@ from ..config import settings
 from ..database import SessionLocal
 from ..models import ActressAvatar, MovieDetailCache
 from ..scrapers import javbus as scraper
-from . import actress_index
+from . import actress_index, studio_index
 from .pikpak_presence import presence_index
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ async def _run_cycle() -> None:
     new_details = await _backfill_details()
     if new_details:
         actress_index.invalidate()
+        studio_index.invalidate()
     new_avatars = await _backfill_avatars()
     if new_avatars:
         actress_index.invalidate()

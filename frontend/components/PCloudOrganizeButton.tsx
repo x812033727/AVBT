@@ -168,14 +168,22 @@ export default function PCloudOrganizeButton({
 
   async function pollOnce(id: string) {
     try {
+      // Snapshot the cursor we're fetching from. A fresh (re)attach
+      // resets it to 0 in startPolling, so `from === 0` means "this
+      // response is the FULL event list", not a tail.
+      const from = sinceRef.current;
       const data = await api.get<Job>(
-        `/api/pcloud/files/organize/jobs/${id}?since=${sinceRef.current}`
+        `/api/pcloud/files/organize/jobs/${id}?since=${from}`
       );
       sinceRef.current = data.next_since;
-      // Merge new events onto whatever we already have rather than
-      // replacing — the response only carries the tail since `since`.
+      // Merge the tail onto what we already have. But when `from === 0`
+      // the response carries every event from the start, so we must
+      // REPLACE rather than append — otherwise reopening the modal
+      // mid-run (which the UI encourages: "關掉視窗工作會在背景繼續執行")
+      // re-appends all prior events onto the retained job state and the
+      // 已處理 count / action tallies / progress bar double-count (爆掉).
       setJob((prev) => {
-        if (!prev || prev.job_id !== id) {
+        if (from === 0 || !prev || prev.job_id !== id) {
           return { ...data, events: data.events };
         }
         return {

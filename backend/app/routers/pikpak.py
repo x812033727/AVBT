@@ -384,7 +384,11 @@ async def episodes_process_stream(payload: dict = Body(...)):
 
 @router.post("/files/cleanup/stream")
 async def cleanup_folder_stream(payload: dict = Body(...)):
-    """Stream cleanup events (NDJSON) for the direct children of a folder.
+    """Stream cleanup events (NDJSON) for a folder and its sub-folders.
+
+    Recursively descends grouping folders (製作商/廠商/系列) to reach 番號
+    leaves, moves misplaced 番號 to their correct 製作商/<studio>/<系列>/
+    location, normalises/flattens them, and trashes folders left empty.
 
     Body: ``{folder_id: str, dry_run: bool=True}``.
     Events: ``start`` | ``progress`` | ``done`` | ``error``.
@@ -397,6 +401,10 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
             async for event in pikpak_service.cleanup_folder_stream(
                 folder_id, dry_run=dry_run
             ):
+                # Private recursion sentinels (``_became_empty``) never
+                # leave the stream.
+                if str(event.get("type", "")).startswith("_"):
+                    continue
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"

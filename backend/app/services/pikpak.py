@@ -97,6 +97,10 @@ def _is_invalid_token_error(exc: BaseException) -> bool:
 # on the value being exactly right.
 _BATCH_OP_LIMIT = 100
 
+# How deep "整理此資料夾" recurses through grouping (no-code) folders to
+# reach 番號 leaves. 製作商(0)→studio(1)→系列(2)→番號 leaf(3), +1 slack.
+_ORGANIZE_MAX_DEPTH = 4
+
 
 def _chunked(items: list, size: int):
     """Yield ``items`` in consecutive slices of at most ``size``."""
@@ -668,6 +672,28 @@ class PikPakService:
                     top_videos.extend(nested_videos)
         return top_videos, total_count
 
+    async def _trash_if_empty(
+        self, folder_id: str, *, protect_ids: frozenset[str] = frozenset()
+    ) -> bool:
+        """Re-list ``folder_id`` and trash it (recoverable ~30 days) only
+        when it holds zero children and is not protected. Returns True if
+        trashed. The fresh re-list is the final safety gate before any
+        deletion, so a folder another process just repopulated is spared;
+        a non-empty or protected folder is never touched."""
+        if not folder_id or folder_id in protect_ids:
+            return False
+        try:
+            kids, _partial = await self.list_all_files(folder_id)
+        except Exception:  # noqa: BLE001
+            return False
+        if kids:
+            return False
+        try:
+            await self.trash_files([folder_id])
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
     async def cleanup_folder_stream(
         self,
         folder_id: str,
@@ -675,6 +701,9 @@ class PikPakService:
         dry_run: bool = True,
         recursive: bool = True,
         _depth: int = 0,
+        _organize: bool = True,
+        _protect_ids: frozenset[str] | None = None,
+        _summary: dict | None = None,
     ) -> AsyncIterator[dict]:
         """Walk every direct child of ``folder_id`` and try to normalise its
         name to a clean JAV code.
@@ -720,15 +749,43 @@ class PikPakService:
             children, PART_MIN_BYTES, is_video
         )
 
-        summary = {
-            "total": len(children),
-            "renamed": 0,
-            "flattened": 0,
-            "skipped": 0,
-            "errors": 0,
-            "dry_run": dry_run,
-            "partial": partial,
-        }
+        # One summary dict is shared across the whole recursion so the
+        # final ``done`` reflects every level's work. ``total`` is a
+        # running counter (recursion makes the true total unknown up
+        # front); the ``start`` event's total is just the top-level child
+        # count — a lower bound the UI clamps against.
+        if _summary is None:
+            _summary = {
+                "total": 0,
+                "renamed": 0,
+                "flattened": 0,
+                "moved": 0,
+                "skipped": 0,
+                "trashed": 0,
+                "errors": 0,
+                "dry_run": dry_run,
+                "partial": partial,
+            }
+        summary = _summary
+        if partial:
+            summary["partial"] = True
+
+        # Folders we must never trash even when empty: the caller's
+        # selected root, the AVBT download root, the archive fallback,
+        # and every kind base (e.g. ``AVBT/製作商``). Built once at the
+        # top level via a no-create lookup so it's dry-run safe.
+        if _protect_ids is None:
+            from ..config import all_kind_paths
+            protect: set[str] = {folder_id}
+            for p in ("AVBT", settings.pikpak_archive_folder or "AVBT/已完成"):
+                pid = await self.lookup_folder_id(p)
+                if pid:
+                    protect.add(pid)
+            for _k, kp in all_kind_paths():
+                kid = await self.lookup_folder_id(kp)
+                if kid:
+                    protect.add(kid)
+            _protect_ids = frozenset(protect)
 
         # The top-level call emits start/done; recursive calls just emit
         # progress events so the existing UI can show them in line.
@@ -746,24 +803,128 @@ class PikPakService:
                     "message": "此資料夾項目過多,可能僅處理部分子項",
                 }
 
-        for idx, child in enumerate(children, start=1):
+        # Per-level tallies drive empty-folder detection (works in
+        # dry-run, where we can't re-list a not-yet-mutated folder).
+        level_removed = 0    # child moved / flattened / recursed-empty out
+        level_remaining = 0  # child still present after processing
+
+        for child in children:
             await asyncio.sleep(0.05)
+            summary["total"] += 1
             kind = "folder" if child.kind == "drive#folder" else "file"
             code = extract_jav_code(child.name)
             code_full = extract_jav_code_full(child.name) or code
             base_event = {
                 "type": "progress",
-                "current": idx,
+                "current": summary["total"],
                 "kind": kind,
                 "source": child.name,
             }
 
+            # No recognisable 番號: descend into grouping sub-folders
+            # (製作商/廠商/系列) to reach the leaves; loose codeless files
+            # are left in place. A grouping folder emptied by the descent
+            # is trashed (recoverable).
             if not code:
+                if (
+                    kind == "folder"
+                    and recursive
+                    and _depth < _ORGANIZE_MAX_DEPTH
+                    and child.id not in _protect_ids
+                ):
+                    became_empty = False
+                    async for evt in self.cleanup_folder_stream(
+                        child.id, dry_run=dry_run, recursive=recursive,
+                        _depth=_depth + 1, _organize=_organize,
+                        _protect_ids=_protect_ids, _summary=summary,
+                    ):
+                        if evt.get("type") == "_became_empty":
+                            became_empty = bool(evt.get("empty"))
+                            continue
+                        if evt.get("type") == "progress":
+                            yield {**evt, "nested_in": child.name}
+                        else:
+                            yield evt
+                    if became_empty:
+                        did_trash = (
+                            child.id not in _protect_ids if dry_run
+                            else await self._trash_if_empty(
+                                child.id, protect_ids=_protect_ids
+                            )
+                        )
+                        if did_trash:
+                            summary["trashed"] += 1
+                            level_removed += 1
+                            yield {**base_event, "action": "trash",
+                                   "target": None, "reason": "空資料夾已刪除"}
+                        else:
+                            level_remaining += 1
+                    else:
+                        level_remaining += 1
+                    continue
                 summary["skipped"] += 1
+                level_remaining += 1
                 yield {**base_event, "action": "skip", "target": None, "reason": "no_code"}
                 continue
 
             try:
+                # Resolve this code's correct archive folder. If the item
+                # is sitting elsewhere, move it there before normalising.
+                # "Already here" is decided by comparing the target parent
+                # FOLDER ID to the current folder id — never path strings —
+                # so we never issue a redundant move that PikPak rejects
+                # with "don't move to current folder". A missing target
+                # (lookup returns "") is treated as not-misplaced so
+                # dry-run and real-run agree (no folder is auto-created
+                # just to detect misplacement).
+                effective_parent_id = folder_id
+                target_parent_path = ""
+                target_parent_id = ""
+                try:
+                    from ..services.archiver import (
+                        _resolve_archive_path_by_code,
+                    )
+                    _target_path = await _resolve_archive_path_by_code(code)
+                    if "/" in _target_path:
+                        target_parent_path, _tleaf = _target_path.rsplit("/", 1)
+                        target_parent_id = (
+                            await self.lookup_folder_id(target_parent_path) or ""
+                        )
+                except Exception:  # noqa: BLE001
+                    target_parent_id = ""
+                # ``_organize`` is off while we clean the *inside* of a
+                # known 番號 wrapper — its videos are already home relative
+                # to that code, so don't yank them one level up.
+                misplaced = (
+                    _organize
+                    and bool(target_parent_id)
+                    and target_parent_id != folder_id
+                )
+
+                if misplaced and kind == "file":
+                    dest_leaf = f"{code_full}{ext_of(child.name)}"
+                    display_target = f"{target_parent_path}/{dest_leaf}"
+                    if not dry_run:
+                        await self.move_files([child.id], target_parent_id)
+                        if child.name != dest_leaf:
+                            try:
+                                await self.rename_file(child.id, dest_leaf)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "rename after move %s → %s failed: %s",
+                                    child.name, dest_leaf, exc,
+                                )
+                    taken.discard(child.name)
+                    summary["moved"] += 1
+                    level_removed += 1
+                    yield {**base_event, "action": "move",
+                           "target": display_target, "reason": None}
+                    continue
+                if misplaced and kind == "folder":
+                    # Flatten will pull the video straight into the correct
+                    # 製作商/<studio>/<系列> folder instead of here.
+                    effective_parent_id = target_parent_id
+
                 if kind == "file":
                     # Multi-part rename plan wins over the default
                     # single-file naming: when the file is part of a
@@ -777,12 +938,14 @@ class PikPakService:
                         # the default ``<code_full>.<ext>`` would
                         # collapse all variants on every cleanup re-run.
                         summary["skipped"] += 1
+                        level_remaining += 1
                         yield {**base_event, "action": "skip", "target": child.name, "reason": "already_clean"}
                         continue
                     else:
                         target = f"{code_full}{ext_of(child.name)}"
                     if target == child.name:
                         summary["skipped"] += 1
+                        level_remaining += 1
                         yield {**base_event, "action": "skip", "target": target, "reason": "already_clean"}
                         continue
                     # Auto-dedupe on collision instead of silently skipping.
@@ -792,6 +955,7 @@ class PikPakService:
                     taken.discard(child.name)
                     taken.add(target)
                     summary["renamed"] += 1
+                    level_remaining += 1
                     yield {**base_event, "action": "rename", "target": target, "reason": None}
                     continue
 
@@ -868,7 +1032,7 @@ class PikPakService:
                         if not dry_run:
                             if video.name != target:
                                 await self.rename_file(video.id, target)
-                            await self.move_files([video.id], folder_id)
+                            await self.move_files([video.id], effective_parent_id)
                         taken.add(target)
                         moved.append(target)
 
@@ -878,52 +1042,118 @@ class PikPakService:
                         await self.trash_files([child.id])
                     taken.discard(child.name)
                     summary["flattened"] += 1
+                    # In place, the video stays in this folder (still has
+                    # content); only a flatten to a *different* target
+                    # actually empties this folder of the wrapper.
+                    if misplaced:
+                        level_removed += 1
+                    else:
+                        level_remaining += 1
                     reason_bits: list[str] = []
                     if len(keepers) > 1:
                         reason_bits.append(f"分集 {len(keepers)} 部")
                     if dropped_count:
                         reason_bits.append(f"丟掉 {dropped_count} 個低解析重複")
+                    loc = f"{target_parent_path}/" if misplaced else ""
                     yield {
                         **base_event,
                         "action": "flatten",
-                        "target": " / ".join(moved),
+                        "target": " / ".join(f"{loc}{m}" for m in moved),
                         "reason": "・".join(reason_bits) or None,
                     }
                     continue
 
-                # Mixed / weird contents: rename the wrapper, then
-                # recursively clean its insides so nested junk gets
-                # normalised too. (Skip recursion at max depth.)
-                target_name = code_full
-                if child.name != target_name:
-                    target_name = _uniquify_target(target_name, taken)
+                # Mixed / weird contents (2+ main videos, or none). If the
+                # wrapper is in the wrong place, move it whole to its
+                # correct 製作商/系列 folder; otherwise rename in place.
+                # Then recurse to clean its insides — with organize OFF, so
+                # its own videos stay in the wrapper — and trash it if the
+                # recursion leaves it empty.
+                child_moved_out = False
+                if misplaced:
+                    dest_leaf = code_full
+                    display_target = f"{target_parent_path}/{dest_leaf}"
                     if not dry_run:
-                        await self.rename_file(child.id, target_name)
+                        await self.move_files([child.id], target_parent_id)
+                        if child.name != dest_leaf:
+                            try:
+                                await self.rename_file(child.id, dest_leaf)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "rename after move %s → %s failed: %s",
+                                    child.name, dest_leaf, exc,
+                                )
                     taken.discard(child.name)
-                    taken.add(target_name)
-                    summary["renamed"] += 1
-                    yield {**base_event, "action": "rename", "target": target_name, "reason": None}
+                    summary["moved"] += 1
+                    level_removed += 1
+                    child_moved_out = True
+                    yield {**base_event, "action": "move",
+                           "target": display_target, "reason": None}
                 else:
-                    summary["skipped"] += 1
-                    yield {**base_event, "action": "skip", "target": target_name, "reason": "already_clean"}
+                    target_name = code_full
+                    if child.name != target_name:
+                        target_name = _uniquify_target(target_name, taken)
+                        if not dry_run:
+                            await self.rename_file(child.id, target_name)
+                        taken.discard(child.name)
+                        taken.add(target_name)
+                        summary["renamed"] += 1
+                        yield {**base_event, "action": "rename", "target": target_name, "reason": None}
+                    else:
+                        summary["skipped"] += 1
+                        yield {**base_event, "action": "skip", "target": target_name, "reason": "already_clean"}
 
-                if recursive and _depth < 1:
+                child_empty = False
+                if recursive and _depth < _ORGANIZE_MAX_DEPTH:
                     async for evt in self.cleanup_folder_stream(
                         child.id, dry_run=dry_run, recursive=recursive,
-                        _depth=_depth + 1,
+                        _depth=_depth + 1, _organize=False,
+                        _protect_ids=_protect_ids, _summary=summary,
                     ):
+                        if evt.get("type") == "_became_empty":
+                            child_empty = bool(evt.get("empty"))
+                            continue
                         # Bubble inner progress up with a "nested:" tag
                         # so the UI shows which wrapper they belong to.
                         if evt.get("type") == "progress":
                             yield {**evt, "nested_in": child.name}
-                        # Skip inner start/done — the outer one represents
-                        # the whole tree.
+                        elif evt.get("type") != "_became_empty":
+                            yield evt
+
+                if child_empty and child.id not in _protect_ids:
+                    did_trash = (
+                        True if dry_run
+                        else await self._trash_if_empty(
+                            child.id, protect_ids=_protect_ids
+                        )
+                    )
+                    if did_trash:
+                        summary["trashed"] += 1
+                        if not child_moved_out:
+                            level_removed += 1
+                        yield {**base_event, "action": "trash",
+                               "target": None, "reason": "空資料夾已刪除"}
+                    elif not child_moved_out:
+                        level_remaining += 1
+                elif not child_moved_out:
+                    level_remaining += 1
 
             except Exception as exc:  # noqa: BLE001
                 summary["errors"] += 1
+                level_remaining += 1
                 logger.warning("cleanup failed for %s: %s", child.name, exc)
                 yield {**base_event, "action": "error", "target": None, "reason": str(exc)}
 
+        # Tell the parent whether this folder is now empty (every child was
+        # moved/flattened/trashed away and none remained), so it can trash
+        # the shell. Private sentinel — filtered out before the router.
+        if _depth > 0:
+            yield {
+                "type": "_became_empty",
+                "empty": level_remaining == 0
+                and level_removed > 0
+                and len(children) > 0,
+            }
         if _depth == 0:
             yield {"type": "done", "result": summary}
 

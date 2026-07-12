@@ -4,10 +4,12 @@ import { useRef, useState } from "react";
 import {
   FileText,
   Folder,
+  FolderInput,
   FolderOutput,
   Pencil,
   SkipForward,
   Sparkles,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -26,17 +28,20 @@ import { Progress as ProgressBar } from "@/components/ui/progress";
 type Progress = {
   current: number;
   kind: "file" | "folder";
-  action: "rename" | "flatten" | "skip" | "error";
+  action: "rename" | "flatten" | "move" | "trash" | "skip" | "error";
   source: string;
   target: string | null;
   reason: string | null;
+  nested_in?: string;
 };
 
 type Result = {
   total: number;
   renamed: number;
   flattened: number;
+  moved: number;
   skipped: number;
+  trashed: number;
   errors: number;
   dry_run: boolean;
 };
@@ -47,6 +52,8 @@ const ACTION_LABEL: Record<
 > = {
   rename: { icon: Pencil, text: "改名", cls: "text-blue-300" },
   flatten: { icon: FolderOutput, text: "攤平", cls: "text-emerald-300" },
+  move: { icon: FolderInput, text: "搬移", cls: "text-violet-300" },
+  trash: { icon: Trash2, text: "刪除空資料夾", cls: "text-orange-300" },
   skip: { icon: SkipForward, text: "略過", cls: "text-muted-foreground" },
   error: { icon: X, text: "失敗", cls: "text-red-300" },
 };
@@ -122,7 +129,11 @@ export default function CleanupButton({
     setDryRun(true);
   }
 
-  const percent = total ? Math.round((progress.length / total) * 100) : 0;
+  // ``total`` is only the top-level child count; recursion discovers more
+  // items as it descends, so treat it as a lower bound and clamp.
+  const percent = total
+    ? Math.min(100, Math.round((progress.length / total) * 100))
+    : 0;
   const recent = progress.slice(-10).reverse();
 
   return (
@@ -135,7 +146,7 @@ export default function CleanupButton({
         title={
           disabled
             ? "根目錄不可整理，請先進入子資料夾"
-            : "把此資料夾下的 BT 髒名字正規化"
+            : "遞迴整理：搬到正確製作商/系列、正規化、刪空資料夾"
         }
       >
         <Sparkles aria-hidden />
@@ -149,8 +160,10 @@ export default function CleanupButton({
           </DialogHeader>
 
           <p className="text-xs text-muted-foreground">
-            只動此資料夾的直接子項目。檔案改名為{" "}
-            <span className="font-mono">CODE.ext</span>；資料夾內如果只有一個影片，會自動攤平。
+            會遞迴進入分類子資料夾（製作商／廠商／系列）找出番號，把放錯位置的番號搬到正確的{" "}
+            <span className="font-mono">製作商/&lt;studio&gt;/&lt;系列&gt;/&lt;番號&gt;</span>
+            ，再就地正規化／攤平；搬空後的資料夾會移到垃圾桶（PikPak 可還原約 30 天）。
+            不會刪除仍有內容的資料夾或此根目錄。建議先勾選預覽，且勿在全域整理進行中同時執行。
           </p>
 
           <label className="flex items-center gap-2 text-sm">
@@ -176,8 +189,10 @@ export default function CleanupButton({
                   {result?.dry_run && " ・ 預覽模式"}
                 </span>
                 <span>
-                  改名 {progress.filter((p) => p.action === "rename").length} ／
+                  搬移 {progress.filter((p) => p.action === "move").length} ／
                   攤平 {progress.filter((p) => p.action === "flatten").length} ／
+                  改名 {progress.filter((p) => p.action === "rename").length} ／
+                  刪空夾 {progress.filter((p) => p.action === "trash").length} ／
                   略過 {progress.filter((p) => p.action === "skip").length} ／
                   失敗 {progress.filter((p) => p.action === "error").length}
                 </span>
@@ -233,8 +248,12 @@ export default function CleanupButton({
                   <span className="ml-2 text-amber-300/80">（僅預覽，未修改）</span>
                 )}
               </div>
-              <div className="text-blue-300">改名 {result.renamed}</div>
+              <div className="text-violet-300">搬移 {result.moved}</div>
               <div className="text-emerald-300">攤平 {result.flattened}</div>
+              <div className="text-blue-300">改名 {result.renamed}</div>
+              {result.trashed > 0 && (
+                <div className="text-orange-300">刪除空資料夾 {result.trashed}</div>
+              )}
               <div className="text-muted-foreground">略過 {result.skipped}</div>
               {result.errors > 0 && (
                 <div className="text-red-300">失敗 {result.errors}</div>

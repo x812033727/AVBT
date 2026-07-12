@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,21 @@ def _backfill_user_id(client: PikPakApi) -> None:
         logger.debug("could not backfill PikPak user_id from access token")
 
 
+# Credential-login cooldowns. Background loops (archiver sweep, tracker,
+# download queue) funnel through ``_ensure``; without a cooldown, a dead
+# token + throttled login means every cycle re-hits PikPak's login API,
+# refreshing the "operation too frequent" window forever — the account
+# never recovers and manual logins keep failing too.
+_LOGIN_COOLDOWN_GENERIC = 300  # wrong password / network / unknown
+_LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
+_LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
+
+
+def _is_too_frequent_error(exc: BaseException) -> bool:
+    """True when PikPak throttled us ("operation is too frequent")."""
+    return "too frequent" in str(exc).lower()
+
+
 def _is_invalid_token_error(exc: BaseException) -> bool:
     """True when PikPak's server told us our refresh token is no longer
     valid — usually because the same account refreshed elsewhere (phone
@@ -120,6 +136,10 @@ class PikPakService:
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
         self._username: str = ""
+        # Login-failure cooldown state (see module constants above).
+        self._login_blocked_until: float = 0.0
+        self._login_block_reason: str = ""
+        self._too_frequent_streak: int = 0
 
     # ---------- token persistence ----------
 
@@ -174,6 +194,50 @@ class PikPakService:
         except Exception:  # noqa: BLE001
             pass
 
+    # ---------- login cooldown ----------
+
+    def _login_cooldown_remaining(self) -> float:
+        return max(0.0, self._login_blocked_until - time.monotonic())
+
+    def _raise_if_login_blocked(self, *, explicit: bool) -> None:
+        """Fail fast while a login cooldown is active, without touching
+        the network. Explicit (user-supplied credential) logins bypass
+        the generic cooldown — the user may have just fixed a typo'd
+        password — but still respect a too-frequent cooldown, because
+        every attempt inside PikPak's throttle window refreshes it."""
+        remaining = self._login_cooldown_remaining()
+        if remaining <= 0:
+            return
+        if explicit and self._too_frequent_streak == 0:
+            return
+        minutes = max(1, int(remaining // 60) + (1 if remaining % 60 else 0))
+        raise PikPakError(
+            f"登入冷卻中(約剩 {minutes} 分鐘)。"
+            f"上次失敗原因: {self._login_block_reason}"
+        )
+
+    def _note_login_failure(self, exc: BaseException) -> None:
+        if _is_too_frequent_error(exc):
+            self._too_frequent_streak += 1
+            cooldown = min(
+                _LOGIN_COOLDOWN_MAX,
+                _LOGIN_COOLDOWN_TOO_FREQUENT
+                * 2 ** (self._too_frequent_streak - 1),
+            )
+        else:
+            self._too_frequent_streak = 0
+            cooldown = _LOGIN_COOLDOWN_GENERIC
+        self._login_blocked_until = time.monotonic() + cooldown
+        self._login_block_reason = str(exc)
+        logger.warning(
+            "PikPak login failed (%s); cooling down %ds", exc, cooldown
+        )
+
+    def _clear_login_cooldown(self) -> None:
+        self._login_blocked_until = 0.0
+        self._login_block_reason = ""
+        self._too_frequent_streak = 0
+
     # ---------- public ----------
 
     def status(self) -> dict:
@@ -184,6 +248,8 @@ class PikPakService:
             "has_env_credentials": bool(
                 settings.pikpak_username and settings.pikpak_password
             ),
+            "login_cooldown_seconds": int(self._login_cooldown_remaining()),
+            "login_block_reason": self._login_block_reason,
         }
 
     def logout(self) -> None:
@@ -198,10 +264,16 @@ class PikPakService:
         async with self._lock:
             # Explicit credentials → force re-login
             if username and password:
+                self._raise_if_login_blocked(explicit=True)
                 client = PikPakApi(
                     **self._build_kwargs(username=username, password=password)
                 )
-                await client.login()
+                try:
+                    await client.login()
+                except Exception as exc:  # noqa: BLE001
+                    self._note_login_failure(exc)
+                    raise
+                self._clear_login_cooldown()
                 self._maybe_encode_token(client)
                 self._client = client
                 self._username = username
@@ -232,10 +304,16 @@ class PikPakService:
                     "PIKPAK_USERNAME / PIKPAK_PASSWORD。"
                 )
 
+            self._raise_if_login_blocked(explicit=False)
             client = PikPakApi(
                 **self._build_kwargs(username=env_user, password=env_pwd)
             )
-            await client.login()
+            try:
+                await client.login()
+            except Exception as exc:  # noqa: BLE001
+                self._note_login_failure(exc)
+                raise
+            self._clear_login_cooldown()
             self._maybe_encode_token(client)
             self._client = client
             self._username = env_user
@@ -314,6 +392,9 @@ class PikPakService:
                 info = await client.get_user_info()
             except Exception as exc:  # noqa: BLE001
                 raise PikPakError(f"Token 無效或已過期: {exc}") from exc
+            # A working token ends any credential-login cooldown — the
+            # account is demonstrably usable again.
+            self._clear_login_cooldown()
             self._client = client
             self._username = (
                 getattr(client, "username", "")

@@ -47,6 +47,24 @@ async def migrate_series_to_studio(
     )
 
 
+@router.post("/migrate/labels-to-studio")
+async def migrate_labels_to_studio(
+    dry_run: bool = Body(True, embed=True),
+    auto_send: bool = Body(True, embed=True),
+):
+    """Hard-cut: replace all 發行商 (label) trackings with the distinct
+    製作商 (studio) they belong to (製作商-only rollup). **Destructive** —
+    defaults to ``dry_run=True``. Backs up the DB first and is guarded by
+    its own app_meta flag. Existing 製作商 trackings that a label maps to
+    are left as-is (no duplicate); only new studios are added.
+
+    Physical files need no extra move — the PikPak re-home already walks
+    the 發行商 folders into 製作商/系列/番號."""
+    return await tracking_migration.migrate_kind_to_studio(
+        "label", dry_run=dry_run, auto_send=auto_send
+    )
+
+
 def _to_out(r: TrackedListing) -> TrackedListingOut:
     return TrackedListingOut(
         kind=r.kind,

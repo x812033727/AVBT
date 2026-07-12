@@ -18,8 +18,7 @@ from ..schemas import (
 )
 from ..scrapers import javbus as scraper
 from ..services import missing as missing_svc
-from ..services import tracker
-from ..services import tracking_migration
+from ..services import tracker, tracking_migration
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 

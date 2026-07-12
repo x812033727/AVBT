@@ -271,6 +271,17 @@ class PCloudOrganizeMixin:
                 target_cache[target_path] = (tid, {s.name for s in siblings})
         return target_cache[target_path]
 
+    async def _nested_or_kind_target(
+        self, code: str, listing_kind: str, listing_name: str
+    ) -> str:
+        """Mirror the PikPak layout: prefer ``製作商/<studio>/<series>``
+        when the movie has a studio, else fall back to the single-kind
+        ``<kind>/<name>`` folder the loose resolver picked."""
+        from .archiver import studio_series_dir_for_code
+
+        nested = await studio_series_dir_for_code(code)
+        return nested or f"{kind_base_path(listing_kind)}/{listing_name}"
+
     async def _resolve_listing_with_retry(
         self, code: str, timeout: float
     ) -> tuple[str, tuple[str, str] | None]:
@@ -520,8 +531,8 @@ class PCloudOrganizeMixin:
 
                                 if status == "ok":
                                     listing_kind, listing_name = resolved  # type: ignore[misc]
-                                    target_path = (
-                                        f"{kind_base_path(listing_kind)}/{listing_name}"
+                                    target_path = await self._nested_or_kind_target(
+                                        gcode, listing_kind, listing_name
                                     )
                                     target_id, taken = await self._resolve_target_id(
                                         target_path, target_cache, dry_run=dry_run
@@ -613,7 +624,9 @@ class PCloudOrganizeMixin:
                     continue
 
                 listing_kind, listing_name = resolved  # type: ignore[misc]
-                target_path = f"{kind_base_path(listing_kind)}/{listing_name}"
+                target_path = await self._nested_or_kind_target(
+                    code, listing_kind, listing_name
+                )
                 target_id, taken = await self._resolve_target_id(
                     target_path, target_cache, dry_run=dry_run
                 )

@@ -554,6 +554,48 @@ export type ActressWorksOut = {
   works: MovieListItem[];
 };
 
+// ---------- 製作商 (studio) browse ----------
+
+export type StudioIndexItem = {
+  id: string;
+  name: string;
+  sample_cover: string;
+  series_count: number;
+  work_count: number;
+};
+
+export type StudioIndexOut = {
+  studios: StudioIndexItem[];
+  downloaded_total: number;
+  indexed_total: number;
+  backfill: ActressBackfillStatus;
+};
+
+export type StudioSeriesItem = {
+  id: string;
+  name: string;
+  sample_cover: string;
+  work_count: number;
+};
+
+export type StudioSeriesOut = {
+  studio_id: string;
+  studio_name: string;
+  sample_cover: string;
+  series_count: number;
+  work_count: number;
+  series: StudioSeriesItem[];
+};
+
+export type StudioSeriesWorksOut = {
+  studio_id: string;
+  studio_name: string;
+  series_id: string;
+  series_name: string;
+  count: number;
+  works: MovieListItem[];
+};
+
 // ---------- pCloud transfer queue ----------
 
 export type PCloudTransfer = {

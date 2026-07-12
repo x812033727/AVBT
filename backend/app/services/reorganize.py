@@ -639,7 +639,18 @@ async def _phase2_cleanup_target(
                    "reason": str(exc)}
 
 
-async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
+async def reorganize_stream(
+    *, dry_run: bool, rehome_kinds: bool = False
+) -> AsyncIterator[dict]:
+    """Reorganize PikPak into the archiver's target layout.
+
+    ``rehome_kinds`` enables the one-time full migration into the nested
+    ``製作商/<studio>/<series>/<code>`` scheme: on top of the usual
+    TASK/root/legacy passes, it walks every existing ``<kind>/<name>``
+    folder and re-homes each code child to its freshly-resolved nested
+    target (via ``_resolve_archive_path_by_code``). Codes already at
+    their nested location, and series sub-folders, are skipped. Run with
+    ``dry_run=True`` first to preview every move."""
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
     root_path = settings.pikpak_download_folder or "AVBT"
     task_path = task_folder_path()
@@ -850,6 +861,49 @@ async def reorganize_stream(*, dry_run: bool) -> AsyncIterator[dict]:
             summary["errors"] += 1
         idx = ev.get("current", idx)
         yield ev
+
+    # ---- Phase 1c: full re-home of existing kind folders into the
+    # nested 製作商/<studio>/<series>/<code> layout (one-time migration,
+    # opt-in). Each <kind>/<name> folder is treated as a phase-1 source;
+    # its code children are moved to their resolved nested target. New
+    # nested studio folders contain series sub-folders whose names carry
+    # no code, so they're skipped as "no_code" — the pass is idempotent.
+    if rehome_kinds:
+        for _kind, kind_path in all_kind_paths():
+            try:
+                kind_id = await pikpak_service.lookup_folder_id(kind_path)
+            except Exception:  # noqa: BLE001
+                continue
+            if not kind_id:
+                continue
+            try:
+                name_dirs = await pikpak_service.list_files(kind_id, size=500)
+            except Exception as exc:  # noqa: BLE001
+                yield {"type": "error", "message": f"列出 {kind_path} 失敗: {exc}"}
+                continue
+            for nd in name_dirs:
+                if nd.kind != "drive#folder":
+                    continue
+                source = f"{kind_path}/{nd.name}"
+                async for ev in _phase1_migrate_from(
+                    source, dry_run=dry_run, idx_start=idx
+                ):
+                    if ev.get("type") == "_phase1_error":
+                        yield {"type": "error", "message": ev.get("message", "")}
+                        continue
+                    if ev.get("type") == "_phase1_total":
+                        continue
+                    action = ev.get("action")
+                    if action == "move":
+                        summary["moved"] += 1
+                    elif action == "rename":
+                        summary["renamed"] += 1
+                    elif action == "skip":
+                        summary["skipped"] += 1
+                    elif action == "error":
+                        summary["errors"] += 1
+                    idx = ev.get("current", idx)
+                    yield ev
 
     # ---- Phase 2: cleanup destinations ----
     for target_path, target_id, children in cleanup_targets:

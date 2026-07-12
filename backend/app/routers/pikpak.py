@@ -465,7 +465,9 @@ async def presence_code_files(code: str):
 async def reorganize_endpoint(opts: ReorganizeOptions):
     async def gen():
         try:
-            async for event in reorganize_stream(dry_run=opts.dry_run):
+            async for event in reorganize_stream(
+                dry_run=opts.dry_run, rehome_kinds=opts.rehome_kinds
+            ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"

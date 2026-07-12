@@ -409,6 +409,9 @@ class StudioSeriesWorksOut(BaseModel):
 
 class ReorganizeOptions(BaseModel):
     dry_run: bool = True
+    # One-time migration: also re-home every existing <kind>/<name>/<code>
+    # into the nested 製作商/<studio>/<series>/<code> layout.
+    rehome_kinds: bool = False
 
 
 # ---------- pCloud ----------

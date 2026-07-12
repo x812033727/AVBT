@@ -610,6 +610,12 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
             if ev_type == "_phase1_error":
                 # First _phase1_error wins so the UI sees the original
                 # failure rather than a downstream cascade message.
+                # Also log it — these used to vanish into the settings
+                # page only, which hid weeks of failing sweeps.
+                if not sweep_error:
+                    logger.warning(
+                        "root sweep phase1 error: %s", ev.get("message", "")
+                    )
                 sweep_error = sweep_error or ev.get("message", "")
                 continue
             if ev_type != "progress":

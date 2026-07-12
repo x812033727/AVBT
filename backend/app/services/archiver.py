@@ -26,7 +26,8 @@ from sqlalchemy import func, select
 
 from ..config import kind_base_path, settings, task_folder_path
 from ..database import SessionLocal
-from ..models import OfflineTaskLog, TrackedListing
+from ..models import MovieDetailCache, OfflineTaskLog, TrackedListing
+from ..schemas import MovieDetail
 from ..scrapers import javbus as scraper
 from .pikpak import PikPakError, pikpak_service
 from .webhook_queue import webhook_queue
@@ -36,8 +37,15 @@ logger = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_\-]+")
 
 # Hierarchy priority — when a code belongs to multiple tracked listings,
-# the leftmost match wins. Most-specific first.
+# the leftmost match wins. Most-specific first. Only used for the
+# no-studio fallback now that studio→series nesting is the primary layout.
 _KIND_PRIORITY = ("series", "director", "label", "studio", "star")
+
+# Folder name for a studio's movies that have no series (keeps the
+# 製作商/<studio>/<series>/<code> depth uniform). Mirrors
+# ``studio_index.NO_SERIES_NAME`` so the browse page and the physical
+# layout agree.
+_NO_SERIES_FOLDER = "未分類"
 
 
 def _safe_code(code: str) -> str:
@@ -189,43 +197,85 @@ async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     return None
 
 
-async def _resolve_archive_path_by_code(code: str) -> str:
-    """JavBus-driven path resolution. Returns the fallback path when
-    JavBus fails or no kind matches a tracked listing.
+async def _detail_for_archive(code: str) -> MovieDetail | None:
+    """Get a code's MovieDetail for path routing.
 
-    Used by reorganize (no OfflineTaskLog row context at all) and by
-    ``_resolve_archive_path`` when the row's tracked_* snapshot is empty
-    (manual submits, rows that predate the snapshot columns)."""
+    Reads the persistent ``movie_detail_cache`` row directly, bypassing
+    its recency TTL — a movie's studio/series never changes, so a stale
+    row is still correct and we avoid an HTTP round-trip at archive time
+    (the row almost always exists: it was written during new-work
+    detection / backfill). Only when there is no cached row do we fall
+    back to a live fetch (which write-throughs the cache)."""
+    async with SessionLocal() as session:
+        row = await session.get(MovieDetailCache, code)
+    if row is not None:
+        try:
+            return MovieDetail.model_validate_json(row.detail)
+        except Exception:  # noqa: BLE001 — corrupt row → try a live fetch
+            logger.warning("archive: corrupt detail row for %s", code)
+    try:
+        return await scraper.fetch_detail_resolved(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fetch_detail(%s) failed: %s", code, exc)
+        return None
+
+
+def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
+    """Build ``<studio_root>/<studio>/<series｜未分類>/<code>`` when the
+    detail has a studio; ``None`` when it has no studio to nest under."""
+    studio = getattr(detail, "studio", None)
+    if not (studio and (getattr(studio, "name", "") or getattr(studio, "id", ""))):
+        return None
+    studio_safe = _safe_name(
+        studio.name or "", fallback=_safe_name(studio.id or "", fallback="unknown")
+    )
+    series = getattr(detail, "series", None)
+    if series and (getattr(series, "name", "") or getattr(series, "id", "")):
+        series_safe = _safe_name(
+            series.name or "",
+            fallback=_safe_name(series.id or "", fallback=_NO_SERIES_FOLDER),
+        )
+    else:
+        series_safe = _NO_SERIES_FOLDER
+    # kind_base_path("studio") → AVBT/製作商 by default (honours
+    # PIKPAK_STUDIO_FOLDER override) — the root of the nested layout.
+    return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}/{safe_code}"
+
+
+async def _resolve_archive_path_by_code(code: str) -> str:
+    """Primary path resolver: ``製作商/<studio>/<series>/<code>``.
+
+    Every movie with a studio nests under the studio→series tree
+    (regardless of which listing the user tracks). Movies with no studio
+    fall back to the legacy single-kind layout (series/label/…) and,
+    failing that, to ``pikpak_archive_folder`` (``AVBT/已完成``).
+
+    Used by the archiver loop and by reorganize (which has no
+    OfflineTaskLog row context)."""
     safe_code = _archive_leaf(code)
+    detail = await _detail_for_archive(code)
+    if detail is not None:
+        nested = _studio_series_path(detail, safe_code)
+        if nested is not None:
+            return nested
+    # No studio → legacy single-kind fallback (unchanged behaviour).
     resolved = await resolve_listing_for_code(code)
     if resolved is None:
         return f"{settings.pikpak_archive_folder}/{safe_code}"
     kind, safe_name = resolved
-    # kind_base_path() returns AVBT/<chinese kind label> by default
-    # (matching the archiver's natural-language layout) and honours
-    # per-kind env overrides like PIKPAK_SERIES_FOLDER.
     return f"{kind_base_path(kind)}/{safe_name}/{safe_code}"
 
 
 async def _resolve_archive_path(row: OfflineTaskLog) -> str:
-    """Pick the destination folder for ``row.code``. Fast path: when
-    enqueue captured the tracked listing context, build the path
-    directly without an external HTTP call. Slow path: delegate to
-    ``_resolve_archive_path_by_code`` which hits JavBus."""
-    code = row.code
-    safe_code = _archive_leaf(code)
+    """Pick the destination folder for ``row.code``.
 
-    snap_kind = (row.tracked_kind or "").strip()
-    snap_slug = (row.tracked_slug or "").strip()
-    snap_name = (row.tracked_name or "").strip()
-    if snap_kind and snap_slug and snap_name:
-        safe = _safe_name(
-            snap_name,
-            fallback=_safe_name(snap_slug, fallback="unknown"),
-        )
-        return f"{kind_base_path(snap_kind)}/{safe}/{safe_code}"
-
-    return await _resolve_archive_path_by_code(code)
+    Delegates to :func:`_resolve_archive_path_by_code`. The old
+    single-kind fast path (built from the ``tracked_*`` snapshot) is
+    gone: the nested layout keys on the movie's own studio+series, and
+    series is per-code — not knowable from the listing the download was
+    triggered by — so it must come from the detail cache anyway. That
+    read is a local DB hit (no HTTP) in the common case."""
+    return await _resolve_archive_path_by_code(row.code)
 
 
 class ArchiverState:

@@ -13,6 +13,7 @@ import {
   api,
   imgProxy,
   type MovieDetail,
+  type PartEstimate,
   type PresenceCodeFiles,
   type VideoCountResponse,
   type VideoCountResult,
@@ -159,6 +160,17 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           <dl className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 text-sm">
             <Info k="發行日期" v={data.release_date} />
             <Info k="長度" v={data.duration} />
+            {!((cloudCount?.video_count ?? 0) > 0 ||
+               (pcloudCount?.video_count ?? 0) > 0) &&
+              data.part_estimate &&
+              data.part_estimate.likely !== "unknown" && (
+                <>
+                  <dt className="text-muted-foreground">分集(估計)</dt>
+                  <dd>
+                    <PartEstimateLabel est={data.part_estimate} />
+                  </dd>
+                </>
+              )}
             <RefInfo k="導演" kind="director" ref={data.director} />
             <RefInfo k="製作商" kind="studio" ref={data.studio} />
             <RefInfo k="發行商" kind="label" ref={data.label} />
@@ -349,6 +361,20 @@ function RefInfo({
         )}
       </dd>
     </>
+  );
+}
+
+function PartEstimateLabel({ est }: { est: PartEstimate }) {
+  // Pre-download heuristic guess — deliberately styled cool/muted so it
+  // is never confused with the authoritative amber CloudCountLabel.
+  return (
+    <span title={est.reason || undefined}>
+      {est.likely === "multi" ? (
+        <span className="text-sky-300">可能分集(估計)</span>
+      ) : (
+        <span className="text-foreground/60">可能單片(估計)</span>
+      )}
+    </span>
   );
 }
 

@@ -207,6 +207,15 @@ export type Magnet = {
   part_hint: string;
 };
 
+/** 下載前的分集啟發式估計(僅供參考,下載後由 video_count 權威取代) */
+export type PartEstimate = {
+  likely: "single" | "multi" | "unknown";
+  reason: string;
+  duration_min: number | null;
+  part_markers: string[];
+  max_size_gb: number | null;
+};
+
 export type ActressRef = { name: string; id: string };
 export type GenreRef = { name: string; id: string };
 export type LinkRef = { name: string; id: string };
@@ -240,6 +249,7 @@ export type MovieDetail = {
   genres: GenreRef[];
   samples: string[];
   magnets: Magnet[];
+  part_estimate: PartEstimate | null;
 };
 
 export function btih(magnet: string): string {

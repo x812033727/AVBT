@@ -62,6 +62,20 @@ class LinkRef(BaseModel):
     id: str = ""
 
 
+class PartEstimate(BaseModel):
+    """Pre-download heuristic guess of whether a title is multi-part.
+
+    Computed per request in the movie-detail router from the (already
+    cached) duration + magnets — never persisted, so thresholds can be
+    tuned without cache invalidation. Superseded by the authoritative
+    post-download ``video_count`` once the files exist. Estimate only."""
+    likely: str = "unknown"           # "single" | "multi" | "unknown"
+    reason: str = ""                  # zh-TW, drives the UI tooltip
+    duration_min: int | None = None   # parsed minutes, None when unparseable
+    part_markers: list[str] = Field(default_factory=list)  # deduped magnet hints
+    max_size_gb: float | None = None  # largest magnet in GB (corroborating)
+
+
 class MovieDetail(BaseModel):
     code: str
     title: str
@@ -76,6 +90,9 @@ class MovieDetail(BaseModel):
     genres: list[GenreRef] = Field(default_factory=list)
     samples: list[str] = Field(default_factory=list)
     magnets: list[Magnet] = Field(default_factory=list)
+    # Pre-download multipart guess; None until the router fills it in
+    # (default keeps old cached rows deserializable).
+    part_estimate: PartEstimate | None = None
 
 
 # ---------- Collection ----------

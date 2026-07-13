@@ -13,6 +13,7 @@ from ..schemas import (
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
+from ..services.part_estimate import estimate_multipart
 from ..services.scraper_health import scraper_health
 
 router = APIRouter(prefix="/api/javbus", tags=["javbus"])
@@ -48,6 +49,9 @@ async def movie_detail(code: str, refresh: bool = Query(False)):
         raise HTTPException(status_code=502, detail=f"JavBus 詳細頁失敗: {exc}") from exc
     if not detail.title:
         raise HTTPException(status_code=404, detail=f"找不到番號 {code}")
+    # Pre-download multipart guess, recomputed per request from the cached
+    # duration+magnets so thresholds tune without cache invalidation.
+    detail.part_estimate = estimate_multipart(detail)
     return detail
 
 

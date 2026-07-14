@@ -839,6 +839,23 @@ _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
 _FINALIZE_RETRY_LIMIT = 5
 
 
+async def _active_task_ids() -> set[str]:
+    """Task ids that are still downloading (or otherwise not COMPLETE).
+
+    The root sweep marks a wrapper ``archived`` the moment it moves it —
+    which can happen while PikPak is still writing into it. Finalize
+    permanently deletes files, so it must never run against a folder
+    whose offline task hasn't finished; a half-downloaded second video
+    can look exactly like a sub-300MB ad clip."""
+    try:
+        tasks = await pikpak_service.list_tasks(size=200)
+    except Exception as exc:  # noqa: BLE001
+        # Fail closed: with no task list we can't prove anything is
+        # complete, so the caller skips this pass entirely.
+        raise PikPakError(f"list_tasks unavailable: {exc}") from exc
+    return {t.id for t in tasks if t.id and t.phase != "PHASE_TYPE_COMPLETE"}
+
+
 async def _finalize_retry_pass() -> int:
     """Re-run finalize on recently-archived rows that missed it. Returns
     how many rows were finalized this pass."""
@@ -860,7 +877,16 @@ async def _finalize_retry_pass() -> int:
                 .limit(_FINALIZE_RETRY_LIMIT)
             )
         ).scalars().all()
+        if not rows:
+            return 0
+        try:
+            active = await _active_task_ids()
+        except PikPakError as exc:
+            logger.warning("finalize retry skipped: %s", exc)
+            return 0
         for row in rows:
+            if row.task_id and row.task_id in active:
+                continue  # still downloading — try again next pass
             try:
                 if await run_finalize(pikpak_service, row.code):
                     row.finalized = True

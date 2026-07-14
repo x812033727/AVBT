@@ -50,7 +50,11 @@ from .pikpak import (
     _uniquify_target,
     pikpak_service,
 )
-from .rename_plan import _canonical_video_name, _part_marker_index
+from .rename_plan import (
+    _canonical_video_name,
+    _part_marker_index,
+    _split_size_outliers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +388,13 @@ async def _resolve_folder_winner(
     progress event.
     """
     canonical_folder = _safe_code(code) or code
+    # Freshly-submitted tasks may still be materialising files one by
+    # one — files not yet visible can't be phase-checked, so leave the
+    # wrapper alone for the grace window (live incident: TRE-143).
+    from .offline_tasks import is_settling  # avoid cycle
+    if await is_settling(folder.id):
+        return {"action": "skip", "target": canonical_folder,
+                "reason": "settling"}
     try:
         inner = await pikpak_service.list_files(folder.id, size=200)
     except Exception as exc:  # noqa: BLE001
@@ -473,6 +484,8 @@ async def _resolve_folder_winner(
     keepers: list[tuple[str, Any]] = []
     for canon, vids in sorted(groups.items()):
         if len(vids) >= 2 and all((v.size or 0) >= PART_MIN for v in vids):
+            # A stray low-res whole-film rip must not claim a slot.
+            vids, _outliers = _split_size_outliers(vids, canon)
             # Part order comes from the marker (-1/-2/CD2/B), not size —
             # disc 2 is routinely a hair larger than disc 1.
             vids.sort(key=lambda v: (
@@ -489,7 +502,13 @@ async def _resolve_folder_winner(
     for canon, _v in keepers:
         canon_group_size[canon] = canon_group_size.get(canon, 0) + 1
     canon_seq: dict[str, int] = {}
-    taken: set[str] = set()
+    # Seed with the destination's existing child names so a fresh part
+    # can't be renamed onto a name that's already there (live case: a
+    # second ``SDMU-845_2.mp4`` landing beside the old one).
+    try:
+        taken = {s_.name for s_ in await pikpak_service.list_files(parent_id, size=500)}
+    except Exception:  # noqa: BLE001
+        taken = set()
     plan: list[tuple[Any, str]] = []
     for canon, video in keepers:
         if len(keepers) == 1:

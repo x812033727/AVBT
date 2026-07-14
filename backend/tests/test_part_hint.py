@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.jav_code import detect_part_hint
+from app.services.rename_plan import _split_size_outliers
 
 
 @pytest.mark.parametrize(
@@ -54,3 +57,34 @@ def test_part_hint_returns_marker_text():
     assert detect_part_hint("ABC-123-2.mp4", "ABC-123") == "-2"
     assert detect_part_hint("ABC-123B", "ABC-123") == "B"
     assert detect_part_hint("激情 上集", None) == "上集"
+
+
+# ---- _split_size_outliers (rename_plan) ----
+
+_GB = 1024 ** 3
+
+
+def _v(name, gb):
+    return SimpleNamespace(name=name, size=int(gb * _GB), kind="drive#file")
+
+
+def test_outlier_rip_is_split_out():
+    files = [_v("sdmu-845cd1.mp4", 4.4), _v("sdmu-845cd2.mp4", 4.4),
+             _v("sdmu-845cd3.mp4", 4.4), _v("SDMU-845.mp4", 1.44)]
+    parts, outs = _split_size_outliers(files, "SDMU-845")
+    assert [o.name for o in outs] == ["SDMU-845.mp4"]
+    assert len(parts) == 3
+
+
+def test_marker_bearing_small_disc_is_kept():
+    # A bonus disc can be small — the marker protects it.
+    files = [_v("X-1cd1.mp4", 4.0), _v("X-1cd2.mp4", 4.0),
+             _v("X-1cd3.mp4", 1.0)]
+    parts, outs = _split_size_outliers(files, "X-1")
+    assert not outs and len(parts) == 3
+
+
+def test_pairs_are_never_split():
+    files = [_v("A-1-1.mp4", 10.0), _v("A-1-2.mp4", 3.0)]
+    parts, outs = _split_size_outliers(files, "A-1")
+    assert not outs and len(parts) == 2

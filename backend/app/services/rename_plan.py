@@ -142,6 +142,30 @@ def _dup_sort_index(name: str) -> int:
 _PART_INDEX_RE = re.compile(r"^(.+)_(\d+)$")
 
 
+def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
+    """Split a same-canonical, all-substantial group into (parts,
+    outliers). A stray whole-film low-res rip sitting next to real
+    discs is ≥500MB too, so the substantial-size test alone lets it
+    claim a ``_N`` slot (live case: a 1.44GB old rip became ``_5`` of a
+    five-disc set while the real CD5 lost its slot). Members without a
+    part marker whose size is under half the group median are outliers;
+    marker-bearing files are always kept (a bonus disc can be small)."""
+    if len(files) < 3:
+        return files, []
+    sizes = sorted(int(f.size or 0) for f in files)
+    median = sizes[len(sizes) // 2]
+    parts, outliers = [], []
+    for f in files:
+        if (int(f.size or 0) >= median * 0.5
+                or _part_marker_index(f.name, code) > 0):
+            parts.append(f)
+        else:
+            outliers.append(f)
+    if len(parts) >= 2:
+        return parts, outliers
+    return files, []
+
+
 def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
@@ -213,6 +237,8 @@ def _build_video_rename_plan(
         # Multi-file group: multipart naming if all substantial.
         if not all((f.size or 0) >= min_size for f in files):
             continue
+        # A stray low-res whole-film rip must not claim a part slot.
+        files, _outliers = _split_size_outliers(files, canon)
         # Members get protected from the single-file default-name path.
         for f in files:
             group_members.add(f.name)

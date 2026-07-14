@@ -543,6 +543,19 @@ async def _resolve_folder_winner(
                             "rename keeper %s → %s failed: %s",
                             video.name, target, exc,
                         )
+            # Moves are asynchronous: trash the wrapper before every
+            # keeper has LANDED at the destination and the laggard rides
+            # the wrapper into the trash (live loss: DVDMS-129_3).
+            # Positive sighting at the destination is the only proof.
+            if not await pikpak_service.confirm_arrivals(
+                parent_id, {v.id for v, _t in plan}
+            ):
+                logger.warning(
+                    "flatten %s: keeper move not landed, keeping wrapper",
+                    folder.name,
+                )
+                return {"action": "skip", "target": canonical_file,
+                        "reason": "move_pending"}
             if trash_ids:
                 try:
                     await pikpak_service.trash_files(trash_ids)

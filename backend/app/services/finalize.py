@@ -222,8 +222,8 @@ async def _list_subtree(
     return out, folder_depth, partial_any
 
 
-async def presence_code_folders(svc, code: str) -> list[tuple[str, str]]:
-    """``(folder_id, leaf_name)`` for every *per-code folder* the
+async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
+    """``(folder_id, leaf_name, path)`` for every *per-code folder* the
     presence index knows about — a path whose leaf is a folder that
     resolves to ``code`` (``[Thz.la]dvdms-129``, ``mtm-010``, …).
 
@@ -238,7 +238,7 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str]]:
     want = normalize_code(code)
     if not want:
         return []
-    hits: list[tuple[str, str]] = []
+    hits: list[tuple[str, str, str]] = []
     seen: set[str] = set()
     for path in presence_index.paths_for(code):
         leaf = path.rsplit("/", 1)[-1]
@@ -249,7 +249,7 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str]]:
         fid = await svc.lookup_folder_id(path)  # folder-typed leaf only
         if fid and fid not in seen:
             seen.add(fid)
-            hits.append((fid, leaf))
+            hits.append((fid, leaf, path))
     return hits
 
 
@@ -262,14 +262,23 @@ async def finalize_code_folder_stream(
 ) -> AsyncIterator[dict]:
     """Finalize one 番號's archive folder. Events mirror the cleanup
     stream: ``start`` / ``progress`` (action ∈ rename|move|purge|trash|
-    skip|error) / ``warn`` / ``done``."""
+    skip|error) / ``warn`` / ``done``.
+
+    Layout policy: NO per-code folders (user decision 2026-07-14). The
+    keepers are evacuated into the folder's PARENT (the 系列 folder) as
+    loose ``CODE.ext`` / ``CODE_N.ext`` files and the per-code folder is
+    removed once every keeper's arrival at the parent is confirmed. When
+    the parent can't be resolved the old keep-the-folder behaviour runs
+    instead — never guess a flatten destination."""
     rename_folder_to: str | None = None
     folder_leaf = code
+    folder_path: str | None = None
     if folder_id is None:
         from .archiver import _archive_leaf, _resolve_archive_path_by_code
 
         path = await _resolve_archive_path_by_code(code)
         folder_id = await svc.lookup_folder_id(path)
+        folder_path = path if folder_id else None
         if not folder_id:
             hits = await presence_code_folders(svc, code)
             if len(hits) > 1:
@@ -278,13 +287,35 @@ async def finalize_code_folder_stream(
                                    "無法確定要整理哪一個,中止")}
                 return
             if hits:
-                folder_id, folder_leaf = hits[0]
+                folder_id, folder_leaf, folder_path = hits[0]
                 canonical = _archive_leaf(code)
                 if folder_leaf != canonical:
                     rename_folder_to = canonical
         if not folder_id:
             yield {"type": "error", "message": f"找不到 {code} 的歸檔資料夾({path})"}
             return
+    else:
+        # Explicit folder_id (archiver inline hook): recover the path so
+        # the parent (系列 folder) can be resolved for the flatten. Only
+        # trust it when it resolves back to the same folder; any failure
+        # just means no flatten (legacy keep-the-folder behaviour).
+        try:
+            from .archiver import _resolve_archive_path_by_code
+
+            path = await _resolve_archive_path_by_code(code)
+            if await svc.lookup_folder_id(path) == folder_id:
+                folder_path = path
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("finalize %s: path recovery failed: %s", code, exc)
+
+    # Flatten destination: the folder's parent. None → legacy behaviour.
+    parent_id: str | None = None
+    if folder_path and "/" in folder_path:
+        try:
+            parent_id = await svc.lookup_folder_id(
+                folder_path.rsplit("/", 1)[0])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("finalize %s: parent lookup failed: %s", code, exc)
 
     entries, folder_depth, partial = await _list_subtree(svc, folder_id)
     if partial:
@@ -313,13 +344,16 @@ async def finalize_code_folder_stream(
         }}
         return
 
+    flatten = parent_id is not None and parent_id != folder_id
     summary = {"kept": len(plan.keep), "renamed": 0, "moved": 0, "purged": 0,
                "trashed": 0, "skipped": 0, "errors": 0, "dry_run": dry_run}
     renames = [(k, t) for k, t in plan.keep if k.name != t]
-    move_ids = {k.id for k in plan.move_to_root}
-    total = (len(renames) + len(plan.move_to_root) + len(plan.purge_files)
+    move_ids = ({k.id for k, _t in plan.keep} if flatten
+                else {k.id for k in plan.move_to_root})
+    total = (len(renames) + len(move_ids) + len(plan.purge_files)
              + len(plan.trash_files) + len(plan.purge_folders)
-             + (1 if rename_folder_to else 0))
+             + (1 if flatten else 0)
+             + (1 if rename_folder_to and not flatten else 0))
     yield {"type": "start", "total": total, "code": code}
     current = 0
 
@@ -331,11 +365,12 @@ async def finalize_code_folder_stream(
                 "action": action, "source": source, "target": target,
                 "reason": reason}
 
-    # Presence-resolved wrapper keeps its BT name — normalise the folder
-    # itself so the canonical path resolver finds it next time. A name
-    # collision (an old CODE folder already beside it) just skips: the
-    # file-level work below doesn't depend on the folder's name.
-    if rename_folder_to:
+    # Presence-resolved wrapper keeps its BT name — when the folder is
+    # staying (no flatten destination) normalise its name so the
+    # canonical path resolver finds it next time. Pointless when the
+    # flatten below removes the folder anyway. A name collision just
+    # skips: the file-level work doesn't depend on the folder's name.
+    if rename_folder_to and not flatten:
         try:
             if not dry_run:
                 await _retry_transient(
@@ -347,23 +382,42 @@ async def finalize_code_folder_stream(
             yield ev("skip", folder_leaf, rename_folder_to, kind="folder",
                      reason=str(exc))
 
-    if plan.skipped_all_clean:
+    if plan.skipped_all_clean and not flatten:
+        # Already-canonical folder AND no flatten destination — nothing
+        # to do. (With a parent resolved the folder itself must still be
+        # dissolved, so the fast path doesn't apply.)
         summary["skipped"] = len(plan.keep)
         yield {"type": "done", "result": summary}
         return
 
-    # a. Evacuate keepers: rename, then pull nested ones up to the root.
+    # a. Evacuate keepers — rename, then move to the 系列 folder
+    #    (flatten) or pull nested ones up to the root (legacy). Names
+    #    must not collide with the destination's existing children.
     #    Any keeper failure aborts BEFORE the destructive phases.
+    taken: set[str] = set()
+    if flatten:
+        try:
+            siblings, _p = await svc.list_all_files(parent_id)
+            taken = {s.name for s in siblings}
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error",
+                   "message": f"無法列出系列資料夾,中止: {exc}"}
+            return
     for keeper, target in plan.keep:
         try:
+            if flatten:
+                target = _uniquify_target(target, taken)
+                taken.add(target)
             if keeper.name != target:
                 if not dry_run:
                     await _retry_transient(lambda k=keeper, t=target: svc.rename_file(k.id, t))
                 summary["renamed"] += 1
                 yield ev("rename", keeper.name, target)
             if keeper.id in move_ids:
+                dest = parent_id if flatten else folder_id
                 if not dry_run:
-                    await _retry_transient(lambda k=keeper: svc.move_files([k.id], folder_id))
+                    await _retry_transient(
+                        lambda k=keeper, d=dest: svc.move_files([k.id], d))
                 summary["moved"] += 1
                 yield ev("move", target, None)
         except Exception as exc:  # noqa: BLE001
@@ -371,6 +425,21 @@ async def finalize_code_folder_stream(
             yield ev("error", keeper.name, None, reason=str(exc))
             yield {"type": "error",
                    "message": f"影片撤離失敗,中止刪除以免誤刪: {exc}"}
+            yield {"type": "done", "result": summary}
+            return
+
+    # Moves are asynchronous — deleting anything below before every
+    # keeper has LANDED at the destination can take a laggard down with
+    # its folder (live loss: DVDMS-129_3). Positive sighting at the
+    # destination is the only proof of arrival.
+    if flatten and not dry_run and plan.keep:
+        if not await svc.confirm_arrivals(
+            parent_id, {k.id for k, _t in plan.keep}
+        ):
+            summary["errors"] += 1
+            yield {"type": "error",
+                   "message": (f"{code} 影片搬移尚未落地,"
+                               "略過刪除(下輪重試)")}
             yield {"type": "done", "result": summary}
             return
 
@@ -430,6 +499,31 @@ async def finalize_code_folder_stream(
             survivors.add(folder.id)
             summary["errors"] += 1
             yield ev("error", folder.name, kind="folder", reason=str(exc))
+
+    # d. Flatten epilogue: the per-code folder itself. Keepers are
+    #    confirmed at the parent; anything the re-list still shows that
+    #    we didn't plan away blocks the delete (survivors included).
+    if flatten:
+        try:
+            if dry_run:
+                summary["purged"] += 1
+                yield ev("purge", folder_leaf, kind="folder")
+            else:
+                kids, _partial = await svc.list_all_files(folder_id)
+                leftover = [c for c in kids
+                            if c.id in survivors
+                            or c.id not in planned_gone]
+                if leftover:
+                    summary["skipped"] += 1
+                    yield ev("skip", folder_leaf, kind="folder",
+                             reason="not_empty")
+                else:
+                    await svc.delete_forever([folder_id])
+                    summary["purged"] += 1
+                    yield ev("purge", folder_leaf, kind="folder")
+        except Exception as exc:  # noqa: BLE001
+            summary["errors"] += 1
+            yield ev("error", folder_leaf, kind="folder", reason=str(exc))
 
     yield {"type": "done", "result": summary}
 

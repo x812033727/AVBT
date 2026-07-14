@@ -46,6 +46,11 @@ class StubSvc:
         self.trashed.extend(ids)
         return {}
 
+    async def confirm_arrivals(self, parent_id, file_ids, **_kw):
+        # Stub moves are instantaneous — every recorded move "landed".
+        moved = {i for ids, _p in self.moved for i in ids}
+        return set(file_ids) <= moved
+
 
 def _wrap():
     return SimpleNamespace(id="wrap", name="第一會所@idbd-939",
@@ -200,3 +205,25 @@ async def test_old_files_do_not_defer_flatten(monkeypatch):
     result = await reorg._resolve_folder_winner(
         _wrap(), "MIDV-001", "series", dry_run=False)
     assert result["action"] == "flatten"
+
+
+async def test_move_not_landed_keeps_wrapper(monkeypatch):
+    """Async-move race (live loss: DVDMS-129_3): until every keeper is
+    SIGHTED at the destination, neither the wrapper nor its leftovers
+    may be trashed."""
+    class PendingSvc(StubSvc):
+        async def confirm_arrivals(self, parent_id, file_ids, **_kw):
+            return False
+
+    svc = PendingSvc([
+        _file("dvdms-129_1.mp4", "d1", 4000),
+        _file("dvdms-129_2.mp4", "d2", 3000),
+        _file("dvdms-129_3.mp4", "d3", 3990),
+        _file("dvdms-129_4.mp4", "d4", 3100),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "DVDMS-129", "series", dry_run=False)
+    assert result["action"] == "skip"
+    assert result["reason"] == "move_pending"
+    assert svc.trashed == []

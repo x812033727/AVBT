@@ -369,6 +369,25 @@ async def _phase1_migrate_root(
         yield ev
 
 
+async def _parent_has_code_video(parent_id: str, code: str) -> bool:
+    """A substantial video for ``code`` already sits loose in
+    ``parent_id`` — evidence that an earlier flatten evacuated this
+    wrapper's content and only the shell is left."""
+    try:
+        kids = await pikpak_service.list_files(parent_id, size=500)
+    except Exception:  # noqa: BLE001
+        return False
+    want = (extract_jav_code(code) or code).upper()
+    for k in kids:
+        if k.kind == "drive#folder" or not is_video(k.name):
+            continue
+        if (extract_jav_code(k.name) or "").upper() != want:
+            continue
+        if (k.size or 0) >= _JUNK_BYTES:
+            return True
+    return False
+
+
 async def _resolve_folder_winner(
     folder, code: str, parent_id: str, *, dry_run: bool
 ) -> dict:
@@ -443,10 +462,31 @@ async def _resolve_folder_winner(
                 main_videos = deep_videos
 
     if not main_videos:
+        # Evacuated shell: an earlier flatten moved the videos out and
+        # the settle gate kept the wrapper alive. Once the gate opens
+        # AND the code's video is confirmed loose at the destination,
+        # the shell (plus leftover junk inside) can finally go — to
+        # trash, recoverable.
+        if await _parent_has_code_video(parent_id, code):
+            if not pikpak_service.move_settled(folder.id):
+                return {"action": "skip", "target": canonical_folder,
+                        "reason": "move_settling"}
+            if not dry_run:
+                try:
+                    await pikpak_service.trash_files([folder.id])
+                except Exception as exc:  # noqa: BLE001
+                    return {"action": "error", "target": canonical_folder,
+                            "reason": str(exc)}
+            return {"action": "flatten", "target": canonical_folder,
+                    "reason": "殘殼清除"}
         # Genuinely nothing to extract.
         if not inner:
             # Stray empty wrapper — trash and report as flatten so the
-            # user sees their orphaned folder is gone.
+            # user sees their orphaned folder is gone. "Lists empty" is
+            # not proof while a move out is in flight — gate on settle.
+            if not pikpak_service.move_settled(folder.id):
+                return {"action": "skip", "target": canonical_folder,
+                        "reason": "move_settling"}
             if not dry_run:
                 try:
                     await pikpak_service.trash_files([folder.id])
@@ -535,6 +575,7 @@ async def _resolve_folder_winner(
         try:
             for video, target in plan:
                 await pikpak_service.move_files([video.id], parent_id)
+                pikpak_service.record_move_source(folder.id)
                 if video.name != target:
                     try:
                         await pikpak_service.rename_file(video.id, target)
@@ -543,30 +584,26 @@ async def _resolve_folder_winner(
                             "rename keeper %s → %s failed: %s",
                             video.name, target, exc,
                         )
-            # Moves are asynchronous: trash the wrapper before every
-            # keeper has LANDED at the destination and the laggard rides
-            # the wrapper into the trash (live loss: DVDMS-129_3).
-            # Positive sighting at the destination is the only proof.
-            if not await pikpak_service.confirm_arrivals(
-                parent_id, {v.id for v, _t in plan}
-            ):
-                logger.warning(
-                    "flatten %s: keeper move not landed, keeping wrapper",
-                    folder.name,
-                )
-                return {"action": "skip", "target": canonical_file,
-                        "reason": "move_pending"}
+            # Dup/junk files are safe to trash — they were never moved.
             if trash_ids:
                 try:
                     await pikpak_service.trash_files(trash_ids)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("trash inner of %s failed: %s",
                                    folder.name, exc)
-            try:
-                await pikpak_service.trash_files([folder.id])
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("trash wrapper %s failed: %s",
-                               folder.name, exc)
+            # The wrapper itself must WAIT: moves are asynchronous and
+            # listings optimistic — a keeper whose move is still in
+            # flight dies with the deleted source folder even after it
+            # already lists at the destination (live losses:
+            # DVDMS-129_3, HRV-012_3/_4, MTM-010_2/_3). The settle gate
+            # (30 min) is the only proof; a later pass removes the
+            # emptied shell via the branch above.
+            if pikpak_service.move_settled(folder.id):
+                try:
+                    await pikpak_service.trash_files([folder.id])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("trash wrapper %s failed: %s",
+                                   folder.name, exc)
         except Exception as exc:  # noqa: BLE001
             return {"action": "error", "target": canonical_file,
                     "reason": f"flatten failed: {exc}"}

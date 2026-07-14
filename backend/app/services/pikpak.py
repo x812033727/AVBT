@@ -85,6 +85,11 @@ def _backfill_user_id(client: PikPakApi) -> None:
 # refreshing the "operation too frequent" window forever — the account
 # never recovers and manual logins keep failing too.
 _LOGIN_COOLDOWN_GENERIC = 300  # wrong password / network / unknown
+
+# How long a folder must sit quiet after a move OUT of it before it may
+# be deleted. PikPak moves are async and their listings optimistic — see
+# PikPakService.move_settled for the incident history.
+MOVE_SETTLE_SECONDS = 1800
 _LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
 _LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
 
@@ -141,6 +146,37 @@ class PikPakService:
         self._login_blocked_until: float = 0.0
         self._login_block_reason: str = ""
         self._too_frequent_streak: int = 0
+        # Move-settle tracking (see move_settled). Process start counts
+        # as "unknown history": a restart must not unlock deletions that
+        # a pre-restart move would have gated.
+        self._move_sources: dict[str, float] = {}
+        self._proc_start: float = time.monotonic()
+
+    # ---------- move settle gate ----------
+
+    def record_move_source(self, source_id: str) -> None:
+        """Remember that a file was just moved OUT of ``source_id`` (or
+        one of its ancestors — callers record the whole chain)."""
+        if source_id:
+            self._move_sources[source_id] = time.monotonic()
+
+    def move_settled(self, source_id: str) -> bool:
+        """True when it has been ≥ ``MOVE_SETTLE_SECONDS`` since the last
+        recorded move out of ``source_id``.
+
+        PikPak moves are asynchronous and their listings OPTIMISTIC: the
+        file lists at the destination and stops listing at the source
+        while the physical move is still in flight — and deleting the
+        source folder in that window kills the file outright (live
+        losses: DVDMS-129_3 with a blind delete; HRV-012_3/_4 and
+        MTM-010_2/_3 even after a destination-sighting check). No
+        listing proves completion; only elapsed time does. Deleting a
+        recently-moved-from folder must wait out this gate."""
+        now = time.monotonic()
+        if now - self._proc_start < MOVE_SETTLE_SECONDS:
+            return False
+        ts = self._move_sources.get(source_id)
+        return ts is None or now - ts >= MOVE_SETTLE_SECONDS
 
     # ---------- token persistence ----------
 
@@ -810,11 +846,14 @@ class PikPakService:
         self, folder_id: str, *, protect_ids: frozenset[str] = frozenset()
     ) -> bool:
         """Re-list ``folder_id`` and trash it (recoverable ~30 days) only
-        when it holds zero children and is not protected. Returns True if
-        trashed. The fresh re-list is the final safety gate before any
-        deletion, so a folder another process just repopulated is spared;
-        a non-empty or protected folder is never touched."""
+        when it holds zero children, is not protected, AND the move-settle
+        gate has opened. "Lists empty" is NOT proof it is empty — a file
+        whose async move out is still in flight neither lists here nor is
+        safe from the folder's deletion (see move_settled). Returns True
+        if trashed."""
         if not folder_id or folder_id in protect_ids:
+            return False
+        if not self.move_settled(folder_id):
             return False
         try:
             kids, _partial = await self.list_all_files(folder_id)
@@ -1194,27 +1233,25 @@ class PikPakService:
                             if video.name != target:
                                 await self.rename_file(video.id, target)
                             await self.move_files([video.id], effective_parent_id)
+                            self.record_move_source(child.id)
                         taken.add(target)
                         moved.append(target)
 
                     if not dry_run:
-                        # Moves are async — trashing the wrapper before
-                        # every keeper LANDED takes the laggard with it
-                        # (live loss: DVDMS-129_3). Confirm at the
-                        # destination first; otherwise keep the wrapper
-                        # for a later pass.
-                        if not await self.confirm_arrivals(
-                            effective_parent_id, {v.id for _c, v in keepers}
-                        ):
-                            logger.warning(
-                                "cleanup flatten %s: move not landed, "
-                                "keeping wrapper", child.name,
-                            )
+                        # Moves are async and listings optimistic —
+                        # deleting the source folder before the move
+                        # physically completes kills the file (live
+                        # losses: DVDMS-129_3, HRV-012_3/_4, MTM-010_2/
+                        # _3 — the last two even after a destination
+                        # sighting). Only elapsed time is proof: the
+                        # wrapper stays until the settle gate opens; a
+                        # later pass removes the emptied shell.
+                        if not self.move_settled(child.id):
                             summary["skipped"] += 1
                             level_remaining += 1
                             yield {**base_event, "action": "skip",
                                    "target": child.name,
-                                   "reason": "move_pending"}
+                                   "reason": "move_settling"}
                             continue
                         # Wrapper trash takes leftover junk + any
                         # dropped lower-resolution duplicates.

@@ -391,7 +391,7 @@ async def _resolve_folder_winner(
     # Freshly-submitted tasks may still be materialising files one by
     # one — files not yet visible can't be phase-checked, so leave the
     # wrapper alone for the grace window (live incident: TRE-143).
-    from .offline_tasks import is_settling  # avoid cycle
+    from .offline_tasks import is_settling, recently_created  # avoid cycle
     if await is_settling(folder.id):
         return {"action": "skip", "target": canonical_folder,
                 "reason": "settling"}
@@ -399,6 +399,11 @@ async def _resolve_folder_winner(
         inner = await pikpak_service.list_files(folder.id, size=200)
     except Exception as exc:  # noqa: BLE001
         return {"action": "error", "target": canonical_folder, "reason": str(exc)}
+    # Files born within the grace window mean the folder is still
+    # actively receiving content (slow torrents outlive the DB grace).
+    if recently_created(inner):
+        return {"action": "skip", "target": canonical_folder,
+                "reason": "settling"}
 
     direct_videos = [
         i for i in inner if i.kind != "drive#folder" and is_video(i.name)

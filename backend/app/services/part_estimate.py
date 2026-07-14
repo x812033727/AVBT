@@ -30,6 +30,42 @@ LARGE_GB = 15.0
 
 _INT_RE = re.compile(r"\d{1,4}")
 
+# Marker triage. BT sites glue single letters onto codes as site /
+# leak tags ("HMN-875J") — live sampling showed the majority of letter
+# hints are noise, not disc 10. Only A/B/D read as genuine variant
+# letters (C is already excluded at detection time — subtitle
+# collision), and even those need a companion to be convincing.
+_MARKER_NUM_RE = re.compile(r"(\d{1,2})")
+_CJK_MARKER_IDX = {"上": 1, "中": 2, "下": 3}
+_VARIANT_LETTERS = {"A", "B", "D"}
+
+
+def _significant_markers(markers: list[str]) -> list[str]:
+    """The subset of ``markers`` that genuinely evidences a multi-part
+    release: a numeric/CJK part index ≥2, two distinct numeric indices
+    (CD1+CD2), or two distinct variant letters (A+B). A lone ``CD1`` /
+    ``-1`` / single letter proves nothing — re-encodes and site tags
+    look exactly like that."""
+    by_num: dict[int, str] = {}
+    by_letter: dict[str, str] = {}
+    for raw in markers:
+        m = _MARKER_NUM_RE.search(raw)
+        if m:
+            by_num.setdefault(int(m.group(1)), raw)
+            continue
+        cjk = next((v for k, v in _CJK_MARKER_IDX.items() if k in raw), None)
+        if cjk is not None:
+            by_num.setdefault(cjk, raw)
+            continue
+        u = raw.strip().upper()
+        if len(u) == 1 and u in _VARIANT_LETTERS:
+            by_letter.setdefault(u, raw)
+    if any(n >= 2 for n in by_num) or len(by_num) >= 2:
+        return [by_num[n] for n in sorted(by_num)]
+    if len(by_letter) >= 2:
+        return [by_letter[c] for c in sorted(by_letter)]
+    return []
+
 
 def parse_duration_minutes(duration: str) -> int | None:
     """``"471分鐘"`` / ``"471 min"`` → 471; empty / no digits → None.
@@ -66,10 +102,13 @@ def estimate_multipart(detail: MovieDetail) -> PartEstimate:
             max_size_gb=max_gb,
         )
 
-    # 1. Explicit marker in a magnet name is the cleanest signal and
-    #    overrides a short runtime (a real 2-disc release can be ~120/disc).
-    if markers:
-        return out("multi", f"磁力名稱含分集標記({', '.join(markers)})")
+    # 1. A *significant* marker combination is the cleanest signal and
+    #    overrides a short runtime (a real 2-disc release can be
+    #    ~120/disc). Lone letters / lone part-1 markers are BT-site
+    #    noise ("HMN-875J") and fall through to the duration rules.
+    significant = _significant_markers(markers)
+    if significant:
+        return out("multi", f"磁力名稱含分集標記({', '.join(significant)})")
     # 2. No runtime → don't guess from size alone (a single 4K remux can be
     #    20GB). Authoritative count will settle it after download.
     if duration_min is None:

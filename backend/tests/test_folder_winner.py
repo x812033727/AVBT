@@ -3,6 +3,7 @@ multi-disc release and must not touch wrappers that are still
 transferring. Regression for the live IDBD-939 incident where the old
 single-winner rule trashed disc 1 as a "duplicate"."""
 
+from datetime import UTC
 from types import SimpleNamespace
 
 import app.services.reorganize as reorg
@@ -169,3 +170,33 @@ async def test_rename_avoids_existing_destination_names(monkeypatch):
     names = [n for _id, n in svc.renamed]
     assert "SDMU-845_2.mp4" not in names   # collision avoided
     assert len(set(names)) == len(names)
+
+
+async def test_recently_born_files_defer_flatten(monkeypatch):
+    """Slow torrents keep materialising files long after the DB grace —
+    a file born minutes ago means more may follow. Leave the wrapper."""
+    from datetime import datetime, timedelta
+
+    fresh = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+    f = _file("MIDV-001.mp4", "v", 6000)
+    f.created_time = fresh
+    svc = StubSvc([f])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-001", "series", dry_run=False)
+    assert result == {"action": "skip", "target": "MIDV-001",
+                      "reason": "settling"}
+    assert not svc.moved and not svc.trashed
+
+
+async def test_old_files_do_not_defer_flatten(monkeypatch):
+    from datetime import datetime, timedelta
+
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    f = _file("MIDV-001.mp4", "v", 6000)
+    f.created_time = old
+    svc = StubSvc([f])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-001", "series", dry_run=False)
+    assert result["action"] == "flatten"

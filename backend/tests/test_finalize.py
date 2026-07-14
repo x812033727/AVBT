@@ -2,7 +2,7 @@
 permanently purge junk, trash resolution dups. Covers the pure planner
 (:func:`build_finalize_plan`) and the streaming executor."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -511,3 +511,21 @@ async def test_finalize_retry_waits_out_settle_grace(tmp_path, monkeypatch):
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
     assert await arch._finalize_retry_pass() == 0
     await engine.dispose()
+
+
+def test_recently_created_helper():
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace as NS
+
+    from app.services.offline_tasks import recently_created
+
+    fresh = NS(created_time=(datetime.now(UTC)
+                             - timedelta(minutes=3)).isoformat())
+    old = NS(created_time=(datetime.now(UTC)
+                           - timedelta(hours=1)).isoformat())
+    none = NS(created_time=None)
+    bad = NS(created_time="not-a-date")
+    assert recently_created([old, fresh]) is True
+    assert recently_created([old, none]) is False
+    assert recently_created([bad]) is True  # unparseable → fail closed
+    assert recently_created([]) is False

@@ -1095,8 +1095,13 @@ class PikPakService:
                 # even show all its files yet (TRE-143: B/C/D invisible
                 # when A was flattened) — grace-window wrappers are
                 # skipped wholesale. Next sweep picks them up.
-                from .offline_tasks import is_settling  # avoid cycle
-                if await is_settling(child.id) or any(
+                from .offline_tasks import (  # avoid cycle
+                    is_settling,
+                    recently_created,
+                )
+                if await is_settling(child.id) or recently_created(
+                    main_videos
+                ) or any(
                     getattr(v, "phase", "") not in ("", "PHASE_TYPE_COMPLETE")
                     for v in main_videos
                 ):

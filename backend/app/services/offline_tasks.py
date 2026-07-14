@@ -12,7 +12,7 @@ for a grace window.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -22,6 +22,31 @@ from ..models import OfflineTaskLog
 logger = logging.getLogger(__name__)
 
 SETTLE_GRACE = timedelta(minutes=15)
+
+
+def recently_created(entries, grace: timedelta = SETTLE_GRACE) -> bool:
+    """True when any entry's PikPak ``created_time`` falls within the
+    grace window — the folder is still actively receiving files.
+
+    Complements :func:`is_settling`: the DB grace is anchored on
+    submission time, so a slow (non-cached) torrent that keeps
+    materialising files hours later would slip past it. File birth
+    times don't lie. Unparseable timestamps are treated as recent
+    (fail closed — this guards permanent deletes)."""
+    cutoff = datetime.now(UTC) - grace
+    for e in entries:
+        raw = getattr(e, "created_time", None)
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return True
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if ts > cutoff:
+            return True
+    return False
 
 
 async def is_settling(file_id: str, grace: timedelta = SETTLE_GRACE) -> bool:

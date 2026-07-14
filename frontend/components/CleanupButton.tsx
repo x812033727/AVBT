@@ -62,6 +62,7 @@ const REASON_LABEL: Record<string, string> = {
   no_code: "無法辨識番號",
   already_clean: "已經正規化",
   conflict: "同名衝突",
+  transferring: "檔案傳輸中，下輪再處理",
 };
 
 export default function CleanupButton({

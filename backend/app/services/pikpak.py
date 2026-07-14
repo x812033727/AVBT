@@ -441,7 +441,16 @@ class PikPakService:
 
     async def lookup_folder_id(self, name: str | None) -> str:
         """Like ``folder_id`` but does NOT auto-create missing segments.
-        Returns ``""`` when the path doesn't exist."""
+        Returns ``""`` when the path doesn't exist.
+
+        pikpakapi's ``path_to_id(create=False)`` resolves as far as it
+        can and returns the PARTIAL segment list when something in the
+        middle is missing — i.e. the deepest existing ancestor, not a
+        miss. Callers here treat a non-empty result as "the folder
+        exists", so accepting a partial match silently redirects them
+        at the ancestor (e.g. a missing ``…/未分類/CODE-1`` resolving
+        to the whole ``未分類`` folder). Require a full-length,
+        folder-typed resolution."""
         if not name:
             return ""
         if name in self._folder_cache:
@@ -451,10 +460,12 @@ class PikPakService:
             result = await self._call(lambda c: c.path_to_id(path, create=False))
         except Exception:  # noqa: BLE001
             return ""
-        if isinstance(result, list):
-            folder_id = result[-1].get("id", "") if result else ""
-        else:
-            folder_id = result or ""
+        segments = [p for p in path.split("/") if p.strip()]
+        folder_id = ""
+        if isinstance(result, list) and len(result) == len(segments):
+            leaf = result[-1] or {}
+            if leaf.get("file_type") != "file":
+                folder_id = leaf.get("id", "")
         if folder_id:
             self._folder_cache[name] = folder_id
         return folder_id or ""

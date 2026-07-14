@@ -215,9 +215,12 @@ async def test_executor_flattens_renames_and_purges():
     # keeper renamed + evacuated to root
     assert svc.renamed == [("vid", "MIDV-001.mp4")]
     assert svc.moved == [(["vid"], "root")]
-    # junk permanently gone (files then folders), nothing merely trashed
-    assert set(svc.purged) == {"txt", "ad", "s1", "smp", "wrap"}
-    assert svc.trashed == []
+    # junk FILES permanently gone; emptied FOLDERS only to trash — a
+    # slow disc can materialise inside hours later, invisible to every
+    # re-list, and must stay recoverable (live losses: DVDMS-172_2,
+    # SDMU-845_6).
+    assert set(svc.purged) == {"txt", "ad", "s1"}
+    assert set(svc.trashed) == {"smp", "wrap"}
     # root now holds exactly the canonical video
     assert [n.name for n in svc._graph["root"]] == ["MIDV-001.mp4"]
 
@@ -264,7 +267,7 @@ async def test_folder_with_unplanned_leftover_is_skipped():
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     skips = [e for e in events if e.get("action") == "skip" and e.get("kind") == "folder"]
     assert skips and skips[0]["reason"] == "not_empty"
-    assert "wrap" not in svc.purged
+    assert "wrap" not in svc.purged and "wrap" not in svc.trashed
 
 
 async def test_no_video_aborts_and_run_finalize_returns_none():
@@ -410,24 +413,25 @@ async def test_skipped_deep_folder_protects_its_ancestors():
     skipped = {e["source"] for e in events
                if e.get("action") == "skip" and e.get("kind") == "folder"}
     assert skipped == {"bonus", "extras", "MIDV-001@nyaa"}
-    assert not any(f in svc.purged for f in ("bn", "ex", "wrap"))
+    assert not any(f in svc.purged or f in svc.trashed
+                   for f in ("bn", "ex", "wrap"))
     # The deep video is untouched.
     assert any(n.id == "deep" for n in svc._graph["bn"])
 
 
-async def test_folder_purge_failure_protects_its_ancestors():
-    class FlakyPurge(FakeSvc):
-        async def delete_forever(self, ids):
+async def test_folder_removal_failure_protects_its_ancestors():
+    class FlakyTrash(FakeSvc):
+        async def trash_files(self, ids):
             if "smp" in ids:
                 raise RuntimeError("boom")
-            return await super().delete_forever(ids)
+            return await super().trash_files(ids)
 
-    svc = FlakyPurge(_wrapper_graph())
+    svc = FlakyTrash(_wrapper_graph())
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     errs = [e for e in events if e.get("action") == "error" and e.get("kind") == "folder"]
     assert errs and errs[0]["source"] == "Sample"
-    # Sample failed to purge → wrap must NOT be purged around it.
-    assert "wrap" not in svc.purged
+    # Sample failed to go → wrap must NOT be removed around it.
+    assert "wrap" not in svc.purged and "wrap" not in svc.trashed
 
 async def test_finalize_retry_marks_flattened_layout_row(tmp_path, monkeypatch):
     """Sweep-archived rows have no per-code folder — the video sits in
@@ -855,10 +859,10 @@ async def test_flatten_moves_parts_to_series_and_removes_folder(monkeypatch):
     done = events[-1]
     assert done["type"] == "done" and done["result"]["errors"] == 0
     # parts renamed _1/_2, moved to the series folder, junk purged,
-    # per-code folder permanently removed
+    # per-code folder to trash (recoverable — late discs may land in it)
     names = sorted(n.name for n in svc._graph["series"])
     assert names == ["MIDV-001_1.mp4", "MIDV-001_2.mp4", "OTHER-99.mp4"]
-    assert "t" in svc.purged and "codef" in svc.purged
+    assert "t" in svc.purged and "codef" in svc.trashed
 
 
 async def test_flatten_defers_folder_delete_until_settled(monkeypatch):
@@ -875,7 +879,8 @@ async def test_flatten_defers_folder_delete_until_settled(monkeypatch):
         svc, "MIDV-001", dry_run=False)]
     done = events[-1]["result"]
     assert done["settling"] >= 1 and done["errors"] == 0
-    assert "codef" not in svc.purged          # folder survives the gate
+    assert "codef" not in svc.purged and "codef" not in svc.trashed
+    # ^ folder survives the gate
     # keepers were still evacuated
     names = {n.name for n in svc._graph["series"]}
     assert {"MIDV-001_1.mp4", "MIDV-001_2.mp4"} <= names
@@ -910,7 +915,7 @@ async def test_shell_folder_purged_after_gate_opens(monkeypatch):
         svc, "MIDV-001", dry_run=False)]
     done = events[-1]["result"]
     assert done["errors"] == 0 and not done.get("no_video")
-    assert "t" in svc.purged and "codef" in svc.purged
+    assert "t" in svc.purged and "codef" in svc.trashed
     assert sorted(n.name for n in svc._graph["series"]) == [
         "MIDV-001_1.mp4", "MIDV-001_2.mp4"]
 
@@ -942,6 +947,6 @@ async def test_explicit_folder_id_without_path_keeps_folder(monkeypatch):
     svc = FakeSvc(_wrapper_graph())
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     assert events[-1]["result"]["errors"] == 0
-    # keeper ends up in the code folder root, folder NOT purged
+    # keeper ends up in the code folder root, folder NOT removed
     assert [n.name for n in svc._graph["root"]] == ["MIDV-001.mp4"]
-    assert "root" not in svc.purged
+    assert "root" not in svc.purged and "root" not in svc.trashed

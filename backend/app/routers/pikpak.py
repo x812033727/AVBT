@@ -418,8 +418,8 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
 async def finalize_code_stream(opts: FinalizeOptions):
     """Stream finalize events (NDJSON) for one 番號's archive folder:
     keep only the substantial videos renamed to ``CODE.ext`` /
-    ``CODE_N.ext``, permanently purge ad clips / non-video junk /
-    emptied wrappers, trash (recoverable) resolution duplicates.
+    ``CODE_N.ext``, permanently purge ad clips / non-video junk, trash
+    (recoverable) resolution duplicates and emptied wrappers.
 
     Body: ``{code: str, dry_run: bool=True}``.
     Events: ``start`` | ``progress`` | ``warn`` | ``done`` | ``error``.

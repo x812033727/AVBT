@@ -277,6 +277,14 @@ async def _retry_db(tmp_path, monkeypatch, rows):
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)
+    # The retry pass force-refreshes the presence index before touching
+    # any row — stub it so unit tests never walk the real drive.
+    from app.services.pikpak_presence import presence_index
+
+    async def fake_get(*, force=False):
+        return set()
+
+    monkeypatch.setattr(presence_index, "get", fake_get)
     async with maker() as s:
         s.add_all(rows)
         await s.commit()
@@ -661,3 +669,56 @@ def test_codec_token_is_not_a_part_letter():
     from app.services.rename_plan import _canonical_video_name
     assert (_canonical_video_name("ABC-123 x264.mp4")
             != _canonical_video_name("ABC-123.mp4"))
+
+
+# ---------------------------------------------------------------------------
+# non-bracket BT prefixes + retry-pass presence freshness
+# ---------------------------------------------------------------------------
+
+def test_canonical_strips_non_bracket_site_prefixes():
+    from app.services.rename_plan import _canonical_video_name
+    assert _canonical_video_name("HD-DVDMS-475_1.mp4") == "DVDMS-475"
+    assert _canonical_video_name("139_3XPLANET_TRE-016.mp4") == "TRE-016"
+    # code mid-name is NOT collapsed — only trailing-code stems qualify
+    assert _canonical_video_name("MIDV-001 making-of.mp4") != "MIDV-001"
+
+
+def test_prefixed_parts_rename_to_bare_code():
+    files = [_file("HD-DVDMS-475_1.mp4", "a", 3000),
+             _file("HD-DVDMS-475_2.mp4", "b", 2700)]
+    plan = build_finalize_plan(
+        "DVDMS-475", [(f, "root") for f in files], "root")
+    targets = {k.id: t for k, t in plan.keep}
+    assert targets == {"a": "DVDMS-475_1.mp4", "b": "DVDMS-475_2.mp4"}
+
+
+async def test_finalize_retry_fails_closed_without_presence(tmp_path, monkeypatch):
+    """Stale presence wrongly stamped DVDMS-306 flattened — a pass that
+    cannot refresh the index must not touch any row."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(task_id="t1", code="DVDMS-306", name="x",
+                       magnet="magnet:?xt=t1",
+                       created_at=now - timedelta(hours=1),
+                       archived=True, archived_at=now, finalized=False),
+    ])
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        raise AssertionError("must not finalize when presence is stale")
+
+    async def no_active():
+        return set()
+
+    from app.services.pikpak_presence import presence_index
+
+    async def broken_get(*, force=False):
+        raise RuntimeError("presence walk failed")
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(presence_index, "get", broken_get)
+    assert await arch._finalize_retry_pass() == 0
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.finalized is False
+    await engine.dispose()

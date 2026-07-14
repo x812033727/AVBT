@@ -890,6 +890,19 @@ async def _finalize_retry_pass() -> int:
         except PikPakError as exc:
             logger.warning("finalize retry skipped: %s", exc)
             return 0
+        # Both the presence-path folder fallback and the flattened check
+        # read the presence index. A snapshot built BEFORE the sweep
+        # moved these wrappers only knows the old loose-file path — the
+        # fallback then misses and the flattened check wrongly stamps
+        # the row (observed live on DVDMS-306). Fail closed like the
+        # task-list guard: stale/no presence → try again next pass.
+        try:
+            from .pikpak_presence import presence_index  # avoid cycle
+
+            await presence_index.get(force=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("finalize retry skipped (presence): %s", exc)
+            return 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — try again next pass

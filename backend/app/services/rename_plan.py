@@ -100,7 +100,12 @@ def _canonical_video_name(name: str) -> str:
         )
         m = tail_re.search(stem)
         if m:
-            stem = stem[: m.start()] + code
+            # The stem ENDS with the code (+part marker) — whatever sits
+            # in front of it is site noise the bracket/at regexes don't
+            # catch (``HD-DVDMS-475``, ``139_3XPLANET_TRE-016``). The
+            # code alone IS the canonical; a stem where the code is
+            # mid-name (``MIDV-001 making-of``) falls through untouched.
+            stem = code
     return stem.upper()
 
 

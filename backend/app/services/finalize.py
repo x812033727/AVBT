@@ -36,7 +36,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .jav_code import ext_of, extract_jav_code, is_video
-from .rename_plan import _build_video_rename_plan, _uniquify_target
+from .rename_plan import (
+    _build_video_rename_plan,
+    _split_size_outliers,
+    _uniquify_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +125,11 @@ def build_finalize_plan(
     keepers: list[Any] = []
     dup_trash: list[Any] = []
     ad_purge: list[Any] = []
-    for members in groups.values():
+    for canon, members in groups.items():
         if len(members) >= 2 and all((m.size or 0) >= part_min for m in members):
-            keepers.extend(members)  # genuine multi-part set
+            parts, outliers = _split_size_outliers(members, canon)
+            keepers.extend(parts)  # genuine multi-part set
+            dup_trash.extend(outliers)  # stray whole-film rip → recoverable
             continue
         members = sorted(members, key=lambda m: (m.size or 0), reverse=True)
         best, rest = members[0], members[1:]

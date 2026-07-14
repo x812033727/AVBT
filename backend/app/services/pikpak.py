@@ -32,6 +32,7 @@ from .rename_plan import (  # noqa: F401
     _canonical_video_name,
     _dup_sort_index,
     _part_marker_index,
+    _split_size_outliers,
     _uniquify_target,
 )
 
@@ -1090,9 +1091,12 @@ class PikPakService:
                 # renamed — doing so kills the offline transfer and the
                 # partial file simply vanishes (observed live: a 20GB
                 # single-file torrent flattened ~1 min after submission
-                # lost its video). Skip the whole wrapper this pass; the
-                # next sweep picks it up once the task lands.
-                if any(
+                # lost its video). And a freshly-submitted task may not
+                # even show all its files yet (TRE-143: B/C/D invisible
+                # when A was flattened) — grace-window wrappers are
+                # skipped wholesale. Next sweep picks them up.
+                from .offline_tasks import is_settling  # avoid cycle
+                if await is_settling(child.id) or any(
                     getattr(v, "phase", "") not in ("", "PHASE_TYPE_COMPLETE")
                     for v in main_videos
                 ):
@@ -1126,8 +1130,11 @@ class PikPakService:
                             (v.size or 0) >= PART_MIN_BYTES for v in vids
                         )
                         if all_substantial:
-                            for v in vids:
+                            # Stray whole-film rips must not claim slots.
+                            parts, outs = _split_size_outliers(vids, canon)
+                            for v in parts:
                                 keepers.append((canon, v))
+                            dropped_count += len(outs)
                         else:
                             keepers.append((canon, vids[0]))
                             dropped_count += len(vids) - 1

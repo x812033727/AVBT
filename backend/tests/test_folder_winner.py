@@ -21,13 +21,16 @@ def _folder(name, id):
 
 
 class StubSvc:
-    def __init__(self, children):
+    def __init__(self, children, dest_children=()):
         self._children = list(children)
+        self._dest = list(dest_children)
         self.moved = []
         self.renamed = []
         self.trashed = []
 
     async def list_files(self, folder_id, size=200):
+        if folder_id == "series":
+            return list(self._dest)
         return list(self._children)
 
     async def move_files(self, ids, parent_id):
@@ -111,3 +114,58 @@ async def test_dry_run_mutates_nothing(monkeypatch):
         _wrap(), "IDBD-939", "series", dry_run=True)
     assert result["action"] == "flatten"
     assert not svc.moved and not svc.renamed and not svc.trashed
+
+
+async def test_outlier_old_rip_never_claims_a_part_slot(monkeypatch):
+    """SDMU-845 live case: four real discs + a 1.44GB old whole-film rip
+    (same canonical, ≥500MB). The rip must not become _5; the marker-
+    bearing CD5 keeps its slot."""
+    svc = StubSvc([
+        _file("[Thz.la]sdmu-845cd1.mp4", "c1", 4490),
+        _file("[Thz.la]sdmu-845cd2.mp4", "c2", 4360),
+        _file("[Thz.la]sdmu-845cd3.mp4", "c3", 4440),
+        _file("[Thz.la]sdmu-845cd4.mp4", "c4", 4390),
+        _file("[Thz.la]sdmu-845cd5.mp4", "c5", 4400),
+        _file("SDMU-845.mp4", "old", 1440),  # stray low-res rip
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "SDMU-845", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    renamed = dict(svc.renamed)
+    assert renamed.get("c5") == "SDMU-845_5.mp4"
+    assert "old" not in renamed        # never renamed as a part
+    assert "old" in svc.trashed        # dropped with the junk
+
+
+async def test_settling_wrapper_is_left_alone(monkeypatch):
+    import app.services.offline_tasks as ot
+
+    async def yes(fid, grace=None):
+        return True
+
+    svc = StubSvc([_file("MIDV-001.mp4", "v", 6000)])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    monkeypatch.setattr(ot, "is_settling", yes)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-001", "series", dry_run=False)
+    assert result == {"action": "skip", "target": "MIDV-001",
+                      "reason": "settling"}
+    assert not svc.moved and not svc.renamed and not svc.trashed
+
+
+async def test_rename_avoids_existing_destination_names(monkeypatch):
+    """Live case: dest already holds SDMU-845_2.mp4; a new cd2 must not
+    be renamed onto the same name (PikPak allows duplicates)."""
+    svc = StubSvc(
+        [_file("sdmu-845cd1.mp4", "n1", 4400),
+         _file("sdmu-845cd2.mp4", "n2", 4400)],
+        dest_children=[_file("SDMU-845_2.mp4", "old2", 4300)],
+    )
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "SDMU-845", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    names = [n for _id, n in svc.renamed]
+    assert "SDMU-845_2.mp4" not in names   # collision avoided
+    assert len(set(names)) == len(names)

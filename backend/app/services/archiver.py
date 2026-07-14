@@ -860,8 +860,10 @@ async def _finalize_retry_pass() -> int:
     """Re-run finalize on recently-archived rows that missed it. Returns
     how many rows were finalized this pass."""
     from .finalize import run_finalize  # avoid cycle
+    from .offline_tasks import SETTLE_GRACE  # avoid cycle
 
     cutoff = datetime.utcnow() - _FINALIZE_RETRY_WINDOW
+    settle_cutoff = datetime.utcnow() - SETTLE_GRACE
     done = 0
     async with SessionLocal() as session:
         rows = (
@@ -871,6 +873,10 @@ async def _finalize_retry_pass() -> int:
                     OfflineTaskLog.archived.is_(True),
                     OfflineTaskLog.finalized.is_(False),
                     OfflineTaskLog.archived_at > cutoff,
+                    # Freshly-submitted tasks may still be materialising
+                    # files — wait out the settle grace before the first
+                    # destructive finalize (see services/offline_tasks).
+                    OfflineTaskLog.created_at < settle_cutoff,
                     OfflineTaskLog.code != "",
                 )
                 .order_by(OfflineTaskLog.archived_at.desc())

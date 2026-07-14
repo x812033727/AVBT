@@ -287,9 +287,11 @@ async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
     now = datetime.utcnow()
     engine, maker = await _retry_db(tmp_path, monkeypatch, [
         OfflineTaskLog(code="MIDV-001", magnet="m", archived=True,
-                       archived_at=now, finalized=False),
+                       archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
         OfflineTaskLog(code="OLD-999", magnet="m", archived=True,
-                       archived_at=now - timedelta(hours=48), finalized=False),
+                       archived_at=now - timedelta(hours=48), finalized=False,
+                       created_at=now - timedelta(hours=49)),
     ])
 
     calls = []
@@ -320,9 +322,11 @@ async def test_finalize_retry_skips_still_downloading_task(tmp_path, monkeypatch
     now = datetime.utcnow()
     engine, maker = await _retry_db(tmp_path, monkeypatch, [
         OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t-run",
-                       archived=True, archived_at=now, finalized=False),
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
         OfflineTaskLog(code="MIDV-002", magnet="m", task_id="t-done",
-                       archived=True, archived_at=now, finalized=False),
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
     ])
 
     calls = []
@@ -351,7 +355,8 @@ async def test_finalize_retry_fails_closed_without_task_list(tmp_path, monkeypat
     now = datetime.utcnow()
     engine, _maker = await _retry_db(tmp_path, monkeypatch, [
         OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t1",
-                       archived=True, archived_at=now, finalized=False),
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
     ])
 
     async def fake_run_finalize(svc, code, *, folder_id=None):
@@ -408,7 +413,8 @@ async def test_finalize_retry_marks_flattened_layout_row(tmp_path, monkeypatch):
     now = datetime.utcnow()
     engine, maker = await _retry_db(tmp_path, monkeypatch, [
         OfflineTaskLog(code="RCTD-740", magnet="m", task_id="t1",
-                       archived=True, archived_at=now, finalized=False),
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
     ])
 
     async def fake_run_finalize(svc, code, *, folder_id=None):
@@ -474,3 +480,34 @@ async def test_complete_phase_files_do_not_abort():
     svc = FakeSvc(g)
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     assert events[-1]["type"] == "done" and events[-1]["result"]["errors"] == 0
+
+
+def test_plan_outlier_rip_goes_to_trash_not_part_slot():
+    discs = [_file(f"sdmu-845cd{i}.mp4", f"c{i}", 4400) for i in range(1, 6)]
+    old = _file("SDMU-845.mp4", "old", 1440)
+    entries = [(e, "root") for e in discs + [old]]
+    plan = build_finalize_plan("SDMU-845", entries, "root")
+    targets = {k.id: t for k, t in plan.keep}
+    assert "old" not in targets
+    assert [e.id for e in plan.trash_files] == ["old"]
+    assert targets["c5"] == "SDMU-845_5.mp4"
+
+
+async def test_finalize_retry_waits_out_settle_grace(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t1",
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now),  # just submitted — inside grace
+    ])
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        raise AssertionError("must not finalize inside the settle grace")
+
+    async def no_active():
+        return set()
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    assert await arch._finalize_retry_pass() == 0
+    await engine.dispose()

@@ -55,6 +55,27 @@ _BT_PREFIX_BRACKET_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _BT_PREFIX_AT_RE = re.compile(r"^(?:[^@/\s]+@)+")
 _BT_SUFFIX_TILDE_RE = re.compile(r"\s*~\s*[A-Z0-9._\-]+\s*$", re.IGNORECASE)
 
+# Some releases glue a literal extension token onto the stem without a
+# dot (``HUNTA578AMP4.mp4`` = HUNTA-578 disc A + "MP4"). Only a token
+# fused directly onto an alphanumeric survives the real-extension strip
+# above; a space-separated trailing word stays (could be title text).
+_GLUED_EXT_RE = re.compile(
+    r"(?<=[0-9A-Za-z])(?:MP4|MKV|AVI|WMV|MPG|MPEG|MOV|M4V|FLV|RMVB)\s*$",
+    re.IGNORECASE,
+)
+# Leading parenthesised tag groups (``(Hunter)(HUNTA-398)<title>``).
+_HEAD_PAREN_RE = re.compile(r"^\s*(?:\(([^)]*)\)|\[([^\]]*)\])\s*")
+
+
+def _flex_code_re(code: str) -> str:
+    """Regex source matching ``code`` while tolerating the separator BT
+    names routinely drop or swap: ``HUNTA-578`` must also match the
+    ``HUNTA578`` / ``HUNTA_578`` spellings, otherwise the code-anchored
+    canonical/marker logic goes blind and multi-disc sets fall back to
+    the single-winner dedup (live loss: HUNTA-578 disc B trashed as a
+    "duplicate" of disc A, 2026-07-14)."""
+    return re.escape(code).replace(r"\-", "[-_ ]?")
+
 
 def _canonical_video_name(name: str) -> str:
     """Return ``name`` with extension + resolution / dup / part-index
@@ -76,6 +97,7 @@ def _canonical_video_name(name: str) -> str:
         stem = _BT_PREFIX_BRACKET_RE.sub("", stem)
         stem = _BT_PREFIX_AT_RE.sub("", stem)
         stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
+        stem = _GLUED_EXT_RE.sub("", stem)
         stem = _DUP_SUFFIX_RE.sub("", stem).strip()
     # Try to anchor on the JAV code, then strip any part marker hanging
     # off the end (CD<n> / -<n> / _<n> / lone variant letter). When the
@@ -95,7 +117,7 @@ def _canonical_video_name(name: str) -> str:
         # Without it, the canonical for ``200GANA-3119_2.mp4`` would stay
         # as ``200GANA-3119`` and fail to group with ``GANA-3119.mp4``.
         tail_re = re.compile(
-            rf"\d{{0,4}}{re.escape(code)}(?:CD\d+|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
+            rf"\d{{0,4}}{_flex_code_re(code)}(?:CD\d+|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
             re.IGNORECASE,
         )
         m = tail_re.search(stem)
@@ -106,6 +128,22 @@ def _canonical_video_name(name: str) -> str:
             # code alone IS the canonical; a stem where the code is
             # mid-name (``MIDV-001 making-of``) falls through untouched.
             stem = code
+        else:
+            # ``(Hunter)(HUNTA-398)<long title>`` — the title tail keeps
+            # the anchored match above from firing. A LEADING paren/
+            # bracket group whose content alone yields the same code is
+            # an explicit code tag, so the code IS the canonical. A
+            # free-text mid-name code (``MIDV-001 making-of``) has no
+            # such tag and stays untouched.
+            head = stem
+            while True:
+                m2 = _HEAD_PAREN_RE.match(head)
+                if not m2:
+                    break
+                if extract_jav_code(m2.group(1) or m2.group(2) or "") == code:
+                    stem = code
+                    break
+                head = head[m2.end():]
     return stem.upper()
 
 
@@ -114,16 +152,26 @@ def _part_marker_index(name: str, code: str) -> int:
     ``name``: ``CD<n>`` / ``-<n>`` / ``_<n>`` / lone variant letter
     (``A``=1, ``B``=2 …). Returns 0 when no marker is found, so the
     bare-name file sorts first and becomes ``_1``."""
+    if not code:
+        return 0
     stem = name
     m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
     if m:
         stem = stem[: m.start()]
+    stem = _GLUED_EXT_RE.sub("", stem)
     pattern = re.compile(
-        rf"{re.escape(code)}(?:CD(\d+)|-(\d+)|_(\d+)|[-_ ]?([A-Z])(?![A-Za-z0-9]))",
+        rf"{_flex_code_re(code)}(?:CD(\d+)|-(\d+)|_(\d+)|[-_ ]?([A-Z])(?![A-Za-z0-9]))",
         re.IGNORECASE,
     )
     m = pattern.search(stem)
     if not m:
+        # Some releases hang the part index off the END of a long title
+        # (``(Hunter)(HUNTA-398)<title>_2``) where it isn't adjacent to
+        # the code. Trust a small trailing index only — a year or
+        # resolution tail (``..._2024``) must not claim a part slot.
+        m2 = re.search(r"(?:CD|[-_])(\d{1,2})\s*$", stem)
+        if m2:
+            return int(m2.group(1))
         return 0
     if m.group(1):
         return int(m.group(1))
@@ -259,11 +307,15 @@ def _build_video_rename_plan(
                 unnamed.append(f)
         if not unnamed:
             continue  # already fully named
-        # Sort by part marker (CD<n>/-<n>/letter) so the bare-name file
-        # becomes ``_1`` and ``-2``/``CD2``/``B`` become ``_2`` etc.
-        # Fall back to PikPak ``(N)`` suffix + filename for ties.
+        # Marker-bearing files (CD<n>/-<n>/letter) go first so each can
+        # claim its own slot; bare-name files fill the gaps afterwards.
+        # In an all-bare group (PikPak ``(N)`` dedup convention) the bare
+        # file still becomes ``_1`` and ``(2)``/``(3)`` follow. In a
+        # mixed group a stray bare file (old whole-film rip) can no
+        # longer shift every real disc up by one slot.
         unnamed.sort(
             key=lambda f: (
+                _part_marker_index(f.name, canon) == 0,
                 _part_marker_index(f.name, canon),
                 _dup_sort_index(f.name),
                 f.name,

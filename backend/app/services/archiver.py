@@ -837,6 +837,12 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
 # many per pass. finalize is idempotent so re-runs are cheap.
 _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
 _FINALIZE_RETRY_LIMIT = 5
+# pikpakapi calls carry no timeout of their own; one hung mutation once
+# froze the archiver loop permanently. Bound every finalize attempt and
+# the presence walk so a stuck await costs one row / one pass, not the
+# whole loop.
+_FINALIZE_ROW_TIMEOUT = 300
+_PRESENCE_TIMEOUT = 600
 
 
 async def _active_task_ids() -> set[str]:
@@ -894,12 +900,21 @@ async def _finalize_retry_pass() -> int:
         # read the presence index. A snapshot built BEFORE the sweep
         # moved these wrappers only knows the old loose-file path — the
         # fallback then misses and the flattened check wrongly stamps
-        # the row (observed live on DVDMS-306). Fail closed like the
-        # task-list guard: stale/no presence → try again next pass.
+        # the row (observed live on DVDMS-306). Force a rebuild only in
+        # that stale case (a full drive walk every 60s pass would grind
+        # the loop) and fail closed like the task-list guard.
         try:
             from .pikpak_presence import presence_index  # avoid cycle
 
-            await presence_index.get(force=True)
+            newest = max(
+                (r.archived_at for r in rows if r.archived_at), default=None
+            )
+            stale = presence_index.built_at is None or (
+                newest is not None and presence_index.built_at < newest
+            )
+            await asyncio.wait_for(
+                presence_index.get(force=stale), timeout=_PRESENCE_TIMEOUT
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("finalize retry skipped (presence): %s", exc)
             return 0
@@ -907,18 +922,27 @@ async def _finalize_retry_pass() -> int:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — try again next pass
             try:
-                if await run_finalize(pikpak_service, row.code):
-                    row.finalized = True
-                    row.finalized_at = datetime.utcnow()
-                    done += 1
-                elif await _already_flattened(row.code):
-                    # Sweep-archived rows use the flattened layout —
-                    # the video sits directly in the 系列 folder, so
-                    # there is no per-code folder to finalize. The
-                    # sweep's own cleanup already normalised it.
-                    row.finalized = True
-                    row.finalized_at = datetime.utcnow()
-                    done += 1
+                # One stuck PikPak mutation must not freeze the whole
+                # archiver loop (a folder rename once hung it for good —
+                # no timeout anywhere down the pikpakapi stack).
+                async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
+                    if await run_finalize(pikpak_service, row.code):
+                        row.finalized = True
+                        row.finalized_at = datetime.utcnow()
+                        done += 1
+                    elif await _already_flattened(row.code):
+                        # Sweep-archived rows use the flattened layout —
+                        # the video sits directly in the 系列 folder, so
+                        # there is no per-code folder to finalize. The
+                        # sweep's own cleanup already normalised it.
+                        row.finalized = True
+                        row.finalized_at = datetime.utcnow()
+                        done += 1
+            except TimeoutError:
+                logger.warning(
+                    "finalize retry %s timed out after %ss",
+                    row.code, _FINALIZE_ROW_TIMEOUT,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("finalize retry %s failed: %s", row.code, exc)
         if done:
@@ -1060,11 +1084,12 @@ async def archive_once() -> int:
                 try:
                     from .finalize import run_finalize  # avoid cycle
 
-                    if await run_finalize(
-                        pikpak_service, row.code, folder_id=target_id
-                    ):
-                        row.finalized = True
-                        row.finalized_at = datetime.utcnow()
+                    async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
+                        if await run_finalize(
+                            pikpak_service, row.code, folder_id=target_id
+                        ):
+                            row.finalized = True
+                            row.finalized_at = datetime.utcnow()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("finalize %s failed: %s", row.code, exc)
                 notifications.append(

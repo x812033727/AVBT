@@ -54,6 +54,11 @@ class PikPakPresenceIndex:
 
     # ---------- public ----------
 
+    @property
+    def built_at(self) -> datetime | None:
+        """When the current snapshot finished building (naive UTC)."""
+        return self._built_at
+
     def status(self) -> dict[str, Any]:
         return {
             "built_at": self._built_at.isoformat() if self._built_at else None,

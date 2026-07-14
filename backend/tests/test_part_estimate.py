@@ -94,3 +94,36 @@ def test_dedupes_markers():
     est = estimate_multipart(d)
     assert est.likely == "multi"
     assert est.part_markers == ["CD1", "CD2"]
+
+
+# --- marker-noise triage (live sampling: "HMN-875J" style site tags) ---
+
+def test_lone_letter_marker_is_noise_falls_to_duration():
+    # HMN-875 real case: three magnets named "HMN-875J", 116-min single.
+    d = detail("116分鐘", [mk("4.88GB"), mk("1.99GB", part_hint="J"),
+                          mk("1.11GB", part_hint="J")])
+    est = estimate_multipart(d)
+    assert est.likely == "single"
+    assert est.part_markers == ["J"]  # raw hints still surfaced
+
+
+def test_two_distinct_variant_letters_are_significant():
+    d = detail("120分鐘", [mk("4GB", part_hint="A"), mk("4GB", part_hint="B")])
+    assert estimate_multipart(d).likely == "multi"
+
+
+def test_lone_part1_marker_is_noise():
+    # "-1" alone is a re-encode suffix as often as a first disc.
+    d = detail("120分鐘", [mk("4GB", part_hint="-1")])
+    assert estimate_multipart(d).likely == "single"
+
+
+def test_cjk_second_part_marker_is_significant():
+    d = detail("120分鐘", [mk("4GB", part_hint="下集")])
+    assert estimate_multipart(d).likely == "multi"
+
+
+def test_letter_beyond_variant_set_never_counts():
+    # J+K noise from two different sites must not pair up as variants.
+    d = detail("120分鐘", [mk("4GB", part_hint="J"), mk("4GB", part_hint="K")])
+    assert estimate_multipart(d).likely == "single"

@@ -31,8 +31,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 from .jav_code import ext_of, extract_jav_code, is_video
 from .rename_plan import _build_video_rename_plan, _uniquify_target

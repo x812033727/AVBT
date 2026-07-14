@@ -5,7 +5,6 @@ permanently purge junk, trash resolution dups. Covers the pure planner
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -218,7 +217,8 @@ async def test_executor_dry_run_touches_nothing():
 async def test_executor_rerun_is_noop():
     svc = FakeSvc(_wrapper_graph())
     await _collect(svc, "MIDV-001", "root", dry_run=False)
-    svc.moved.clear(); svc.renamed.clear(); svc.purged.clear(); svc.trashed.clear()
+    for calls in (svc.moved, svc.renamed, svc.purged, svc.trashed):
+        calls.clear()
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     assert events[-1]["result"]["skipped"] == 1  # all-clean fast path
     assert not svc.moved and not svc.renamed and not svc.purged and not svc.trashed

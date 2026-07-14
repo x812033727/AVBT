@@ -400,3 +400,46 @@ async def test_folder_purge_failure_protects_its_ancestors():
     assert errs and errs[0]["source"] == "Sample"
     # Sample failed to purge → wrap must NOT be purged around it.
     assert "wrap" not in svc.purged
+
+async def test_finalize_retry_marks_flattened_layout_row(tmp_path, monkeypatch):
+    """Sweep-archived rows have no per-code folder — the video sits in
+    the 系列 folder. run_finalize misses, but the row must still leave
+    the retry queue via the flattened-layout check."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="RCTD-740", magnet="m", task_id="t1",
+                       archived=True, archived_at=now, finalized=False),
+    ])
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        return None  # 找不到歸檔資料夾
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):
+        assert code == "RCTD-740"
+        return True
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._finalize_retry_pass() == 1
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.finalized is True
+    await engine.dispose()
+
+
+async def test_flattened_check_requires_missing_folder(monkeypatch):
+    """A real finalize failure (folder exists) must NOT be masked by the
+    flattened-layout check."""
+    async def fake_resolve(code):
+        return "AVBT/製作商/S/系/CODE-1"
+
+    async def folder_exists(path):
+        return "some-id"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    monkeypatch.setattr(arch.pikpak_service, "lookup_folder_id", folder_exists)
+    assert await arch._already_flattened("CODE-1") is False

@@ -323,3 +323,30 @@ async def test_collect_main_videos_counts_transferring_file_as_main():
     top, total = await svc._collect_main_videos("wrap", 300 * MB)
     assert total == 2  # blocks flatten
     assert {v.id for v in top} == {"d1", "d2"}
+
+
+async def test_cleanup_skips_wrapper_with_transferring_video(tmp_path, monkeypatch):
+    """Moving/renaming a file PikPak is still writing kills the offline
+    transfer (observed live) — the wrapper must be skipped wholesale
+    until the task lands."""
+    engine = await _db(tmp_path, monkeypatch,
+                       [_cache_row("IDBD-939", ("アイポケ", "ip"), ("", ""))])
+    partial = SimpleNamespace(name="idbd-939-1.mp4", id="vid",
+                              kind="drive#file", size=900 * MB,
+                              phase="PHASE_TYPE_RUNNING")
+    path_ids = {
+        "AVBT": "root",
+        "AVBT/已完成": "legacy",
+        "AVBT/製作商": "kStudio",
+        "AVBT/製作商/アイポケ/未分類": "series",
+    }
+    svc = FakeSvc(path_ids, {
+        "series": [_folder("第一會所@idbd-939", "wrap")],
+        "wrap": [partial],
+    })
+    events = await _run(svc, "series", dry_run=False)
+    skips = [e for e in events
+             if e.get("action") == "skip" and e.get("reason") == "transferring"]
+    assert skips, f"expected a transferring skip, got {events}"
+    assert not svc.moved and not svc.renamed and not svc.trashed
+    await engine.dispose()

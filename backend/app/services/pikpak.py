@@ -1086,6 +1086,22 @@ class PikPakService:
                     child.id, JUNK_BYTES, max_depth=2
                 )
 
+                # A file PikPak is still writing must not be moved or
+                # renamed — doing so kills the offline transfer and the
+                # partial file simply vanishes (observed live: a 20GB
+                # single-file torrent flattened ~1 min after submission
+                # lost its video). Skip the whole wrapper this pass; the
+                # next sweep picks it up once the task lands.
+                if any(
+                    getattr(v, "phase", "") not in ("", "PHASE_TYPE_COMPLETE")
+                    for v in main_videos
+                ):
+                    summary["skipped"] += 1
+                    level_remaining += 1
+                    yield {**base_event, "action": "skip",
+                           "target": child.name, "reason": "transferring"}
+                    continue
+
                 if main_videos:
                     # Group by canonical name. Files in the same group
                     # share a base identity (PikPak "(N)" or HD/720p

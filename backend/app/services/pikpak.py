@@ -628,6 +628,31 @@ class PikPakService:
             ids, lambda c, ch: c.file_batch_move(ch, to_parent_id)
         )
 
+    async def confirm_arrivals(
+        self, parent_id: str, file_ids: set[str],
+        *, attempts: int = 6, delay: float = 5.0,
+    ) -> bool:
+        """True once every id in ``file_ids`` is listed under
+        ``parent_id``. PikPak moves are asynchronous — a move_files()
+        ack does NOT mean the file has left its source folder, and a
+        source that lists empty is not proof either. Deleting the source
+        before the file lands takes the file down with it (live loss:
+        DVDMS-129_3 rode its wrapper into the trash). Only a positive
+        sighting at the DESTINATION is proof of arrival."""
+        want = set(file_ids)
+        if not want:
+            return True
+        for i in range(attempts):
+            try:
+                kids, _partial = await self.list_all_files(parent_id)
+                if want <= {k.id for k in kids}:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass  # transient listing failure — poll again
+            if i < attempts - 1:
+                await asyncio.sleep(delay)
+        return False
+
     async def rename_file(self, file_id: str, new_name: str) -> dict:
         return await self._call(lambda c: c.file_rename(file_id, new_name))
 
@@ -1173,6 +1198,24 @@ class PikPakService:
                         moved.append(target)
 
                     if not dry_run:
+                        # Moves are async — trashing the wrapper before
+                        # every keeper LANDED takes the laggard with it
+                        # (live loss: DVDMS-129_3). Confirm at the
+                        # destination first; otherwise keep the wrapper
+                        # for a later pass.
+                        if not await self.confirm_arrivals(
+                            effective_parent_id, {v.id for _c, v in keepers}
+                        ):
+                            logger.warning(
+                                "cleanup flatten %s: move not landed, "
+                                "keeping wrapper", child.name,
+                            )
+                            summary["skipped"] += 1
+                            level_remaining += 1
+                            yield {**base_event, "action": "skip",
+                                   "target": child.name,
+                                   "reason": "move_pending"}
+                            continue
                         # Wrapper trash takes leftover junk + any
                         # dropped lower-resolution duplicates.
                         await self.trash_files([child.id])

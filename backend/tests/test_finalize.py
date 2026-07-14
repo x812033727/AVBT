@@ -169,6 +169,11 @@ class FakeSvc:
         self._remove(ids)
         return {}
 
+    async def confirm_arrivals(self, parent_id, file_ids, **_kw):
+        # Mirror the real semantics without the polling: arrival = the
+        # id is listed under the destination right now.
+        return set(file_ids) <= {n.id for n in self._graph.get(parent_id, [])}
+
 
 async def _collect(svc, code, folder_id, *, dry_run):
     return [e async for e in finalize_code_folder_stream(
@@ -803,3 +808,97 @@ async def test_retry_pass_forces_presence_only_when_stale(tmp_path, monkeypatch)
     await arch._finalize_retry_pass()
     assert forces == [False, True]
     await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# flatten-always: keepers land loose in the 系列 folder, code folder goes
+# ---------------------------------------------------------------------------
+
+def _series_graph():
+    """series → CODE folder → (2 discs + junk)."""
+    return {
+        "series": [_folder("MIDV-001", "codef"),
+                   _file("OTHER-99.mp4", "other", 2000)],
+        "codef": [
+            _file("midv-001-1.mp4", "d1", 3000),
+            _file("midv-001-2.mp4", "d2", 2800),
+            _file("ads.txt", "t", 0),
+        ],
+    }
+
+
+def _patch_paths(monkeypatch, mapping):
+    async def fake_resolve(code):
+        return mapping["resolve"]
+    import app.services.archiver as _arch
+    monkeypatch.setattr(_arch, "_resolve_archive_path_by_code", fake_resolve)
+
+
+async def test_flatten_moves_parts_to_series_and_removes_folder(monkeypatch):
+    svc = FakeSvc(_series_graph(), path_ids={
+        "AVBT/製作商/S/系/MIDV-001": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "MIDV-001", dry_run=False)]
+    done = events[-1]
+    assert done["type"] == "done" and done["result"]["errors"] == 0
+    # parts renamed _1/_2, moved to the series folder, junk purged,
+    # per-code folder permanently removed
+    names = sorted(n.name for n in svc._graph["series"])
+    assert names == ["MIDV-001_1.mp4", "MIDV-001_2.mp4", "OTHER-99.mp4"]
+    assert "t" in svc.purged and "codef" in svc.purged
+
+
+async def test_flatten_aborts_deletes_when_move_not_landed(monkeypatch):
+    class PendingMove(FakeSvc):
+        async def move_files(self, ids, parent_id):
+            self.moved.append((list(ids), parent_id))
+            return {}  # ack but never actually lands
+
+    svc = PendingMove(_series_graph(), path_ids={
+        "AVBT/製作商/S/系/MIDV-001": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "MIDV-001", dry_run=False)]
+    assert any(e["type"] == "error" and "尚未落地" in e["message"]
+               for e in events)
+    # nothing destructive happened — junk intact, folder intact
+    assert "codef" not in svc.purged
+    assert not svc.trashed
+    assert {n.id for n in svc._graph["codef"]} >= {"t"}
+
+
+async def test_flatten_uniquifies_against_series_siblings(monkeypatch):
+    """An old low-res CODE.mp4 already loose in the series folder must
+    not be overwritten — the new keeper gets a dedup suffix instead."""
+    graph = {
+        "series": [_folder("MIDV-001@bt", "codef"),
+                   _file("MIDV-001.mp4", "old", 800)],
+        "codef": [_file("[88K.ME]MIDV-001.mp4", "new", 4000)],
+    }
+    svc = FakeSvc(graph, path_ids={
+        "AVBT/製作商/S/系/MIDV-001@bt": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001@bt"})
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "MIDV-001", folder_id=None, dry_run=False)]
+    assert events[-1]["result"]["errors"] == 0
+    names = sorted(n.name for n in svc._graph["series"])
+    assert "MIDV-001.mp4" in names          # old untouched
+    assert "MIDV-001 (2).mp4" in names       # new deduped, not clobbered
+
+
+async def test_explicit_folder_id_without_path_keeps_folder(monkeypatch):
+    """Legacy behaviour: when the parent can't be resolved the folder
+    stays (never guess a flatten destination)."""
+    svc = FakeSvc(_wrapper_graph())
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    assert events[-1]["result"]["errors"] == 0
+    # keeper ends up in the code folder root, folder NOT purged
+    assert [n.name for n in svc._graph["root"]] == ["MIDV-001.mp4"]
+    assert "root" not in svc.purged

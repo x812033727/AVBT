@@ -357,3 +357,21 @@ async def test_count_still_maxes_across_duplicate_homes(monkeypatch):
     r = await vc.count_for_code("ABC-123")
     assert r["ok"] and r["video_count"] == 1
     assert len(r["entries"]) == 2
+
+
+async def test_files_for_code_sorted_by_name(monkeypatch):
+    """Play list must read _1, _2 even when presence yields _2 first."""
+    monkeypatch.setattr(vc, "presence_index", FakePresence({
+        "IDBD-939": [
+            "AVBT/製作商/アイポケ/未分類/IDBD-939_2.mp4",
+            "AVBT/製作商/アイポケ/未分類/IDBD-939_1.mp4",
+        ],
+    }))
+    fake = FakePikPak(
+        tree={"series": [f("i1", "IDBD-939_1.mp4"), f("i2", "IDBD-939_2.mp4")]},
+        paths={"AVBT/製作商/アイポケ/未分類": "series"},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    r = await vc.files_for_code("IDBD-939")
+    assert r["ok"]
+    assert [x["name"] for x in r["files"]] == ["IDBD-939_1.mp4", "IDBD-939_2.mp4"]

@@ -70,6 +70,13 @@ def _is_folder(entry: Any) -> bool:
     return getattr(entry, "kind", "") == "drive#folder"
 
 
+def _is_transferring(entry: Any) -> bool:
+    """True when the file's own offline-download phase says PikPak is
+    still writing it. Empty phase (uploads, old files) counts as done."""
+    phase = getattr(entry, "phase", "") or ""
+    return bool(phase) and phase != "PHASE_TYPE_COMPLETE"
+
+
 def build_finalize_plan(
     code: str,
     entries: list[tuple[Any, str]],
@@ -233,6 +240,17 @@ async def finalize_code_folder_stream(
         # An incomplete inventory could mis-plan a permanent delete.
         yield {"type": "error",
                "message": f"{code} 資料夾列表不完整,為安全起見中止"}
+        return
+    # Any file still being written by PikPak (offline task not done for
+    # THAT file) makes the whole tree off-limits: a half-transferred
+    # second disc is indistinguishable from a sub-300MB ad clip. The
+    # task-list guard upstream can't be trusted alone — offline_list is
+    # observed to return empty while transfers are in flight.
+    transferring = [e for e, _p in entries if _is_transferring(e)]
+    if transferring:
+        yield {"type": "error",
+               "message": (f"{code} 還有 {len(transferring)} 個檔案在傳輸中"
+                           f"({transferring[0].name}),稍後重試")}
         return
     plan = build_finalize_plan(code, entries, folder_id)
 

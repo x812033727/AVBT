@@ -209,6 +209,10 @@ class PikPakFile(BaseModel):
     parent_id: str | None = None
     created_time: str | None = None
     thumbnail_link: str | None = None
+    # Offline-download transfer state of the file itself
+    # ("PHASE_TYPE_COMPLETE" when fully written; RUNNING while PikPak is
+    # still fetching it). Empty for files that never came from a task.
+    phase: str = ""
 
 
 class PikPakTask(BaseModel):

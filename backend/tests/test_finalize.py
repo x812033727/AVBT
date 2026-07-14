@@ -443,3 +443,34 @@ async def test_flattened_check_requires_missing_folder(monkeypatch):
     monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
     monkeypatch.setattr(arch.pikpak_service, "lookup_folder_id", folder_exists)
     assert await arch._already_flattened("CODE-1") is False
+
+
+def _running_file(name, id, size_mb=100):
+    f = _file(name, id, size_mb)
+    f.phase = "PHASE_TYPE_RUNNING"
+    return f
+
+
+async def test_transferring_file_aborts_finalize():
+    """A half-transferred second disc looks like a sub-300MB ad clip —
+    the per-file phase must abort the whole run before any deletion."""
+    svc = FakeSvc({
+        "root": [_folder("IDBD-924@bt", "wrap")],
+        "wrap": [
+            _file("idbd-924-1.mp4", "d1", 10000),
+            _running_file("idbd-924-2.mp4", "d2", 120),  # still downloading
+            _file("ads.txt", "t", 0),
+        ],
+    })
+    events = await _collect(svc, "IDBD-924", "root", dry_run=False)
+    assert any(e["type"] == "error" and "傳輸中" in e["message"] for e in events)
+    assert not svc.purged and not svc.trashed and not svc.moved and not svc.renamed
+
+
+async def test_complete_phase_files_do_not_abort():
+    g = _wrapper_graph()
+    for n in g["wrap"]:
+        n.phase = "PHASE_TYPE_COMPLETE"
+    svc = FakeSvc(g)
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    assert events[-1]["type"] == "done" and events[-1]["result"]["errors"] == 0

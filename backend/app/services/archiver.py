@@ -919,6 +919,7 @@ async def _already_flattened(code: str) -> bool:
     straight into the 製作商/<studio>/<系列> folder. Nothing per-code is
     left for finalize to do, so the row can be marked finalized instead
     of spinning in the retry window."""
+    from .finalize import presence_code_folders  # avoid cycle
     from .video_count import files_for_code  # avoid cycle
 
     try:
@@ -927,6 +928,11 @@ async def _already_flattened(code: str) -> bool:
         # still inside, move error, …) and must keep retrying.
         path = await _resolve_archive_path_by_code(code)
         if await pikpak_service.lookup_folder_id(path):
+            return False
+        # The sweep keeps a wrapper's BT name ([Thz.la]dvdms-129), so the
+        # canonical path can miss while a per-code folder still exists —
+        # that folder needs finalize, not a flattened stamp.
+        if await presence_code_folders(pikpak_service, code):
             return False
         result = await files_for_code(code)
     except Exception as exc:  # noqa: BLE001

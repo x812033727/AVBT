@@ -222,6 +222,37 @@ async def _list_subtree(
     return out, folder_depth, partial_any
 
 
+async def presence_code_folders(svc, code: str) -> list[tuple[str, str]]:
+    """``(folder_id, leaf_name)`` for every *per-code folder* the
+    presence index knows about — a path whose leaf is a folder that
+    resolves to ``code`` (``[Thz.la]dvdms-129``, ``mtm-010``, …).
+
+    The root sweep moves a wrapper folder wholesale, keeping its BT name
+    and choosing the series folder from what's physically on PikPak — so
+    the canonical ``製作商/<studio>/<series>/<CODE>`` guess can miss even
+    though a per-code folder absolutely exists. Loose-video paths (the
+    flattened layout) don't count."""
+    from .jav_code import normalize_code  # avoid cycle at import time
+    from .pikpak_presence import presence_index
+
+    want = normalize_code(code)
+    if not want:
+        return []
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for path in presence_index.paths_for(code):
+        leaf = path.rsplit("/", 1)[-1]
+        if is_video(leaf):
+            continue
+        if normalize_code(extract_jav_code(leaf) or "") != want:
+            continue
+        fid = await svc.lookup_folder_id(path)  # folder-typed leaf only
+        if fid and fid not in seen:
+            seen.add(fid)
+            hits.append((fid, leaf))
+    return hits
+
+
 async def finalize_code_folder_stream(
     svc,
     code: str,
@@ -232,11 +263,25 @@ async def finalize_code_folder_stream(
     """Finalize one 番號's archive folder. Events mirror the cleanup
     stream: ``start`` / ``progress`` (action ∈ rename|move|purge|trash|
     skip|error) / ``warn`` / ``done``."""
+    rename_folder_to: str | None = None
+    folder_leaf = code
     if folder_id is None:
-        from .archiver import _resolve_archive_path_by_code  # avoid cycle
+        from .archiver import _archive_leaf, _resolve_archive_path_by_code
 
         path = await _resolve_archive_path_by_code(code)
         folder_id = await svc.lookup_folder_id(path)
+        if not folder_id:
+            hits = await presence_code_folders(svc, code)
+            if len(hits) > 1:
+                yield {"type": "error",
+                       "message": (f"{code} 有 {len(hits)} 個候選資料夾,"
+                                   "無法確定要整理哪一個,中止")}
+                return
+            if hits:
+                folder_id, folder_leaf = hits[0]
+                canonical = _archive_leaf(code)
+                if folder_leaf != canonical:
+                    rename_folder_to = canonical
         if not folder_id:
             yield {"type": "error", "message": f"找不到 {code} 的歸檔資料夾({path})"}
             return
@@ -273,7 +318,8 @@ async def finalize_code_folder_stream(
     renames = [(k, t) for k, t in plan.keep if k.name != t]
     move_ids = {k.id for k in plan.move_to_root}
     total = (len(renames) + len(plan.move_to_root) + len(plan.purge_files)
-             + len(plan.trash_files) + len(plan.purge_folders))
+             + len(plan.trash_files) + len(plan.purge_folders)
+             + (1 if rename_folder_to else 0))
     yield {"type": "start", "total": total, "code": code}
     current = 0
 
@@ -284,6 +330,22 @@ async def finalize_code_folder_stream(
         return {"type": "progress", "current": current, "kind": kind,
                 "action": action, "source": source, "target": target,
                 "reason": reason}
+
+    # Presence-resolved wrapper keeps its BT name — normalise the folder
+    # itself so the canonical path resolver finds it next time. A name
+    # collision (an old CODE folder already beside it) just skips: the
+    # file-level work below doesn't depend on the folder's name.
+    if rename_folder_to:
+        try:
+            if not dry_run:
+                await _retry_transient(
+                    lambda: svc.rename_file(folder_id, rename_folder_to))
+            summary["renamed"] += 1
+            yield ev("rename", folder_leaf, rename_folder_to, kind="folder")
+        except Exception as exc:  # noqa: BLE001
+            summary["skipped"] += 1
+            yield ev("skip", folder_leaf, rename_folder_to, kind="folder",
+                     reason=str(exc))
 
     if plan.skipped_all_clean:
         summary["skipped"] = len(plan.keep)

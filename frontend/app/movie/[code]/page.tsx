@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Play } from "lucide-react";
+import FinalizeButton from "@/components/FinalizeButton";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
 import { toast } from "@/components/Toast";
@@ -52,6 +53,14 @@ export default function MoviePage({ params }: { params: { code: string } }) {
     })();
     // Best-effort: how many video files does this code actually have on
     // each cloud? Independent of the detail fetch — never blocks the page.
+    refreshCloudCounts(() => alive);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
+  function refreshCloudCounts(alive: () => boolean = () => true) {
     api
       .post<VideoCountResponse>("/api/pikpak/files/video-count", {
         items: [
@@ -60,7 +69,7 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         ],
       })
       .then((r) => {
-        if (!alive) return;
+        if (!alive()) return;
         for (const res of r.results) {
           if (!res.ok) continue;
           if (res.key === "pikpak") setCloudCount(res);
@@ -68,10 +77,14 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         }
       })
       .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [code]);
+  }
+
+  // After a live finalize the files were renamed / junk removed — the
+  // cached play list and cloud counts are stale.
+  function onFinalized() {
+    setFiles(null);
+    refreshCloudCounts();
+  }
 
   async function loadFiles() {
     if (filesBusy) return;
@@ -192,6 +205,9 @@ export default function MoviePage({ params }: { params: { code: string } }) {
                         <Play className="h-3 w-3" aria-hidden />
                         {filesBusy ? "查詢中…" : "播放"}
                       </button>
+                    )}
+                    {cloudCount && cloudCount.video_count > 0 && (
+                      <FinalizeButton code={code} onDone={onFinalized} />
                     )}
                     {pcloudCount && (
                       <CloudCountLabel label="pCloud" result={pcloudCount} />

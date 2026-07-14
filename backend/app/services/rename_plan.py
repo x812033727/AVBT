@@ -95,7 +95,7 @@ def _canonical_video_name(name: str) -> str:
         # Without it, the canonical for ``200GANA-3119_2.mp4`` would stay
         # as ``200GANA-3119`` and fail to group with ``GANA-3119.mp4``.
         tail_re = re.compile(
-            rf"\d{{0,4}}{re.escape(code)}(?:CD\d+|-\d+|_\d+|[A-Z])?\s*$",
+            rf"\d{{0,4}}{re.escape(code)}(?:CD\d+|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
             re.IGNORECASE,
         )
         m = tail_re.search(stem)
@@ -114,7 +114,7 @@ def _part_marker_index(name: str, code: str) -> int:
     if m:
         stem = stem[: m.start()]
     pattern = re.compile(
-        rf"{re.escape(code)}(?:CD(\d+)|-(\d+)|_(\d+)|([A-Z]))",
+        rf"{re.escape(code)}(?:CD(\d+)|-(\d+)|_(\d+)|[-_ ]?([A-Z])(?![A-Za-z0-9]))",
         re.IGNORECASE,
     )
     m = pattern.search(stem)

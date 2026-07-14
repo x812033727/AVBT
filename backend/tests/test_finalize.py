@@ -302,3 +302,39 @@ async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
     assert rows["MIDV-001"].finalized is True
     assert rows["OLD-999"].finalized is False
     await engine.dispose()
+
+async def test_skipped_deep_folder_protects_its_ancestors():
+    """A video buried below MAX_DEPTH is invisible at plan time; the
+    runtime re-list correctly skips its folder — and that skip must
+    propagate upward so no ancestor is purged around the survivor."""
+    svc = FakeSvc({
+        "root": [_folder("MIDV-001@nyaa", "wrap")],
+        "wrap": [_file("[88K.ME]MIDV-001.mp4", "vid", 2048), _folder("extras", "ex")],
+        "ex": [_folder("bonus", "bn")],                # level 3: seen, unexplored
+        "bn": [_file("bonus.mkv", "deep", 700)],       # level 4: invisible to the plan
+    })
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    assert events[-1]["result"]["errors"] == 0
+    # bn skipped (unplanned child), and the skip cascades: ex and wrap
+    # both survive instead of being purged around it.
+    skipped = {e["source"] for e in events
+               if e.get("action") == "skip" and e.get("kind") == "folder"}
+    assert skipped == {"bonus", "extras", "MIDV-001@nyaa"}
+    assert not any(f in svc.purged for f in ("bn", "ex", "wrap"))
+    # The deep video is untouched.
+    assert any(n.id == "deep" for n in svc._graph["bn"])
+
+
+async def test_folder_purge_failure_protects_its_ancestors():
+    class FlakyPurge(FakeSvc):
+        async def delete_forever(self, ids):
+            if "smp" in ids:
+                raise RuntimeError("boom")
+            return await super().delete_forever(ids)
+
+    svc = FlakyPurge(_wrapper_graph())
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    errs = [e for e in events if e.get("action") == "error" and e.get("kind") == "folder"]
+    assert errs and errs[0]["source"] == "Sample"
+    # Sample failed to purge → wrap must NOT be purged around it.
+    assert "wrap" not in svc.purged

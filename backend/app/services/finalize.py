@@ -312,10 +312,15 @@ async def finalize_code_folder_stream(
 
     # c. Sub-folders, deepest first — re-list to prove no keeper (or
     #    anything unplanned) is still inside before the permanent delete.
+    #    ``survivors`` tracks descendants that were skipped or failed:
+    #    a planned-gone folder that in fact survived must keep every
+    #    ancestor alive too, otherwise purging the ancestor would take
+    #    the survivor (and whatever made us skip it) down with it.
     keep_ids = {k.id for k, _t in plan.keep}
     planned_gone = ({e.id for e in plan.purge_files}
                     | {e.id for e in plan.trash_files}
                     | {f.id for f, _d in folder_depth})
+    survivors: set[str] = set()
     for folder, _depth in sorted(folder_depth, key=lambda fd: -fd[1]):
         try:
             if dry_run:
@@ -324,8 +329,11 @@ async def finalize_code_folder_stream(
                 continue
             kids, _partial = await svc.list_all_files(folder.id)
             leftover = [c for c in kids
-                        if c.id in keep_ids or c.id not in planned_gone]
+                        if c.id in keep_ids
+                        or c.id in survivors
+                        or c.id not in planned_gone]
             if leftover:
+                survivors.add(folder.id)
                 summary["skipped"] += 1
                 yield ev("skip", folder.name, kind="folder", reason="not_empty")
                 continue
@@ -333,6 +341,7 @@ async def finalize_code_folder_stream(
             summary["purged"] += 1
             yield ev("purge", folder.name, kind="folder")
         except Exception as exc:  # noqa: BLE001
+            survivors.add(folder.id)
             summary["errors"] += 1
             yield ev("error", folder.name, kind="folder", reason=str(exc))
 

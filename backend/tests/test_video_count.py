@@ -328,3 +328,32 @@ async def test_count_for_code_pcloud_not_transferred(tmp_path, monkeypatch):
     res = await vc.count_for_code_pcloud("ZZZ-999")
     await engine.dispose()
     assert res["ok"] is False
+
+
+async def test_count_sums_same_folder_loose_parts(monkeypatch):
+    """Flattened layout: CODE_1 + CODE_2 sitting in the same 系列 folder
+    are PARTS of one work — count must be 2, not max(1, 1)."""
+    monkeypatch.setattr(vc, "presence_index", FakePresence({
+        "IDBD-939": [
+            "AVBT/製作商/アイポケ/未分類/IDBD-939_2.mp4",
+            "AVBT/製作商/アイポケ/未分類/IDBD-939_1.mp4",
+        ],
+    }))
+    monkeypatch.setattr(vc, "pikpak_service", FakePikPak())
+    r = await vc.count_for_code("IDBD-939")
+    assert r["ok"] and r["video_count"] == 2
+    assert r["video_names"] == ["IDBD-939_1.mp4", "IDBD-939_2.mp4"]
+
+
+async def test_count_still_maxes_across_duplicate_homes(monkeypatch):
+    """Copies in DIFFERENT folders remain duplicate homes → max, not sum."""
+    monkeypatch.setattr(vc, "presence_index", FakePresence({
+        "ABC-123": [
+            "AVBT/製作商/X/系列A/ABC-123.mp4",
+            "AVBT/已完成/ABC-123.mp4",
+        ],
+    }))
+    monkeypatch.setattr(vc, "pikpak_service", FakePikPak())
+    r = await vc.count_for_code("ABC-123")
+    assert r["ok"] and r["video_count"] == 1
+    assert len(r["entries"]) == 2

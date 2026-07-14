@@ -1201,6 +1201,12 @@ class PikPakService:
                         if all_substantial:
                             # Stray whole-film rips must not claim slots.
                             parts, outs = _split_size_outliers(vids, canon)
+                            # Part order comes from the marker (A/B/CD2/
+                            # -2), not size — disc 2 is routinely a hair
+                            # larger than disc 1 (live case: SKMJ-058
+                            # A/B/C/D numbered _1/_3/_4/_2 by size).
+                            parts.sort(key=lambda v: (
+                                _part_marker_index(v.name, canon), v.name))
                             for v in parts:
                                 keepers.append((canon, v))
                             dropped_count += len(outs)

@@ -46,10 +46,15 @@ class StubSvc:
         self.trashed.extend(ids)
         return {}
 
-    async def confirm_arrivals(self, parent_id, file_ids, **_kw):
-        # Stub moves are instantaneous — every recorded move "landed".
-        moved = {i for ids, _p in self.moved for i in ids}
-        return set(file_ids) <= moved
+    # Settle gate: stub moves are instantaneous, so tests default to an
+    # open gate; set ``settled = False`` to simulate an in-flight move.
+    settled = True
+
+    def record_move_source(self, source_id):
+        pass
+
+    def move_settled(self, source_id):
+        return self.settled
 
 
 def _wrap():
@@ -207,23 +212,50 @@ async def test_old_files_do_not_defer_flatten(monkeypatch):
     assert result["action"] == "flatten"
 
 
-async def test_move_not_landed_keeps_wrapper(monkeypatch):
-    """Async-move race (live loss: DVDMS-129_3): until every keeper is
-    SIGHTED at the destination, neither the wrapper nor its leftovers
-    may be trashed."""
-    class PendingSvc(StubSvc):
-        async def confirm_arrivals(self, parent_id, file_ids, **_kw):
-            return False
-
-    svc = PendingSvc([
+async def test_unsettled_moves_keep_wrapper(monkeypatch):
+    """Async-move physics (live losses: DVDMS-129_3, HRV-012_3/_4,
+    MTM-010_2/_3): the wrapper must survive the run whose moves just
+    happened — only a later, settled pass may take the shell."""
+    svc = StubSvc([
         _file("dvdms-129_1.mp4", "d1", 4000),
         _file("dvdms-129_2.mp4", "d2", 3000),
         _file("dvdms-129_3.mp4", "d3", 3990),
         _file("dvdms-129_4.mp4", "d4", 3100),
     ])
+    svc.settled = False
     monkeypatch.setattr(reorg, "pikpak_service", svc)
     result = await reorg._resolve_folder_winner(
         _wrap(), "DVDMS-129", "series", dry_run=False)
-    assert result["action"] == "skip"
-    assert result["reason"] == "move_pending"
+    assert result["action"] == "flatten"       # keepers were evacuated
+    assert sorted(i for ids, _p in svc.moved for i in ids) == [
+        "d1", "d2", "d3", "d4"]
+    assert "wrap" not in svc.trashed           # …but the wrapper stays
+
+
+async def test_evacuated_shell_trashed_once_settled(monkeypatch):
+    """A videoless wrapper whose code video already sits loose at the
+    destination is a shell — settled gate open → it may finally go."""
+    svc = StubSvc(
+        [_file("cover.jpg", "j", 1)],
+        dest_children=[_file("DVDMS-129_1.mp4", "v", 4000)],
+    )
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "DVDMS-129", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    assert result["reason"] == "殘殼清除"
+    assert svc.trashed == ["wrap"]
+
+
+async def test_evacuated_shell_waits_for_gate(monkeypatch):
+    svc = StubSvc(
+        [_file("cover.jpg", "j", 1)],
+        dest_children=[_file("DVDMS-129_1.mp4", "v", 4000)],
+    )
+    svc.settled = False
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "DVDMS-129", "series", dry_run=False)
+    assert result == {"action": "skip", "target": "DVDMS-129",
+                      "reason": "move_settling"}
     assert svc.trashed == []

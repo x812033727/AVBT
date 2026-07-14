@@ -174,6 +174,16 @@ class FakeSvc:
         # id is listed under the destination right now.
         return set(file_ids) <= {n.id for n in self._graph.get(parent_id, [])}
 
+    # Settle gate: fake moves are instantaneous, so tests default to an
+    # open gate; set ``settled = False`` to simulate an in-flight move.
+    settled = True
+
+    def record_move_source(self, source_id):
+        pass
+
+    def move_settled(self, source_id):
+        return self.settled
+
 
 async def _collect(svc, code, folder_id, *, dry_run):
     return [e async for e in finalize_code_folder_stream(
@@ -851,25 +861,58 @@ async def test_flatten_moves_parts_to_series_and_removes_folder(monkeypatch):
     assert "t" in svc.purged and "codef" in svc.purged
 
 
-async def test_flatten_aborts_deletes_when_move_not_landed(monkeypatch):
-    class PendingMove(FakeSvc):
-        async def move_files(self, ids, parent_id):
-            self.moved.append((list(ids), parent_id))
-            return {}  # ack but never actually lands
+async def test_flatten_defers_folder_delete_until_settled(monkeypatch):
+    """Fresh moves close the settle gate: junk may go (it was never
+    moved) but the code folder must survive this run, and run_finalize
+    must NOT report success so the retry pass comes back later."""
+    svc = FakeSvc(_series_graph(), path_ids={
+        "AVBT/製作商/S/系/MIDV-001": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    svc.settled = False
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "MIDV-001", dry_run=False)]
+    done = events[-1]["result"]
+    assert done["settling"] >= 1 and done["errors"] == 0
+    assert "codef" not in svc.purged          # folder survives the gate
+    # keepers were still evacuated
+    names = {n.name for n in svc._graph["series"]}
+    assert {"MIDV-001_1.mp4", "MIDV-001_2.mp4"} <= names
 
-    svc = PendingMove(_series_graph(), path_ids={
+
+async def test_run_finalize_returns_none_while_settling(monkeypatch):
+    svc = FakeSvc(_series_graph(), path_ids={
+        "AVBT/製作商/S/系/MIDV-001": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    svc.settled = False
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
+    assert await run_finalize(svc, "MIDV-001") is None
+
+
+async def test_shell_folder_purged_after_gate_opens(monkeypatch):
+    """Second pass on an evacuated shell (videos already loose at the
+    parent, junk left inside): once settled, junk purges and the code
+    folder goes."""
+    graph = {
+        "series": [_folder("MIDV-001", "codef"),
+                   _file("MIDV-001_1.mp4", "v1", 3000),
+                   _file("MIDV-001_2.mp4", "v2", 2800)],
+        "codef": [_file("ads.txt", "t", 0)],
+    }
+    svc = FakeSvc(graph, path_ids={
         "AVBT/製作商/S/系/MIDV-001": "codef",
         "AVBT/製作商/S/系": "series",
     })
     _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
     events = [e async for e in finalize_code_folder_stream(
         svc, "MIDV-001", dry_run=False)]
-    assert any(e["type"] == "error" and "尚未落地" in e["message"]
-               for e in events)
-    # nothing destructive happened — junk intact, folder intact
-    assert "codef" not in svc.purged
-    assert not svc.trashed
-    assert {n.id for n in svc._graph["codef"]} >= {"t"}
+    done = events[-1]["result"]
+    assert done["errors"] == 0 and not done.get("no_video")
+    assert "t" in svc.purged and "codef" in svc.purged
+    assert sorted(n.name for n in svc._graph["series"]) == [
+        "MIDV-001_1.mp4", "MIDV-001_2.mp4"]
 
 
 async def test_flatten_uniquifies_against_series_siblings(monkeypatch):

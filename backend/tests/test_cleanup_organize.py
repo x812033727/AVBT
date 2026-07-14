@@ -37,6 +37,15 @@ class FakeSvc(pk.PikPakService):
         self.moved = []    # (ids, dest_parent_id)
         self.renamed = []  # (id, new_name)
         self.trashed = []  # id
+        # Fake moves are instantaneous — open the settle gate so the
+        # single-run assertions keep exercising the full flatten.
+        self._proc_start -= pk.MOVE_SETTLE_SECONDS * 2
+
+    def record_move_source(self, source_id):
+        # keep the real bookkeeping but immediately backdate it: fake
+        # moves land instantly, tests assert same-run behaviour
+        super().record_move_source(source_id)
+        self._move_sources[source_id] -= pk.MOVE_SETTLE_SECONDS * 2
 
     async def list_all_files(self, parent_id, *, cap=5000):
         return list(self._graph.get(parent_id, [])), False

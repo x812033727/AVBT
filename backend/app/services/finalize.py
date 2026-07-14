@@ -253,6 +253,24 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
     return hits
 
 
+async def _parent_has_code_video(svc, parent_id: str, code: str) -> bool:
+    """A substantial video for ``code`` already sits loose in the parent
+    (系列) folder — evidence that an earlier settle-gated run evacuated
+    this folder's keepers and only a junk shell remains."""
+    try:
+        kids, _partial = await svc.list_all_files(parent_id)
+    except Exception:  # noqa: BLE001
+        return False
+    want = (extract_jav_code(code) or code).upper()
+    return any(
+        not _is_folder(k)
+        and is_video(k.name)
+        and (extract_jav_code(k.name) or "").upper() == want
+        and (k.size or 0) >= JUNK_BYTES
+        for k in kids
+    )
+
+
 async def finalize_code_folder_stream(
     svc,
     code: str,
@@ -318,6 +336,7 @@ async def finalize_code_folder_stream(
             logger.debug("finalize %s: parent lookup failed: %s", code, exc)
 
     entries, folder_depth, partial = await _list_subtree(svc, folder_id)
+    parent_of = {e.id: p for e, p in entries}
     if partial:
         # An incomplete inventory could mis-plan a permanent delete.
         yield {"type": "error",
@@ -335,18 +354,31 @@ async def finalize_code_folder_stream(
                            f"({transferring[0].name}),稍後重試")}
         return
     plan = build_finalize_plan(code, entries, folder_id)
+    flatten = parent_id is not None and parent_id != folder_id
 
     if plan.no_video:
-        yield {"type": "warn", "message": f"{code} 資料夾內沒有影片,略過(不做任何刪除)"}
-        yield {"type": "done", "result": {
-            "kept": 0, "renamed": 0, "moved": 0, "purged": 0, "trashed": 0,
-            "skipped": 0, "errors": 0, "dry_run": dry_run, "no_video": True,
-        }}
-        return
+        if flatten and await _parent_has_code_video(svc, parent_id, code):
+            # Evacuated shell from an earlier settle-gated run: the
+            # videos are confirmed loose at the parent, so everything
+            # still in here is junk. Re-plan as deletion-only and let
+            # the normal (settle-gated) phases below remove it.
+            plan = FinalizePlan(
+                purge_files=[e for e, _p in entries if not _is_folder(e)],
+                purge_folders=[f for f, _d in folder_depth],
+            )
+        else:
+            yield {"type": "warn",
+                   "message": f"{code} 資料夾內沒有影片,略過(不做任何刪除)"}
+            yield {"type": "done", "result": {
+                "kept": 0, "renamed": 0, "moved": 0, "purged": 0,
+                "trashed": 0, "skipped": 0, "settling": 0, "errors": 0,
+                "dry_run": dry_run, "no_video": True,
+            }}
+            return
 
-    flatten = parent_id is not None and parent_id != folder_id
     summary = {"kept": len(plan.keep), "renamed": 0, "moved": 0, "purged": 0,
-               "trashed": 0, "skipped": 0, "errors": 0, "dry_run": dry_run}
+               "trashed": 0, "skipped": 0, "settling": 0, "errors": 0,
+               "dry_run": dry_run}
     renames = [(k, t) for k, t in plan.keep if k.name != t]
     move_ids = ({k.id for k, _t in plan.keep} if flatten
                 else {k.id for k in plan.move_to_root})
@@ -418,6 +450,19 @@ async def finalize_code_folder_stream(
                 if not dry_run:
                     await _retry_transient(
                         lambda k=keeper, d=dest: svc.move_files([k.id], d))
+                    # Every folder the keeper leaves behind (its whole
+                    # ancestor chain up to and including the code
+                    # folder) is now settle-gated against deletion —
+                    # async moves die with a deleted source (live
+                    # losses: DVDMS-129_3, HRV-012_3/_4, MTM-010_2/_3;
+                    # destination sightings proved nothing).
+                    pid = parent_of.get(keeper.id)
+                    while pid:
+                        svc.record_move_source(pid)
+                        if pid == folder_id:
+                            break
+                        pid = parent_of.get(pid)
+                    svc.record_move_source(folder_id)
                 summary["moved"] += 1
                 yield ev("move", target, None)
         except Exception as exc:  # noqa: BLE001
@@ -425,21 +470,6 @@ async def finalize_code_folder_stream(
             yield ev("error", keeper.name, None, reason=str(exc))
             yield {"type": "error",
                    "message": f"影片撤離失敗,中止刪除以免誤刪: {exc}"}
-            yield {"type": "done", "result": summary}
-            return
-
-    # Moves are asynchronous — deleting anything below before every
-    # keeper has LANDED at the destination can take a laggard down with
-    # its folder (live loss: DVDMS-129_3). Positive sighting at the
-    # destination is the only proof of arrival.
-    if flatten and not dry_run and plan.keep:
-        if not await svc.confirm_arrivals(
-            parent_id, {k.id for k, _t in plan.keep}
-        ):
-            summary["errors"] += 1
-            yield {"type": "error",
-                   "message": (f"{code} 影片搬移尚未落地,"
-                               "略過刪除(下輪重試)")}
             yield {"type": "done", "result": summary}
             return
 
@@ -482,6 +512,15 @@ async def finalize_code_folder_stream(
                 summary["purged"] += 1
                 yield ev("purge", folder.name, kind="folder")
                 continue
+            # A folder something was just moved OUT of must wait out the
+            # settle gate — "lists empty" is not proof while an async
+            # move is in flight, and the file dies with the folder.
+            if not svc.move_settled(folder.id):
+                survivors.add(folder.id)
+                summary["settling"] += 1
+                yield ev("skip", folder.name, kind="folder",
+                         reason="move_settling")
+                continue
             kids, _partial = await svc.list_all_files(folder.id)
             leftover = [c for c in kids
                         if c.id in keep_ids
@@ -508,6 +547,13 @@ async def finalize_code_folder_stream(
             if dry_run:
                 summary["purged"] += 1
                 yield ev("purge", folder_leaf, kind="folder")
+            elif not svc.move_settled(folder_id):
+                # Same async-move physics as the sub-folders: the code
+                # folder keepers just left must outlive the settle gate.
+                # A later retry pass takes the emptied shell down.
+                summary["settling"] += 1
+                yield ev("skip", folder_leaf, kind="folder",
+                         reason="move_settling")
             else:
                 kids, _partial = await svc.list_all_files(folder_id)
                 leftover = [c for c in kids
@@ -551,4 +597,9 @@ async def run_finalize(svc, code: str, *, folder_id: str | None = None) -> dict 
         return None
     if summary.get("no_video"):
         return None  # move may not have landed yet — let the archiver retry
+    if summary.get("settling"):
+        # Folder deletions are waiting out the move-settle gate — the
+        # content is already correct, but keep retrying so the shell is
+        # removed once the gate opens.
+        return None
     return summary

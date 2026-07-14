@@ -722,3 +722,84 @@ async def test_finalize_retry_fails_closed_without_presence(tmp_path, monkeypatc
         row = (await s.execute(select(OfflineTaskLog))).scalars().one()
     assert row.finalized is False
     await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# retry-pass hang protection + conditional presence force-refresh
+# ---------------------------------------------------------------------------
+
+async def test_finalize_retry_row_timeout_does_not_freeze_pass(tmp_path, monkeypatch):
+    """One stuck PikPak mutation froze the whole archiver loop live —
+    a hanging row must burn its own timeout and let the rest proceed."""
+    import asyncio
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(task_id="t1", code="AAA-001", name="a",
+                       magnet="magnet:?xt=1",
+                       created_at=now - timedelta(hours=1),
+                       archived=True, archived_at=now, finalized=False),
+        OfflineTaskLog(task_id="t2", code="BBB-002", name="b",
+                       magnet="magnet:?xt=2",
+                       created_at=now - timedelta(hours=1),
+                       archived=True, archived_at=now, finalized=False),
+    ])
+
+    async def run(svc, code, *, folder_id=None):
+        if code == "AAA-001":
+            await asyncio.sleep(30)  # simulated hung mutation
+        return {"errors": 0}
+
+    async def no_active():
+        return set()
+
+    monkeypatch.setattr(fin, "run_finalize", run)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_FINALIZE_ROW_TIMEOUT", 0.05)
+    assert await arch._finalize_retry_pass() == 1
+    async with maker() as s:
+        rows = (await s.execute(select(OfflineTaskLog))).scalars().all()
+    by_code = {r.code: r.finalized for r in rows}
+    assert by_code == {"AAA-001": False, "BBB-002": True}
+    await engine.dispose()
+
+
+async def test_retry_pass_forces_presence_only_when_stale(tmp_path, monkeypatch):
+    """Snapshot newer than every pending archived_at → plain get();
+    older/absent snapshot → get(force=True)."""
+    from app.services.pikpak_presence import presence_index
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    engine, _maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(task_id="t1", code="CCC-003", name="c",
+                       magnet="magnet:?xt=3",
+                       created_at=now - timedelta(hours=1),
+                       archived=True, archived_at=now - timedelta(minutes=10),
+                       finalized=False),
+    ])
+    forces = []
+
+    async def fake_get(*, force=False):
+        forces.append(force)
+        return set()
+
+    async def run(svc, code, *, folder_id=None):
+        return None  # keep the row pending so both passes reach presence
+
+    async def not_flattened(code):
+        return False
+
+    async def no_active():
+        return set()
+
+    monkeypatch.setattr(presence_index, "get", fake_get)
+    monkeypatch.setattr(fin, "run_finalize", run)
+    monkeypatch.setattr(arch, "_already_flattened", not_flattened)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+
+    monkeypatch.setattr(presence_index, "_built_at", now)  # fresh
+    await arch._finalize_retry_pass()
+    monkeypatch.setattr(presence_index, "_built_at", None)  # absent
+    await arch._finalize_retry_pass()
+    assert forces == [False, True]
+    await engine.dispose()

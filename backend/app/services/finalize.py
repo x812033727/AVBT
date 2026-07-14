@@ -445,6 +445,12 @@ async def run_finalize(svc, code: str, *, folder_id: str | None = None) -> dict 
         etype = event.get("type")
         if etype == "error":
             failed = True
+            # The archiver swallows the None return — without this line
+            # a failing finalize is invisible (lived through it on
+            # DVDMS-306: three silent no-ops, zero log evidence).
+            logger.warning("finalize %s: %s", code, event.get("message"))
+        elif etype == "warn":
+            logger.info("finalize %s: %s", code, event.get("message"))
         elif etype == "done":
             summary = event.get("result")
     if summary is None or failed or summary.get("errors"):

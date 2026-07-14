@@ -271,6 +271,9 @@ async def files_for_code(code: str) -> dict:
             continue
 
     if files:
+        # Multi-part sets arrive in presence-path order (often _2 before
+        # _1) — sort by name so the play list reads 部1, 部2, …
+        files.sort(key=lambda f: f.get("name", ""))
         return {
             "ok": True,
             "code": code,

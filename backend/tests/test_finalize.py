@@ -271,20 +271,26 @@ async def test_run_finalize_success_returns_summary():
 # archiver retry pass
 # ---------------------------------------------------------------------------
 
-async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
+async def _retry_db(tmp_path, monkeypatch, rows):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/f.db", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)
-
-    now = datetime.utcnow()
     async with maker() as s:
-        s.add(OfflineTaskLog(code="MIDV-001", magnet="m", archived=True,
-                             archived_at=now, finalized=False))
-        s.add(OfflineTaskLog(code="OLD-999", magnet="m", archived=True,
-                             archived_at=now - timedelta(hours=48), finalized=False))
+        s.add_all(rows)
         await s.commit()
+    return engine, maker
+
+
+async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MIDV-001", magnet="m", archived=True,
+                       archived_at=now, finalized=False),
+        OfflineTaskLog(code="OLD-999", magnet="m", archived=True,
+                       archived_at=now - timedelta(hours=48), finalized=False),
+    ])
 
     calls = []
 
@@ -292,7 +298,11 @@ async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
         calls.append(code)
         return {"errors": 0}
 
+    async def no_active():
+        return set()
+
     monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
     done = await arch._finalize_retry_pass()
     assert done == 1
     assert calls == ["MIDV-001"]  # 48h-old row is outside the window
@@ -301,6 +311,58 @@ async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
         rows = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
     assert rows["MIDV-001"].finalized is True
     assert rows["OLD-999"].finalized is False
+    await engine.dispose()
+
+
+async def test_finalize_retry_skips_still_downloading_task(tmp_path, monkeypatch):
+    """The sweep can flag a wrapper archived while its offline task is
+    still RUNNING — finalize (permanent deletes) must wait it out."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t-run",
+                       archived=True, archived_at=now, finalized=False),
+        OfflineTaskLog(code="MIDV-002", magnet="m", task_id="t-done",
+                       archived=True, archived_at=now, finalized=False),
+    ])
+
+    calls = []
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        calls.append(code)
+        return {"errors": 0}
+
+    async def active():
+        return {"t-run"}
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", active)
+    done = await arch._finalize_retry_pass()
+    assert done == 1
+    assert calls == ["MIDV-002"]  # the RUNNING task's row is deferred
+
+    async with maker() as s:
+        rows = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
+    assert rows["MIDV-001"].finalized is False
+    assert rows["MIDV-002"].finalized is True
+    await engine.dispose()
+
+
+async def test_finalize_retry_fails_closed_without_task_list(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, _maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t1",
+                       archived=True, archived_at=now, finalized=False),
+    ])
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        raise AssertionError("must not finalize when task list is unknown")
+
+    async def boom():
+        raise arch.PikPakError("list_tasks unavailable: down")
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", boom)
+    assert await arch._finalize_retry_pass() == 0
     await engine.dispose()
 
 async def test_skipped_deep_folder_protects_its_ancestors():

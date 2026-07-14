@@ -140,6 +140,11 @@ _MIGRATION_DDL = (
     # Supports an age-based prune of the persistent detail cache.
     "CREATE INDEX IF NOT EXISTS ix_movie_detail_cache_fetched_at "
     "ON movie_detail_cache(fetched_at)",
+    # Post-archive finalize bookkeeping (keep-only-videos purge).
+    # Existing archived rows default to 0 but sit outside the archiver's
+    # 24h retry window, so deploying doesn't trigger a mass purge.
+    "ALTER TABLE offline_task_log ADD COLUMN finalized BOOLEAN DEFAULT 0",
+    "ALTER TABLE offline_task_log ADD COLUMN finalized_at DATETIME",
 )
 
 

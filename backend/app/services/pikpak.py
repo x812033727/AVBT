@@ -602,6 +602,14 @@ class PikPakService:
     async def trash_files(self, ids: list[str]) -> dict:
         return await self._run_batch(ids, lambda c, ch: c.delete_to_trash(ch))
 
+    async def delete_forever(self, ids: list[str]) -> dict:
+        """Permanently delete files — NOT recoverable. Trash first, then
+        purge: that's the sequence the PikPak web UI uses and the one the
+        API honours reliably. Only the finalize junk-purge path (non-video
+        files / ad clips) should ever call this."""
+        await self._run_batch(ids, lambda c, ch: c.delete_to_trash(ch))
+        return await self._run_batch(ids, lambda c, ch: c.delete_forever(ch))
+
     async def move_files(self, ids: list[str], to_parent_id: str) -> dict:
         return await self._run_batch(
             ids, lambda c, ch: c.file_batch_move(ch, to_parent_id)

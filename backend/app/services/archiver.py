@@ -19,7 +19,7 @@ import logging
 import random
 import re
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -833,6 +833,46 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
         await session.commit()
 
 
+# Finalize retry: only rows archived within this window, at most this
+# many per pass. finalize is idempotent so re-runs are cheap.
+_FINALIZE_RETRY_WINDOW = timedelta(hours=24)
+_FINALIZE_RETRY_LIMIT = 5
+
+
+async def _finalize_retry_pass() -> int:
+    """Re-run finalize on recently-archived rows that missed it. Returns
+    how many rows were finalized this pass."""
+    from .finalize import run_finalize  # avoid cycle
+
+    cutoff = datetime.utcnow() - _FINALIZE_RETRY_WINDOW
+    done = 0
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(OfflineTaskLog)
+                .where(
+                    OfflineTaskLog.archived.is_(True),
+                    OfflineTaskLog.finalized.is_(False),
+                    OfflineTaskLog.archived_at > cutoff,
+                    OfflineTaskLog.code != "",
+                )
+                .order_by(OfflineTaskLog.archived_at.desc())
+                .limit(_FINALIZE_RETRY_LIMIT)
+            )
+        ).scalars().all()
+        for row in rows:
+            try:
+                if await run_finalize(pikpak_service, row.code):
+                    row.finalized = True
+                    row.finalized_at = datetime.utcnow()
+                    done += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("finalize retry %s failed: %s", row.code, exc)
+        if done:
+            await session.commit()
+    return done
+
+
 async def archive_once() -> int:
     """Run one archive pass. Returns the number of files moved."""
     state.last_error = ""
@@ -861,6 +901,15 @@ async def archive_once() -> int:
         except Exception as exc:  # noqa: BLE001
             state.last_error = f"sweep_legacy failed: {exc}"
             logger.warning("sweep_legacy failed: %s", exc)
+
+    # Retry finalize on recently-archived rows whose junk purge didn't
+    # complete (e.g. the async PikPak move hadn't landed when the inline
+    # attempt ran). Bounded + windowed so a permanently-odd folder can't
+    # hammer PikPak forever; the manual detail-page button covers those.
+    try:
+        await _finalize_retry_pass()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("finalize retry pass failed: %s", exc)
 
     # Cheap DB peek: if nothing has been submitted-but-not-archived
     # since the last pass, skip the PikPak list_tasks round-trip
@@ -922,6 +971,21 @@ async def archive_once() -> int:
                 row.archived = True
                 row.archived_at = datetime.utcnow()
                 moved += 1
+                # Best-effort finalize: keep only canonical videos in the
+                # 番號 folder, purge junk. The PikPak move above is async
+                # server-side, so the wrapper may not have landed yet —
+                # failure just leaves finalized=False and the bounded
+                # retry pass (or the manual button) picks it up.
+                try:
+                    from .finalize import run_finalize  # avoid cycle
+
+                    if await run_finalize(
+                        pikpak_service, row.code, folder_id=target_id
+                    ):
+                        row.finalized = True
+                        row.finalized_at = datetime.utcnow()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("finalize %s failed: %s", row.code, exc)
                 notifications.append(
                     f"📦 已歸檔 `{row.code}` ({row.name or row.file_id}) → `{target_path}`"
                 )

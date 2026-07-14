@@ -431,6 +431,14 @@ class ReorganizeOptions(BaseModel):
     rehome_kinds: bool = False
 
 
+class FinalizeOptions(BaseModel):
+    """Per-code post-download finalize: keep only canonical videos in the
+    番號 archive folder, permanently purge junk."""
+
+    code: str
+    dry_run: bool = True
+
+
 # ---------- pCloud ----------
 
 class PCloudLogin(BaseModel):

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from ..database import SessionLocal
 from ..models import OfflineTaskLog
 from ..schemas import (
+    FinalizeOptions,
     OfflineSubmit,
     PikPakFile,
     PikPakLogin,
@@ -26,6 +27,7 @@ from ..schemas import (
 from ..services import archiver, episode_finder
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
+from ..services.finalize import finalize_code_folder_stream as finalize_stream_svc
 from ..services.jav_code import extract_jav_code, is_video
 from ..services.pikpak import PikPakError, pikpak_service
 from ..services.pikpak_presence import presence_index
@@ -405,6 +407,32 @@ async def cleanup_folder_stream(payload: dict = Body(...)):
                 # leave the stream.
                 if str(event.get("type", "")).startswith("_"):
                     continue
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@router.post("/finalize/stream")
+async def finalize_code_stream(opts: FinalizeOptions):
+    """Stream finalize events (NDJSON) for one 番號's archive folder:
+    keep only the substantial videos renamed to ``CODE.ext`` /
+    ``CODE_N.ext``, permanently purge ad clips / non-video junk /
+    emptied wrappers, trash (recoverable) resolution duplicates.
+
+    Body: ``{code: str, dry_run: bool=True}``.
+    Events: ``start`` | ``progress`` | ``warn`` | ``done`` | ``error``.
+    """
+    code = opts.code.strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="code 不可空白")
+
+    async def gen():
+        try:
+            async for event in finalize_stream_svc(
+                pikpak_service, code, dry_run=opts.dry_run
+            ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"

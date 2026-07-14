@@ -171,6 +171,15 @@ class OfflineTaskLog(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Post-archive finalize (keep only canonical videos, purge junk)
+    # completed. archived=True + finalized=False → the archiver retries
+    # within a 24h window; stragglers are covered by the manual button.
+    # server_default keeps fresh create_all in lockstep with the ALTER
+    # TABLE migration's DEFAULT 0 (raw inserts may omit the column).
+    finalized: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Snapshot of the tracked listing this code belonged to at enqueue
     # time. Lets the archiver pick the right kind/name folder without
     # re-fetching JavBus. Empty for manual submits — those fall back to

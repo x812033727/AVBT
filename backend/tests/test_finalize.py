@@ -529,3 +529,97 @@ def test_recently_created_helper():
     assert recently_created([old, none]) is False
     assert recently_created([bad]) is True  # unparseable → fail closed
     assert recently_created([]) is False
+
+
+# ---------------------------------------------------------------------------
+# presence fallback — the sweep moves wrappers wholesale, keeping BT names
+# ---------------------------------------------------------------------------
+
+def _patch_presence(monkeypatch, paths):
+    from app.services.pikpak_presence import presence_index
+    monkeypatch.setattr(presence_index, "paths_for", lambda code: list(paths))
+
+
+async def test_stream_resolves_bt_named_wrapper_via_presence(monkeypatch):
+    """Canonical path misses ([Thz.la]dvdms-129 ≠ DVDMS-129) — the stream
+    must find the wrapper through presence, finalize it AND rename the
+    folder itself to the canonical leaf."""
+    wrapper_path = "AVBT/製作商/ディープス/MM便/[Thz.la]dvdms-129"
+    svc = FakeSvc({
+        "series": [_folder("[Thz.la]dvdms-129", "wrap")],
+        "wrap": [
+            _file("[Thz.la]dvdms-129cd1.mp4", "v1", 4000),
+            _file("[Thz.la]dvdms-129cd2.mp4", "v2", 3000),
+            _file("最新網址.txt", "txt", 0),
+        ],
+    }, path_ids={wrapper_path: "wrap"})
+
+    async def fake_resolve(code):
+        return "AVBT/製作商/ディープス/MM便/DVDMS-129"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    _patch_presence(monkeypatch, [wrapper_path])
+
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "DVDMS-129", dry_run=False)]
+    done = events[-1]
+    assert done["type"] == "done" and done["result"]["errors"] == 0
+    assert ("wrap", "DVDMS-129") in svc.renamed        # folder normalised
+    assert ("v1", "DVDMS-129_1.mp4") in svc.renamed
+    assert ("v2", "DVDMS-129_2.mp4") in svc.renamed
+    assert "txt" in svc.purged
+
+
+async def test_stream_ambiguous_presence_folders_abort(monkeypatch):
+    """Two candidate per-code folders → refuse to guess, no mutations."""
+    p1, p2 = "AVBT/A/[Thz]dvdms-129", "AVBT/B/dvdms-129"
+    svc = FakeSvc({
+        "a": [_folder("[Thz]dvdms-129", "w1")],
+        "b": [_folder("dvdms-129", "w2")],
+    }, path_ids={p1: "w1", p2: "w2"})
+
+    async def fake_resolve(code):
+        return "AVBT/X/DVDMS-129"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    _patch_presence(monkeypatch, [p1, p2])
+
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "DVDMS-129", dry_run=False)]
+    assert events[0]["type"] == "error"
+    assert not svc.moved and not svc.renamed and not svc.purged and not svc.trashed
+
+
+async def test_flattened_check_sees_bt_named_wrapper(monkeypatch):
+    """A wrapper folder with a non-canonical name is still a per-code
+    folder — _already_flattened must NOT stamp the row finalized."""
+    wrapper_path = "AVBT/製作商/SOD/系/sdmm-053@bt"
+    fake_svc = FakeSvc({}, path_ids={wrapper_path: "wrap"})
+
+    async def fake_resolve(code):
+        return "AVBT/製作商/SOD/系/SDMM-053"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    monkeypatch.setattr(arch, "pikpak_service", fake_svc)
+    _patch_presence(monkeypatch, [wrapper_path])
+    assert await arch._already_flattened("SDMM-053") is False
+
+
+async def test_flattened_check_true_for_loose_video(monkeypatch):
+    """The genuinely-flattened layout (loose CODE.ext in the series
+    folder, no per-code folder anywhere) still counts as flattened."""
+    loose = "AVBT/製作商/SOD/系/SDMM-053.mp4"
+    fake_svc = FakeSvc({}, path_ids={})
+
+    async def fake_resolve(code):
+        return "AVBT/製作商/SOD/系/SDMM-053"
+
+    async def fake_files(code):
+        return {"ok": True, "files": [{"name": "SDMM-053.mp4"}]}
+
+    import app.services.video_count as vc
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    monkeypatch.setattr(arch, "pikpak_service", fake_svc)
+    monkeypatch.setattr(vc, "files_for_code", fake_files)
+    _patch_presence(monkeypatch, [loose])
+    assert await arch._already_flattened("SDMM-053") is True

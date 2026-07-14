@@ -15,8 +15,11 @@ Deletion is tiered by how reversible a mistake would be:
 - a same-canonical *substantial* video that loses to a bigger sibling
   (resolution re-download) → **trash only** (recoverable ~30 days) —
   that's the one call a heuristic can plausibly get wrong;
-- emptied sub-folders → permanently deleted, but only after a fresh
-  re-list proves no keeper is left inside;
+- emptied sub-folders → **trash only**, and only after a fresh re-list
+  proves no keeper is left inside — a re-list cannot prove a slow
+  offline task won't materialise one more disc in there hours later
+  (in-flight files are invisible to listings; live losses through the
+  old permanent delete: DVDMS-172_2, SDMU-845_6);
 - the 番號 folder itself and the last remaining video are never touched;
 - a tree with **zero videos** aborts without any destructive action
   (the async PikPak move may simply not have landed yet — the archiver
@@ -65,7 +68,7 @@ class FinalizePlan:
     move_to_root: list[Any] = field(default_factory=list)       # nested keepers
     purge_files: list[Any] = field(default_factory=list)        # permanent delete
     trash_files: list[Any] = field(default_factory=list)        # recoverable trash
-    purge_folders: list[Any] = field(default_factory=list)      # verified-empty delete
+    purge_folders: list[Any] = field(default_factory=list)      # verified-empty → trash
     skipped_all_clean: bool = False                             # already canonical
     no_video: bool = False                                      # abort: nothing to keep
 
@@ -496,11 +499,19 @@ async def finalize_code_folder_stream(
         return
 
     # c. Sub-folders, deepest first — re-list to prove no keeper (or
-    #    anything unplanned) is still inside before the permanent delete.
-    #    ``survivors`` tracks descendants that were skipped or failed:
-    #    a planned-gone folder that in fact survived must keep every
-    #    ancestor alive too, otherwise purging the ancestor would take
-    #    the survivor (and whatever made us skip it) down with it.
+    #    anything unplanned) is still inside before removal. ``survivors``
+    #    tracks descendants that were skipped or failed: a planned-gone
+    #    folder that in fact survived must keep every ancestor alive too,
+    #    otherwise removing the ancestor would take the survivor (and
+    #    whatever made us skip it) down with it.
+    #
+    #    Emptied shells go to the TRASH, never delete_forever: a slow
+    #    offline task can keep saving a disc for hours after its siblings
+    #    finished, and that in-flight file is INVISIBLE to every listing
+    #    (PikPak filters phase != COMPLETE), so "re-lists empty" cannot
+    #    prove nothing more will materialise inside. A late disc that
+    #    lands in a trashed shell is recoverable; in a purged one it is
+    #    gone (live losses: DVDMS-172_2, SDMU-845_6).
     keep_ids = {k.id for k, _t in plan.keep}
     planned_gone = ({e.id for e in plan.purge_files}
                     | {e.id for e in plan.trash_files}
@@ -509,8 +520,9 @@ async def finalize_code_folder_stream(
     for folder, _depth in sorted(folder_depth, key=lambda fd: -fd[1]):
         try:
             if dry_run:
-                summary["purged"] += 1
-                yield ev("purge", folder.name, kind="folder")
+                summary["trashed"] += 1
+                yield ev("trash", folder.name, kind="folder",
+                         reason="emptied_shell")
                 continue
             # A folder something was just moved OUT of must wait out the
             # settle gate — "lists empty" is not proof while an async
@@ -531,9 +543,10 @@ async def finalize_code_folder_stream(
                 summary["skipped"] += 1
                 yield ev("skip", folder.name, kind="folder", reason="not_empty")
                 continue
-            await svc.delete_forever([folder.id])
-            summary["purged"] += 1
-            yield ev("purge", folder.name, kind="folder")
+            await svc.trash_files([folder.id])
+            summary["trashed"] += 1
+            yield ev("trash", folder.name, kind="folder",
+                     reason="emptied_shell")
         except Exception as exc:  # noqa: BLE001
             survivors.add(folder.id)
             summary["errors"] += 1
@@ -541,12 +554,14 @@ async def finalize_code_folder_stream(
 
     # d. Flatten epilogue: the per-code folder itself. Keepers are
     #    confirmed at the parent; anything the re-list still shows that
-    #    we didn't plan away blocks the delete (survivors included).
+    #    we didn't plan away blocks the removal (survivors included).
+    #    Same trash-not-purge rule as the sub-folders above.
     if flatten:
         try:
             if dry_run:
-                summary["purged"] += 1
-                yield ev("purge", folder_leaf, kind="folder")
+                summary["trashed"] += 1
+                yield ev("trash", folder_leaf, kind="folder",
+                         reason="emptied_shell")
             elif not svc.move_settled(folder_id):
                 # Same async-move physics as the sub-folders: the code
                 # folder keepers just left must outlive the settle gate.
@@ -564,9 +579,10 @@ async def finalize_code_folder_stream(
                     yield ev("skip", folder_leaf, kind="folder",
                              reason="not_empty")
                 else:
-                    await svc.delete_forever([folder_id])
-                    summary["purged"] += 1
-                    yield ev("purge", folder_leaf, kind="folder")
+                    await svc.trash_files([folder_id])
+                    summary["trashed"] += 1
+                    yield ev("trash", folder_leaf, kind="folder",
+                             reason="emptied_shell")
         except Exception as exc:  # noqa: BLE001
             summary["errors"] += 1
             yield ev("error", folder_leaf, kind="folder", reason=str(exc))

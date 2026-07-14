@@ -31,6 +31,7 @@ import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
+from typing import Any
 
 from sqlalchemy import select
 
@@ -49,6 +50,7 @@ from .pikpak import (
     _uniquify_target,
     pikpak_service,
 )
+from .rename_plan import _canonical_video_name, _part_marker_index
 
 logger = logging.getLogger(__name__)
 
@@ -448,26 +450,75 @@ async def _resolve_folder_winner(
                         "reason": str(exc)}
         return {"action": "rename", "target": canonical_folder, "reason": None}
 
-    # Pick the largest video at whatever depth we found one.
-    main_videos.sort(key=lambda v: int(v.size or 0), reverse=True)
-    keeper = main_videos[0]
-    # Anything else among the wrapper's *direct* children gets trashed
-    # individually; the nested folder (if keeper came from inside one)
-    # gets cleared by trashing the wrapper at the end.
-    trash_ids = [i.id for i in inner if i.id != keeper.id]
-    canonical_file = f"{canonical_folder}{ext_of(keeper.name)}"
+    # A file PikPak is still writing must never be moved/renamed (kills
+    # the transfer) nor trashed as a "loser" (its final size is
+    # unknown). Defer the whole wrapper to a later pass.
+    if any(
+        getattr(v, "phase", "") not in ("", "PHASE_TYPE_COMPLETE")
+        for v in inner + main_videos
+    ):
+        return {"action": "skip", "target": canonical_folder,
+                "reason": "transferring"}
+
+    # Keep every genuine part, not just the largest video. Real 2-disc
+    # box sets deliver two same-canonical substantial files
+    # (idbd-939-1/-2) — the old single-winner rule trashed disc 1 as a
+    # "duplicate". Same grouping rule as cleanup_folder_stream: a
+    # same-canonical group where ALL members are ≥500MB is a part set;
+    # otherwise only the biggest of the group survives.
+    PART_MIN = 500 * 1024 * 1024
+    groups: dict[str, list] = {}
+    for v in main_videos:
+        groups.setdefault(_canonical_video_name(v.name), []).append(v)
+    keepers: list[tuple[str, Any]] = []
+    for canon, vids in sorted(groups.items()):
+        if len(vids) >= 2 and all((v.size or 0) >= PART_MIN for v in vids):
+            # Part order comes from the marker (-1/-2/CD2/B), not size —
+            # disc 2 is routinely a hair larger than disc 1.
+            vids.sort(key=lambda v: (
+                _part_marker_index(v.name, canon), v.name))
+            keepers.extend((canon, v) for v in vids)
+        else:
+            vids.sort(key=lambda v: int(v.size or 0), reverse=True)
+            keepers.append((canon, vids[0]))
+
+    # Naming mirrors cleanup_folder_stream: single keeper → the code
+    # itself; same-canonical parts → <canon>_N; distinct canonicals
+    # (CD1/CD2 as A/B codes) keep their own canonical.
+    canon_group_size: dict[str, int] = {}
+    for canon, _v in keepers:
+        canon_group_size[canon] = canon_group_size.get(canon, 0) + 1
+    canon_seq: dict[str, int] = {}
+    taken: set[str] = set()
+    plan: list[tuple[Any, str]] = []
+    for canon, video in keepers:
+        if len(keepers) == 1:
+            target = f"{canonical_folder}{ext_of(video.name)}"
+        elif canon_group_size[canon] > 1:
+            canon_seq[canon] = canon_seq.get(canon, 0) + 1
+            target = f"{canon}_{canon_seq[canon]}{ext_of(video.name)}"
+        else:
+            target = f"{canon}{ext_of(video.name)}"
+        target = _uniquify_target(target, taken)
+        taken.add(target)
+        plan.append((video, target))
+
+    keeper_ids = {v.id for _c, v in keepers}
+    trash_ids = [i.id for i in inner if i.id not in keeper_ids]
+    canonical_file = plan[0][1]
 
     if not dry_run:
         try:
-            await pikpak_service.move_files([keeper.id], parent_id)
-            if keeper.name != canonical_file:
-                try:
-                    await pikpak_service.rename_file(keeper.id, canonical_file)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "rename keeper %s → %s failed: %s",
-                        keeper.name, canonical_file, exc,
-                    )
+            for video, target in plan:
+                await pikpak_service.move_files([video.id], parent_id)
+                if video.name != target:
+                    try:
+                        await pikpak_service.rename_file(video.id, target)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "rename keeper %s → %s failed: %s",
+                            video.name, target, exc,
+                        )
             if trash_ids:
                 try:
                     await pikpak_service.trash_files(trash_ids)
@@ -484,10 +535,13 @@ async def _resolve_folder_winner(
                     "reason": f"flatten failed: {exc}"}
 
     extras = len(trash_ids)
-    reason = (
-        f"取出主檔，清掉 {extras} 個垃圾/額外檔" if extras else "取出主檔"
-    )
-    return {"action": "flatten", "target": canonical_file, "reason": reason}
+    bits = []
+    if len(plan) > 1:
+        bits.append(f"分集 {len(plan)} 部")
+    bits.append(f"取出主檔，清掉 {extras} 個垃圾/額外檔" if extras else "取出主檔")
+    return {"action": "flatten",
+            "target": "、".join(t for _v, t in plan),
+            "reason": "；".join(bits)}
 
 
 async def _phase2_cleanup_target(

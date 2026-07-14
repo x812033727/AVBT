@@ -535,6 +535,7 @@ class PikPakService:
             parent_id=f.get("parent_id"),
             created_time=f.get("created_time"),
             thumbnail_link=f.get("thumbnail_link"),
+            phase=f.get("phase", "") or "",
         )
 
     async def list_all_files(
@@ -758,6 +759,13 @@ class PikPakService:
                         )
                     )
             elif is_video(c.name) and (c.size is None or c.size >= junk_bytes):
+                top_videos.append(c)
+                total_count += 1
+            elif getattr(c, "phase", "") not in ("", "PHASE_TYPE_COMPLETE"):
+                # Still being written by an offline task — its final size
+                # is unknown, so count it as a main video. That blocks the
+                # single-video flatten (which would trash the wrapper with
+                # the half-transferred file inside) until the task lands.
                 top_videos.append(c)
                 total_count += 1
         if sub_jobs:

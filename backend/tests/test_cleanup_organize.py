@@ -309,3 +309,17 @@ async def test_depth_cap_stops_descent(tmp_path, monkeypatch):
     assert (["deepvid"], svc._path_ids.get("x")) not in svc.moved
     assert all("deepvid" not in ids for ids, _p in svc.moved)
     await engine.dispose()
+
+
+async def test_collect_main_videos_counts_transferring_file_as_main():
+    """A file PikPak is still writing has an unknown final size — it must
+    count as a main video so the single-video flatten (which trashes the
+    wrapper around it) is blocked until the task completes."""
+    partial = SimpleNamespace(name="IDBD-924-2.mp4", id="d2",
+                              kind="drive#file", size=120 * MB,
+                              phase="PHASE_TYPE_RUNNING")
+    done = _file("IDBD-924-1.mp4", "d1", 10000)
+    svc = FakeSvc({}, {"wrap": [done, partial]})
+    top, total = await svc._collect_main_videos("wrap", 300 * MB)
+    assert total == 2  # blocks flatten
+    assert {v.id for v in top} == {"d1", "d2"}

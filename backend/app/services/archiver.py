@@ -892,11 +892,41 @@ async def _finalize_retry_pass() -> int:
                     row.finalized = True
                     row.finalized_at = datetime.utcnow()
                     done += 1
+                elif await _already_flattened(row.code):
+                    # Sweep-archived rows use the flattened layout —
+                    # the video sits directly in the 系列 folder, so
+                    # there is no per-code folder to finalize. The
+                    # sweep's own cleanup already normalised it.
+                    row.finalized = True
+                    row.finalized_at = datetime.utcnow()
+                    done += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("finalize retry %s failed: %s", row.code, exc)
         if done:
             await session.commit()
     return done
+
+
+async def _already_flattened(code: str) -> bool:
+    """True when ``code``'s video exists on PikPak even though it has no
+    per-code archive folder — the sweep's flatten put ``CODE.ext``
+    straight into the 製作商/<studio>/<系列> folder. Nothing per-code is
+    left for finalize to do, so the row can be marked finalized instead
+    of spinning in the retry window."""
+    from .video_count import files_for_code  # avoid cycle
+
+    try:
+        # Only the missing-folder case qualifies. When the per-code
+        # folder exists, run_finalize failed for a real reason (junk
+        # still inside, move error, …) and must keep retrying.
+        path = await _resolve_archive_path_by_code(code)
+        if await pikpak_service.lookup_folder_id(path):
+            return False
+        result = await files_for_code(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("flattened check %s failed: %s", code, exc)
+        return False
+    return bool(result.get("ok")) and bool(result.get("files"))
 
 
 async def archive_once() -> int:

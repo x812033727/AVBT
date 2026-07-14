@@ -148,13 +148,27 @@ async def count_for_code(code: str) -> dict:
     best_names: list[str] = []
     best_count = -1
     any_partial = False
+    # Loose video files grouped by their parent folder: the sweep's
+    # flattened layout puts CODE_1.mp4 / CODE_2.mp4 straight into the
+    # 系列 folder, and those are PARTS of one work (they sum) — only
+    # copies living in *different* folders are duplicate homes that
+    # compete via max() below.
+    loose_by_parent: dict[str, list[str]] = {}
+    folder_paths: list[str] = []
     for path in paths:
         leaf = path.rsplit("/", 1)[-1]
         if is_video(leaf):
-            entries.append({"path": path, "video_count": 1})
-            if 1 > best_count:
-                best_count, best_names = 1, [leaf]
-            continue
+            parent = path.rsplit("/", 1)[0]
+            loose_by_parent.setdefault(parent, []).append(leaf)
+        else:
+            folder_paths.append(path)
+    for parent, leaves in loose_by_parent.items():
+        leaves = sorted(leaves)
+        entry_path = f"{parent}/{leaves[0]}" if len(leaves) == 1 else parent
+        entries.append({"path": entry_path, "video_count": len(leaves)})
+        if len(leaves) > best_count:
+            best_count, best_names = len(leaves), leaves
+    for path in folder_paths:
         try:
             folder_id = await pikpak_service.lookup_folder_id(path)
         except Exception as exc:  # noqa: BLE001 — stale presence path

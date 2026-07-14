@@ -623,3 +623,41 @@ async def test_flattened_check_true_for_loose_video(monkeypatch):
     monkeypatch.setattr(vc, "files_for_code", fake_files)
     _patch_presence(monkeypatch, [loose])
     assert await arch._already_flattened("SDMM-053") is True
+
+
+# ---------------------------------------------------------------------------
+# separator-prefixed letter markers (SDMM-053_A / TRE-143-A) are disc parts
+# ---------------------------------------------------------------------------
+
+def test_letter_parts_with_separator_become_numeric():
+    """4 substantial files CODE_A.._D are one boxset — rename to _1.._4
+    in letter order (observed live on SDMM-053: they used to be four
+    'distinct canonicals' and kept their letters forever)."""
+    files = [_file(f"SDMM-053_{ch}.mp4", ch, 1800) for ch in "ABCD"]
+    plan = build_finalize_plan(
+        "SDMM-053", [(f, "root") for f in files], "root")
+    assert not plan.skipped_all_clean
+    targets = {k.id: t for k, t in plan.keep}
+    assert targets == {"A": "SDMM-053_1.mp4", "B": "SDMM-053_2.mp4",
+                       "C": "SDMM-053_3.mp4", "D": "SDMM-053_4.mp4"}
+
+
+def test_dash_letter_parts_also_group():
+    files = [_file(f"TRE-999-{ch}.mp4", ch, 2000) for ch in "AB"]
+    plan = build_finalize_plan("TRE-999", [(f, "root") for f in files], "root")
+    targets = {k.id: t for k, t in plan.keep}
+    assert targets == {"A": "TRE-999_1.mp4", "B": "TRE-999_2.mp4"}
+
+
+def test_lonely_separated_letter_is_stripped():
+    f = _file("MIDV-001_A.mp4", "v", 2048)
+    plan = build_finalize_plan("MIDV-001", [(f, "root")], "root")
+    assert [(k.id, t) for k, t in plan.keep] == [("v", "MIDV-001.mp4")]
+
+
+def test_codec_token_is_not_a_part_letter():
+    """`x264`-style tokens must not be eaten as a variant letter — the
+    lookahead requires the letter to stand alone."""
+    from app.services.rename_plan import _canonical_video_name
+    assert (_canonical_video_name("ABC-123 x264.mp4")
+            != _canonical_video_name("ABC-123.mp4"))

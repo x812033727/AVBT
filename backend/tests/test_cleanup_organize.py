@@ -359,3 +359,43 @@ async def test_cleanup_skips_wrapper_with_transferring_video(tmp_path, monkeypat
     assert skips, f"expected a transferring skip, got {events}"
     assert not svc.moved and not svc.renamed and not svc.trashed
     await engine.dispose()
+
+
+async def test_flatten_letter_discs_ordered_by_marker_not_size(
+    tmp_path, monkeypatch
+):
+    """A/B/C/D disc letters decide the ``_N`` slots, not file size.
+
+    Live case (SKMJ-058): discs A/B/C/D at 1.26/1.11/1.10/1.17 GiB were
+    numbered ``_1/_3/_4/_2`` because the flatten assigned slots in
+    size-descending order."""
+    engine = await _db(
+        tmp_path, monkeypatch,
+        [_cache_row("SKMJ-058", ("赤面女子", "s1"), ("童貞筆おろし", "se1"))],
+    )
+    path_ids = {
+        "AVBT": "root", "AVBT/已完成": "legacy", "AVBT/製作商": "kStudio",
+        "AVBT/製作商/赤面女子/童貞筆おろし": "series",
+    }
+    graph = {
+        "kStudio": [_folder("赤面女子", "studio")],
+        "studio": [_folder("童貞筆おろし", "series")],
+        "series": [_folder("SKMJ-058", "wrap")],
+        "wrap": [
+            _file("SKMJ-058D.mp4", "d", size_mb=1198),
+            _file("SKMJ-058C.mp4", "c", size_mb=1126),
+            _file("SKMJ-058B.mp4", "b", size_mb=1136),
+            _file("SKMJ-058A.mp4", "a", size_mb=1290),
+        ],
+    }
+    svc = FakeSvc(path_ids, graph)
+    events = await _run(svc, "kStudio", dry_run=False)
+
+    flat = [e for e in events if e.get("action") == "flatten"]
+    assert flat, f"no flatten; actions={[e.get('action') for e in events]}"
+    renames = dict(svc.renamed)
+    assert renames.get("a") == "SKMJ-058_1.mp4"
+    assert renames.get("b") == "SKMJ-058_2.mp4"
+    assert renames.get("c") == "SKMJ-058_3.mp4"
+    assert renames.get("d") == "SKMJ-058_4.mp4"
+    await engine.dispose()

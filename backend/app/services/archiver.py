@@ -932,9 +932,23 @@ async def _active_task_ids() -> set[str]:
     which can happen while PikPak is still writing into it. Finalize
     permanently deletes files, so it must never run against a folder
     whose offline task hasn't finished; a half-downloaded second video
-    can look exactly like a sub-300MB ad clip."""
+    can look exactly like a sub-300MB ad clip.
+
+    PENDING must be asked for explicitly: pikpakapi's default filter is
+    RUNNING+ERROR, so tasks queued behind PikPak's 100-task concurrency
+    cap were invisible here — the retry pass then finalized their rows
+    against the pre-upgrade files, and the reaper closed them as "task
+    gone" while they were merely waiting in a 53-deep PENDING queue
+    (live: MMGO-005, closed twice before its replacement ever ran)."""
     try:
-        tasks = await pikpak_service.list_tasks(size=200)
+        tasks = await pikpak_service.list_tasks(
+            size=1000,
+            phases=[
+                "PHASE_TYPE_RUNNING",
+                "PHASE_TYPE_PENDING",
+                "PHASE_TYPE_ERROR",
+            ],
+        )
     except Exception as exc:  # noqa: BLE001
         # Fail closed: with no task list we can't prove anything is
         # complete, so the caller skips this pass entirely.

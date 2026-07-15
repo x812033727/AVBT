@@ -528,24 +528,44 @@ class PikPakService:
             created_time=task.get("created_time"),
         )
 
-    async def list_tasks(self, size: int = 100) -> list[PikPakTask]:
-        resp = await self._call(lambda c: c.offline_list(size=size))
-        tasks_raw = resp.get("tasks", []) if isinstance(resp, dict) else []
+    async def list_tasks(
+        self, size: int = 100, phases: list[str] | None = None
+    ) -> list[PikPakTask]:
+        """List offline tasks, following pagination up to ``size`` total.
+
+        PikPak caps each page at 100 regardless of the requested limit,
+        and pikpakapi's default phase filter is RUNNING+ERROR — queued
+        PENDING tasks are invisible unless asked for explicitly. Pass
+        ``phases`` to widen the filter (e.g. include PHASE_TYPE_PENDING).
+        """
         tasks: list[PikPakTask] = []
-        for t in tasks_raw:
-            tasks.append(
-                PikPakTask(
-                    id=t.get("id", ""),
-                    name=t.get("name", ""),
-                    phase=t.get("phase", ""),
-                    progress=int(t.get("progress") or 0),
-                    file_id=t.get("file_id"),
-                    file_size=int(t.get("file_size") or 0),
-                    message=t.get("message"),
-                    created_time=t.get("created_time"),
+        page_token: str | None = None
+        while len(tasks) < size:
+            resp = await self._call(
+                lambda c, tk=page_token: c.offline_list(
+                    size=size, next_page_token=tk, phase=phases
                 )
             )
-        return tasks
+            tasks_raw = resp.get("tasks", []) if isinstance(resp, dict) else []
+            if not tasks_raw:
+                break
+            for t in tasks_raw:
+                tasks.append(
+                    PikPakTask(
+                        id=t.get("id", ""),
+                        name=t.get("name", ""),
+                        phase=t.get("phase", ""),
+                        progress=int(t.get("progress") or 0),
+                        file_id=t.get("file_id"),
+                        file_size=int(t.get("file_size") or 0),
+                        message=t.get("message"),
+                        created_time=t.get("created_time"),
+                    )
+                )
+            page_token = resp.get("next_page_token") or None
+            if not page_token:
+                break
+        return tasks[:size]
 
     async def retry_task(self, task_id: str) -> dict:
         return await self._call(lambda c: c.offline_task_retry(task_id))

@@ -197,7 +197,9 @@ def _part_marker_index(name: str, code: str) -> int:
     ``name``: ``CD<n>`` / ``HHB<n>`` (old-scene disc tag) / ``-<n>`` /
     ``_<n>`` / lone variant letter (``A``=1, ``B``=2 …). Returns 0 when
     no marker is found, so the bare-name file sorts first and becomes
-    ``_1``. Composite ``CD<n>-<letter>`` markers return the disc number;
+    ``_1``. ``-<n>``/``_<n>`` cap at two digits and must not be glued to
+    more alphanumerics, so a resolution tail (``-1080p``, ``-4K``) stays
+    unmarked instead of claiming part slot 1080. Composite ``CD<n>-<letter>`` markers return the disc number;
     same-disc sub-parts tie-break alphabetically via the caller's name
     sort and claim consecutive slots."""
     if not code:
@@ -210,7 +212,9 @@ def _part_marker_index(name: str, code: str) -> int:
     pattern = re.compile(
         rf"{_flex_code_re(code)}"
         r"(?:[. _-]?PART(?P<part>\d+)_?"
-        r"|CD(?P<cd>\d+)|HHB(?P<hhb>\d+)|-(?P<dash>\d+)|_(?P<us>\d+)"
+        r"|CD(?P<cd>\d+)|HHB(?P<hhb>\d+)"
+        r"|-(?P<dash>\d{1,2})(?![A-Za-z0-9])"
+        r"|_(?P<us>\d{1,2})(?![A-Za-z0-9])"
         r"|[-_ ]?(?P<letter>[A-Z])(?![A-Za-z0-9]))",
         re.IGNORECASE,
     )

@@ -96,14 +96,32 @@ def _canonical_video_name(name: str) -> str:
     # Iteratively strip BT-site wrappers + resolution/dup suffixes until
     # nothing changes. Multiple passes catch combinations like
     # ``[88K.ME]TRE-112 (2) HD``.
+    site_labels: set[str] = set()
     prev = None
     while prev != stem:
         prev = stem
-        stem = _BT_PREFIX_BRACKET_RE.sub("", stem)
-        stem = _BT_PREFIX_AT_RE.sub("", stem)
+        m = _BT_PREFIX_BRACKET_RE.match(stem)
+        if m:
+            site_labels.add(m.group(0).strip(" []").split(".")[0].upper())
+            stem = stem[m.end():]
+        m = _BT_PREFIX_AT_RE.match(stem)
+        if m:
+            for part in m.group(0).rstrip("@").split("@"):
+                site_labels.add(part.split(".")[0].upper())
+            stem = stem[m.end():]
         stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
         stem = _BT_SUFFIX_WWW_RE.sub("", stem)
         stem = _GLUED_EXT_RE.sub("", stem)
+        # Release-group tag glued on the tail that mirrors a site prefix
+        # stripped from THIS name (``gg5.co@435MFC-248-C_GG5``): it hides
+        # the code from the end-anchored match below exactly like the
+        # WWW.* tails. An unmatched tail token could be real title text
+        # and stays; single-letter labels are skipped so a variant/disc
+        # letter can never be mistaken for a site tag.
+        for label in site_labels:
+            if len(label) >= 2:
+                stem = re.sub(rf"[-_ ]{re.escape(label)}$", "", stem,
+                              flags=re.IGNORECASE)
         # ``DVDMS-445A..mp4``-style doubled dots leave a trailing ``.``
         # after the extension strip; it hides the code from the
         # end-anchored match below and never carries meaning by itself.

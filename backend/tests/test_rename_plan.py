@@ -201,3 +201,23 @@ def test_plan_www_suffixed_single_file_renamed():
     kids = [_f("OAE-314(4K)-WWW.52IV.NET.mkv", 26 * GB)]
     plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
     assert plan == {"OAE-314(4K)-WWW.52IV.NET.mkv": "OAE-314.mkv"}
+
+
+def test_canonical_site_tag_tail():
+    # Live case 2026-07-15: ``gg5.co@435MFC-248-C_GG5.mp4`` — the
+    # release-group tag mirrors the stripped ``gg5.co@`` prefix and
+    # blocks the end-anchored code match, so the singleton rename kept
+    # the junk name. The tag is only stripped when the SAME label was
+    # seen as a site prefix on this name.
+    assert _canonical_video_name("gg5.co@435MFC-248-C_GG5.mp4") == "MFC-248"
+    assert _canonical_video_name("[88Q.ME]GDHH-134_88Q.mp4") == "GDHH-134"
+    # No prefix evidence → the tail could be title text and must stay.
+    assert _canonical_video_name("MFC-248-C_GG5.mp4") != "MFC-248"
+    # Prefix with a different label leaves an unrelated tail alone.
+    assert _canonical_video_name("kfa55.com@748SPAY-445.mp4") == "SPAY-445"
+
+
+def test_plan_site_tag_tail_single_file_renamed():
+    kids = [_f("gg5.co@435MFC-248-C_GG5.mp4", 4 * GB)]
+    plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {"gg5.co@435MFC-248-C_GG5.mp4": "MFC-248.mp4"}

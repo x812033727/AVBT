@@ -17,7 +17,7 @@ import re
 # Video extensions that BT release tools often append directly into the
 # folder name itself (``SACE022MP4`` rather than ``SACE-022/SACE022.mp4``).
 # Treated as part of the noise so the code extractor can see past it.
-_FAKE_EXT_RE = r"(?:MP4|M4V|AVI|WMV|MKV|MOV|WEBM|FLV|TS)"
+_FAKE_EXT_RE = r"(?:MP4|M4V|AVI|WMV|MKV|MOV|WEBM|FLV|TS|MPE?G|RMVB)"
 
 # Chinese-subtitle scene tag: ``SNOS-015ch.mp4`` / ``SNOS-015-CH.mkv`` /
 # ``SNOS-015_Ch.mp4`` all denote "same product, with Chinese subs glued
@@ -57,6 +57,11 @@ _PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv",
     ".ts", ".m4v", ".webm",
+    # Legacy rip containers. Missing these is not cosmetic: finalize
+    # permanently purges "non-video" files, so an unlisted container
+    # (live near-miss: PPPD-539.mpg, 2026-07-15) is one cleanup pass
+    # away from destruction.
+    ".mpg", ".mpeg", ".rmvb", ".m2ts", ".vob",
 }
 
 

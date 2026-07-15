@@ -93,6 +93,16 @@ MOVE_SETTLE_SECONDS = 1800
 _LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
 _LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
 
+# Every phase in which a task still owes us files. pikpakapi's default
+# filter is RUNNING+ERROR, so PENDING — everything queued behind PikPak's
+# ~100-task concurrency cap — drops out unless asked for by name. Anything
+# deciding "is this task still alive?" must pass these.
+ACTIVE_PHASES = [
+    "PHASE_TYPE_RUNNING",
+    "PHASE_TYPE_PENDING",
+    "PHASE_TYPE_ERROR",
+]
+
 
 def _is_too_frequent_error(exc: BaseException) -> bool:
     """True when PikPak throttled us ("operation is too frequent")."""

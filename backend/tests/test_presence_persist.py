@@ -182,3 +182,17 @@ async def test_refresh_codes_drops_ids_finalize_just_removed(
         rows = (await s.execute(select(PresenceEntry))).scalars().all()
     assert [r.path for r in rows] == [f"{series}/{video.name}"]
     await engine.dispose()
+
+
+async def test_no_missing_path_forces_a_drive_walk():
+    """Guard the whole module, not one call site: #169 fixed the two
+    obvious ones and left the streaming-summary and missing-all paths
+    still forcing a 2.5-min full walk. A grep-level invariant is the
+    cheapest way to keep the contract from eroding again."""
+    from pathlib import Path
+
+    src = Path("app/services/missing.py").read_text(encoding="utf-8")
+    assert "presence_index.get(force=refresh)" not in src, (
+        "listing refresh must not force a presence drive walk — "
+        "the index is persisted (#163) and refreshed per-code"
+    )

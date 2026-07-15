@@ -880,10 +880,24 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
         await session.commit()
 
 
-# Finalize retry: only rows archived within this window, at most this
-# many per pass. finalize is idempotent so re-runs are cheap.
+# Finalize retry: only rows archived within this window. The per-pass
+# cap is a runaway backstop, not a throughput throttle — a pass drains
+# every eligible row (user directive 2026-07-15: "執行完再休息"; the old
+# cap of 5/min queued for hours behind a mass auto-send). Hammering
+# protection moved to the per-row failure cooldown + pass time budget
+# below.
 _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
-_FINALIZE_RETRY_LIMIT = 5
+_FINALIZE_RETRY_LIMIT = 500
+# A row that just failed (error / timeout) is skipped for this long so
+# a block of failing rows costs one attempt each per cooldown, not one
+# per 60s pass.
+_FINALIZE_RETRY_COOLDOWN = timedelta(minutes=10)
+_finalize_attempts: dict[int, datetime] = {}
+# One pass must not monopolise the archiver loop: stop draining after
+# this many seconds and let the next pass continue (the mover runs in
+# the same loop, and fresh completions shouldn't wait behind a long
+# finalize queue).
+_FINALIZE_PASS_BUDGET = 900.0
 # pikpakapi calls carry no timeout of their own; one hung mutation once
 # froze the archiver loop permanently. Bound every finalize attempt and
 # the presence walk so a stuck await costs one row / one pass, not the
@@ -900,6 +914,9 @@ _REAP_WINDOW = timedelta(days=7)
 # row id; flattened state only changes when a sweep lands files, so a
 # few hours of latency on the retry is free.
 _REAP_RETRY_COOLDOWN = timedelta(hours=6)
+# The reaper's flattened check costs live folder listings — keep its
+# per-pass cap small and independent of the finalize drain above.
+_REAP_CHECK_LIMIT = 5
 _reap_attempts: dict[int, datetime] = {}
 
 
@@ -976,9 +993,20 @@ async def _finalize_retry_pass() -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("finalize retry skipped (presence): %s", exc)
             return 0
+        pass_start = asyncio.get_event_loop().time()
+        now = datetime.utcnow()
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — try again next pass
+            last = _finalize_attempts.get(row.id)
+            if last is not None and now - last < _FINALIZE_RETRY_COOLDOWN:
+                continue  # just failed — let the cooldown expire first
+            if asyncio.get_event_loop().time() - pass_start > _FINALIZE_PASS_BUDGET:
+                logger.info(
+                    "finalize retry pass budget spent after %d rows; "
+                    "resuming next pass", done,
+                )
+                break
             try:
                 # One stuck PikPak mutation must not freeze the whole
                 # archiver loop (a folder rename once hung it for good —
@@ -988,6 +1016,7 @@ async def _finalize_retry_pass() -> int:
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1
+                        _finalize_attempts.pop(row.id, None)
                     elif await _already_flattened(row.code):
                         # Sweep-archived rows use the flattened layout —
                         # the video sits directly in the 系列 folder, so
@@ -996,12 +1025,20 @@ async def _finalize_retry_pass() -> int:
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1
+                        _finalize_attempts.pop(row.id, None)
+                    else:
+                        # Ran but not finalizable yet (settling / still
+                        # materialising) — back off so the drain doesn't
+                        # re-list the same folders every 60s.
+                        _finalize_attempts[row.id] = datetime.utcnow()
             except TimeoutError:
+                _finalize_attempts[row.id] = datetime.utcnow()
                 logger.warning(
                     "finalize retry %s timed out after %ss",
                     row.code, _FINALIZE_ROW_TIMEOUT,
                 )
             except Exception as exc:  # noqa: BLE001
+                _finalize_attempts[row.id] = datetime.utcnow()
                 logger.warning("finalize retry %s failed: %s", row.code, exc)
         if done:
             await session.commit()
@@ -1074,7 +1111,7 @@ async def _reap_orphan_rows() -> int:
                 continue  # still downloading — not an orphan
             if row.id in _reap_attempts:
                 continue  # failed a recent check — let others have a slot
-            if checked >= _FINALIZE_RETRY_LIMIT:
+            if checked >= _REAP_CHECK_LIMIT:
                 break  # cap the expensive flattened checks per pass
             checked += 1
             _reap_attempts[row.id] = datetime.utcnow()

@@ -1127,7 +1127,7 @@ async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypat
         OfflineTaskLog(code=f"ZOMBIE-{i:03d}", magnet="m", task_id=f"t-z-{i}",
                        file_id="", archived=False, finalized=False,
                        created_at=now - timedelta(days=3, hours=i))
-        for i in range(arch._FINALIZE_RETRY_LIMIT)
+        for i in range(arch._REAP_CHECK_LIMIT)
     ]
     rows.append(
         OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-gone", file_id="",

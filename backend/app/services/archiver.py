@@ -887,7 +887,12 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
 # protection moved to the per-row failure cooldown + pass time budget
 # below.
 _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
-_FINALIZE_RETRY_LIMIT = 500
+# The SQL limit must exceed any realistic eligible-row count: it slices
+# BEFORE the in-loop active-task filter, so a cap below the count of
+# newer still-downloading rows starves older landed rows out of the
+# window entirely (live: MUDR-349 never selected behind a 500+ row
+# auto-send flood — the same shape as the reaper starvation, #151).
+_FINALIZE_RETRY_LIMIT = 2000
 # A row that just failed (error / timeout) is skipped for this long so
 # a block of failing rows costs one attempt each per cooldown, not one
 # per 60s pass.
@@ -975,7 +980,9 @@ async def _finalize_retry_pass() -> int:
                     OfflineTaskLog.created_at < settle_cutoff,
                     OfflineTaskLog.code != "",
                 )
-                .order_by(OfflineTaskLog.created_at.desc())
+                # Oldest first: long-stuck wrappers are the visible
+                # clutter; flood-fresh rows are usually still settling.
+                .order_by(OfflineTaskLog.created_at.asc())
                 .limit(_FINALIZE_RETRY_LIMIT)
             )
         ).scalars().all()

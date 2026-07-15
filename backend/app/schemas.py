@@ -651,3 +651,17 @@ class VideoCountResult(BaseModel):
 
 class VideoCountResponse(BaseModel):
     results: list[VideoCountResult] = Field(default_factory=list)
+
+
+class OpsReport(BaseModel):
+    """One round-report block from the unattended ops worker's log."""
+
+    header: str
+    body: str = ""
+    critical: bool = False
+
+
+class OpsReports(BaseModel):
+    reports: list[OpsReport] = Field(default_factory=list)
+    total: int = 0
+    updated_at: datetime | None = None

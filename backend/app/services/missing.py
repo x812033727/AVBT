@@ -365,7 +365,12 @@ async def missing_for_listing(
     items, pages = await fetch_all_listing_codes(
         kind, slug, uncensored=uncensored, refresh=refresh
     )
-    presence = await presence_index.get(force=refresh)
+    # ``refresh`` is about the JavBus catalog, not the drive: the index is
+    # persisted and each code is refreshed as the pipeline lands it (#163),
+    # so forcing a walk here bought ~2.5min of PikPak calls per call for
+    # data that is already current. Full walks stay on the explicit
+    # /presence/refresh path.
+    presence = await presence_index.get()
 
     # Pull display name from DB if available — needed to resolve the
     # listing's archive folder before reconciling held works.
@@ -520,7 +525,9 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     """Core rebuild logic, called with ``_summary_lock`` held. Shared by
     ``missing_summary`` and ``missing_summary_stream`` so both write
     identical results into ``_summary_result``."""
-    presence = await presence_index.get(force=refresh)
+    # Same split as missing_for_listing: ``refresh`` re-fetches listings,
+    # it does not re-walk the drive.
+    presence = await presence_index.get()
     async with SessionLocal() as session:
         rows = (
             await session.execute(

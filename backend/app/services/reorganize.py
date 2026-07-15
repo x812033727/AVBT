@@ -1029,6 +1029,30 @@ async def reorganize_stream(
             except Exception as exc:  # noqa: BLE001
                 yield {"type": "error", "message": f"列出 {kind_path} 失敗: {exc}"}
                 continue
+            # Loose FILES parked at the kind base itself (e.g. 50 old
+            # videos sat directly in AVBT/製作商 — the name-dir loop
+            # below only walks folders, so they survived every pass).
+            # Migrate them like any phase-1 source; name-dir folders
+            # carry no code and skip out harmlessly as ``no_code``.
+            async for ev in _phase1_migrate_from(
+                kind_path, dry_run=dry_run, idx_start=idx
+            ):
+                if ev.get("type") == "_phase1_error":
+                    yield {"type": "error", "message": ev.get("message", "")}
+                    continue
+                if ev.get("type") == "_phase1_total":
+                    continue
+                action = ev.get("action")
+                if action == "move":
+                    summary["moved"] += 1
+                elif action == "rename":
+                    summary["renamed"] += 1
+                elif action == "skip":
+                    summary["skipped"] += 1
+                elif action == "error":
+                    summary["errors"] += 1
+                idx = ev.get("current", idx)
+                yield ev
             for nd in name_dirs:
                 if nd.kind != "drive#folder":
                     continue

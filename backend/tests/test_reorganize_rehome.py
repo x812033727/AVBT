@@ -233,3 +233,57 @@ async def test_rehome_live_records_move_source_and_defers_shell_trash(
     # … and the emptied shell must NOT be trashed while unsettled.
     assert fake.trashed == []
     await engine.dispose()
+
+
+async def test_rehome_migrates_loose_file_at_kind_base(tmp_path, monkeypatch):
+    # 50 old videos sat directly in AVBT/製作商 (live find 2026-07-15):
+    # the rehome loop only walked FOLDER children of the kind base, so
+    # loose files survived every pass. They must migrate like any
+    # phase-1 child.
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path}/r4.db", future=True
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(arch, "SessionLocal", maker)
+    monkeypatch.setattr(reorg, "SessionLocal", maker)
+    async with maker() as s:
+        s.add(_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")))
+        await s.commit()
+
+    path_ids = {
+        "AVBT": "root",
+        "AVBT/已完成": "legacy",
+        "AVBT/製作商": "kStudio",
+    }
+    children = {
+        "root": [], "legacy": [],
+        "kStudio": [
+            _node("プレステージ", "studioDir"),
+            _node("MIDV-001.mp4", "loosefile", folder=False),
+        ],
+        "studioDir": [],
+    }
+    fake = FakePikpak(path_ids, children)
+    monkeypatch.setattr(reorg, "pikpak_service", fake)
+    monkeypatch.setattr(arch, "pikpak_service", fake)
+
+    events = [
+        ev async for ev in reorg.reorganize_stream(dry_run=True, rehome_kinds=True)
+    ]
+    assert any(
+        e.get("action") == "move"
+        and e.get("source") == "MIDV-001.mp4"
+        and e.get("target") == "AVBT/製作商/プレステージ/回胴録/MIDV-001.mp4"
+        for e in events
+    ), [
+        (e.get("action"), e.get("source"), e.get("target"))
+        for e in events if e.get("type") == "progress"
+    ]
+    # The studio folder itself must NOT be migrated (no code in name).
+    assert not any(
+        e.get("action") == "move" and e.get("source") == "プレステージ"
+        for e in events
+    )
+    await engine.dispose()

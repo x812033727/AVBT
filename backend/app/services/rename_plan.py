@@ -73,8 +73,9 @@ def _flex_code_re(code: str) -> str:
     ``HUNTA578`` / ``HUNTA_578`` spellings, otherwise the code-anchored
     canonical/marker logic goes blind and multi-disc sets fall back to
     the single-winner dedup (live loss: HUNTA-578 disc B trashed as a
-    "duplicate" of disc A, 2026-07-14)."""
-    return re.escape(code).replace(r"\-", "[-_ ]?")
+    "duplicate" of disc A, 2026-07-14). ``0*`` additionally tolerates
+    DMM content-id zero padding (``SOE-829`` ↔ ``SOE00829``)."""
+    return re.escape(code).replace(r"\-", "[-_ ]?0*")
 
 
 def _canonical_video_name(name: str) -> str:
@@ -117,7 +118,7 @@ def _canonical_video_name(name: str) -> str:
         # Without it, the canonical for ``200GANA-3119_2.mp4`` would stay
         # as ``200GANA-3119`` and fail to group with ``GANA-3119.mp4``.
         tail_re = re.compile(
-            rf"\d{{0,4}}{_flex_code_re(code)}(?:CD\d+|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
+            rf"\d{{0,4}}{_flex_code_re(code)}(?:CD\d+(?:-[A-Z])?|HHB\d*|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
             re.IGNORECASE,
         )
         m = tail_re.search(stem)
@@ -149,9 +150,12 @@ def _canonical_video_name(name: str) -> str:
 
 def _part_marker_index(name: str, code: str) -> int:
     """1-based index of the multipart marker tucked next to ``code`` in
-    ``name``: ``CD<n>`` / ``-<n>`` / ``_<n>`` / lone variant letter
-    (``A``=1, ``B``=2 …). Returns 0 when no marker is found, so the
-    bare-name file sorts first and becomes ``_1``."""
+    ``name``: ``CD<n>`` / ``HHB<n>`` (old-scene disc tag) / ``-<n>`` /
+    ``_<n>`` / lone variant letter (``A``=1, ``B``=2 …). Returns 0 when
+    no marker is found, so the bare-name file sorts first and becomes
+    ``_1``. Composite ``CD<n>-<letter>`` markers return the disc number;
+    same-disc sub-parts tie-break alphabetically via the caller's name
+    sort and claim consecutive slots."""
     if not code:
         return 0
     stem = name
@@ -160,7 +164,9 @@ def _part_marker_index(name: str, code: str) -> int:
         stem = stem[: m.start()]
     stem = _GLUED_EXT_RE.sub("", stem)
     pattern = re.compile(
-        rf"{_flex_code_re(code)}(?:CD(\d+)|-(\d+)|_(\d+)|[-_ ]?([A-Z])(?![A-Za-z0-9]))",
+        rf"{_flex_code_re(code)}"
+        r"(?:CD(?P<cd>\d+)|HHB(?P<hhb>\d+)|-(?P<dash>\d+)|_(?P<us>\d+)"
+        r"|[-_ ]?(?P<letter>[A-Z])(?![A-Za-z0-9]))",
         re.IGNORECASE,
     )
     m = pattern.search(stem)
@@ -173,14 +179,11 @@ def _part_marker_index(name: str, code: str) -> int:
         if m2:
             return int(m2.group(1))
         return 0
-    if m.group(1):
-        return int(m.group(1))
-    if m.group(2):
-        return int(m.group(2))
-    if m.group(3):
-        return int(m.group(3))
-    if m.group(4):
-        return ord(m.group(4).upper()) - ord("A") + 1
+    for key in ("cd", "hhb", "dash", "us"):
+        if m.group(key):
+            return int(m.group(key))
+    if m.group("letter"):
+        return ord(m.group("letter").upper()) - ord("A") + 1
     return 0
 
 

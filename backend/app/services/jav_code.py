@@ -26,8 +26,14 @@ _FAKE_EXT_RE = r"(?:MP4|M4V|AVI|WMV|MKV|MOV|WEBM|FLV|TS)"
 # to the same canonical, just like resolution / dup variants do.
 _CH_SUFFIX_RE = r"(?:[-_]?CH)?"
 
+# Old-scene disc markers glued straight onto the code: ``SOE00829HHB3``
+# (HHB release tag + disc number) and ``OFJE-296CD1-B`` (disc + sub-part
+# letter). Without consuming these, the tail boundary check fails and
+# the whole name reads as code-less.
+_PART_SUFFIX_RE = r"(?:CD\d+(?:-[A-Z])?|HHB\d*)?"
+
 _CODE_RE = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -91,6 +97,21 @@ def ext_of(name: str) -> str:
     return m.group(0).lower() if m else ""
 
 
+def _depad_number(raw: str) -> str:
+    """Collapse DMM content-id zero padding: ``SOE-00480`` → ``SOE-480``.
+
+    Only 5+ digit numerics with a leading zero are touched — that is the
+    DMM squished style (``soe00480``). Shorter forms keep their zeros
+    because labels like HEYZO catalog genuine leading-zero 4-digit codes
+    (``HEYZO-0123``), and 2-3 digit codes are padded on purpose
+    (``SONE-001``). Result is re-padded to at least 3 digits.
+    """
+    label, _, num = raw.partition("-")
+    if num and len(num) >= 5 and num[0] == "0":
+        return f"{label}-{num.lstrip('0').zfill(3)}"
+    return raw
+
+
 def extract_jav_code(name: str) -> str | None:
     """Return the canonical JAV code embedded in *name* (e.g. ``DAM-043``,
     ``300MIUM-1090``).
@@ -120,8 +141,8 @@ def extract_jav_code(name: str) -> str | None:
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
     if m:
-        return m.group(2)
-    return raw
+        raw = m.group(2)
+    return _depad_number(raw)
 
 
 def is_video(name: str) -> bool:
@@ -134,7 +155,7 @@ def is_video(name: str) -> bool:
 # The Chinese-sub marker (``ch``/``-ch``/``_ch``) is consumed but NOT
 # captured — different sub languages aren't different products.
 _CODE_RE_FULL = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 
@@ -171,8 +192,8 @@ def extract_jav_code_full(name: str) -> str | None:
         raw = f"{m.group(1)}-{m.group(2)}"
     m = _PREFIX_RE.match(raw)
     if m:
-        return m.group(2) + tail
-    return raw + tail
+        raw = m.group(2)
+    return _depad_number(raw) + tail
 
 
 # Mirrored from archiver._safe_name so missing-code services can compute

@@ -115,3 +115,59 @@ def test_plan_head_paren_pair_with_old_outlier():
     assert plan[f"(HUNTER)(HUNTA-398){TITLE_398}_2.mp4"] == "HUNTA-398_2.mp4"
     assert "HUNTA-398.mp4" not in plan
     assert "HUNTA-398.mp4" not in members
+
+
+def test_canonical_scene_zero_padded_hhb():
+    # Old-scene DMM ids: zero-padded, HHB disc tag, optional BT dash /
+    # numeric prefix. All collapse to the bare code.
+    assert _canonical_video_name("SOE00480HHB1.wmv") == "SOE-480"
+    assert _canonical_video_name("-SOE00829HHB3.wmv") == "SOE-829"
+    assert _canonical_video_name("-49EKDV00246HHB2.wmv") == "EKDV-246"
+    assert _canonical_video_name("DVDMS00159HHB1.mp4") == "DVDMS-159"
+    # Composite CD<n>-<letter> markers collapse too.
+    assert _canonical_video_name("OFJE-296CD1-B.mp4") == "OFJE-296"
+    assert _canonical_video_name("OFJE-296CD2-A.mp4") == "OFJE-296"
+
+
+def test_part_marker_hhb_and_composite_cd():
+    assert _part_marker_index("SOE00829HHB3.wmv", "SOE-829") == 3
+    assert _part_marker_index("-49EKDV00246HHB2.wmv", "EKDV-246") == 2
+    # Composite markers return the disc number; sub-letters tie-break by
+    # name in the plan sort.
+    assert _part_marker_index("OFJE-296CD1-B.mp4", "OFJE-296") == 1
+    assert _part_marker_index("OFJE-296CD2-A.mp4", "OFJE-296") == 2
+
+
+def test_plan_groups_hhb_discs_as_parts():
+    children = [
+        _f("-SOE00829HHB3.wmv", int(1.1 * GB)),
+        _f("-SOE00829HHB1.wmv", int(1.2 * GB)),
+        _f("-SOE00829HHB2.wmv", int(1.1 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                             _is_video)
+    assert plan == {
+        "-SOE00829HHB1.wmv": "SOE-829_1.wmv",
+        "-SOE00829HHB2.wmv": "SOE-829_2.wmv",
+        "-SOE00829HHB3.wmv": "SOE-829_3.wmv",
+    }
+    assert len(members) == 3
+
+
+def test_plan_composite_cd_letter_discs_sequential():
+    # CD1-A is missing from the set — the four present sub-parts still
+    # number consecutively in (disc, letter) order.
+    children = [
+        _f("OFJE-296CD2-B.mp4", int(2.2 * GB)),
+        _f("OFJE-296CD1-C.mp4", int(2.0 * GB)),
+        _f("OFJE-296CD2-A.mp4", int(2.3 * GB)),
+        _f("OFJE-296CD1-B.mp4", int(2.1 * GB)),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan == {
+        "OFJE-296CD1-B.mp4": "OFJE-296_1.mp4",
+        "OFJE-296CD1-C.mp4": "OFJE-296_2.mp4",
+        "OFJE-296CD2-A.mp4": "OFJE-296_3.mp4",
+        "OFJE-296CD2-B.mp4": "OFJE-296_4.mp4",
+    }

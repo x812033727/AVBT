@@ -34,6 +34,23 @@ from app.services.jav_code import (
         # No code at all
         ("readme.txt", None),
         ("", None),
+        # Old-scene zero-padded DMM ids with the HHB disc tag
+        ("SOE00480HHB1.wmv", "SOE-480"),
+        ("-SOE00829HHB3.wmv", "SOE-829"),
+        ("soe00877hhb2.wmv", "SOE-877"),
+        ("DVDMS00159HHB1.mp4", "DVDMS-159"),
+        # …with a BT numeric prefix in front
+        ("-49EKDV00246HHB2.wmv", "EKDV-246"),
+        # Glued CD disc marker, with and without a sub-part letter
+        ("OFJE-296CD1-B.mp4", "OFJE-296"),
+        ("OFJE-296CD2.mp4", "OFJE-296"),
+        # Zero padding collapses even without a marker
+        ("SOE-00480.wmv", "SOE-480"),
+        ("soe00048.wmv", "SOE-048"),
+        # 4-digit leading zeros are genuine (HEYZO style) — untouched
+        ("HEYZO-0123.mp4", "HEYZO-0123"),
+        # Ordinary 3-digit padding untouched
+        ("SONE-001.mkv", "SONE-001"),
     ],
 )
 def test_extract_jav_code(name, want):
@@ -52,6 +69,9 @@ def test_extract_jav_code(name, want):
         ("259LUXU-1543", "LUXU-1543"),
         ("DAM-043", "DAM-043"),
         ("", None),
+        # Scene disc markers are consumed, not mistaken for variants
+        ("SOE00829HHB3.wmv", "SOE-829"),
+        ("OFJE-296CD1-B.mp4", "OFJE-296"),
     ],
 )
 def test_extract_jav_code_full(name, want):

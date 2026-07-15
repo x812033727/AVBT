@@ -124,6 +124,18 @@ def _phase1_file_leaf(original_name: str, code_leaf: str, ext: str) -> str:
     m = tail_re.search(stem)
     if m:
         return f"{code_leaf}_{m.group(1)}{ext}"
+    # Old-scene disc markers (``SOE00829HHB3`` / ``OFJE-296CD1-B``) carry
+    # ordering that a rename to the bare code would destroy — and unlike
+    # ``_N`` they may need whole-group context to number (``CD1-B`` is
+    # ``_1`` only when ``CD1-A`` is absent). Keep the original name; the
+    # phase-2 cleanup renumbers the landed group via rename_plan.
+    flex = re.escape(code_leaf).replace(r"\-", "[-_ ]?0*")
+    scene_re = re.compile(
+        rf"(?:^|[^A-Z0-9])\d{{0,4}}{flex}(?:CD\d+(?:-[A-Z])?|HHB\d+)$",
+        re.IGNORECASE,
+    )
+    if scene_re.search(stem):
+        return original_name
     return f"{code_leaf}{ext}"
 
 
@@ -265,6 +277,13 @@ async def _phase1_migrate_from(
 
             if not dry_run:
                 await pikpak_service.move_files([child.id], parent_id)
+                # PikPak moves are async — the source folder must not be
+                # trashed until the settle gate opens (#140). Without
+                # this record, the kinds-rehome shell cleanup below sees
+                # an "empty" (optimistic) listing on a >30-min-uptime
+                # process and deletes the folder with the file still in
+                # flight.
+                pikpak_service.record_move_source(source_id)
                 if child.name != final_leaf:
                     try:
                         await pikpak_service.rename_file(child.id, final_leaf)

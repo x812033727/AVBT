@@ -20,21 +20,55 @@ def _detail(code, studio=None, series=None):
     )
 
 
-def test_studio_series_path_nested():
+async def test_studio_series_path_nested(tmp_path, monkeypatch):
+    await _seed(tmp_path, monkeypatch, [])
+    arch._tracked_name_cache.clear()
     d = _detail("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g"))
-    p = arch._studio_series_path(d, "YRK-288")
+    p = await arch._studio_series_path(d, "YRK-288")
     assert p == "AVBT/製作商/PrestigeStudio/TowerSeries/YRK-288"
 
 
-def test_studio_series_path_no_series_bucket():
+async def test_studio_series_path_no_series_bucket(tmp_path, monkeypatch):
+    await _seed(tmp_path, monkeypatch, [])
+    arch._tracked_name_cache.clear()
     d = _detail("ABF-001", studio=("PrestigeStudio", "75"), series=None)
-    p = arch._studio_series_path(d, "ABF-001")
+    p = await arch._studio_series_path(d, "ABF-001")
     assert p == "AVBT/製作商/PrestigeStudio/未分類/ABF-001"
 
 
-def test_studio_series_path_none_without_studio():
+async def test_studio_series_path_none_without_studio(tmp_path, monkeypatch):
+    await _seed(tmp_path, monkeypatch, [])
     d = _detail("X-1", studio=None, series=("s", "s1"))
-    assert arch._studio_series_path(d, "X-1") is None
+    assert await arch._studio_series_path(d, "X-1") is None
+
+
+async def test_studio_series_path_prefers_tracked_spelling(tmp_path, monkeypatch):
+    # JavBus spelled the studio with a space on this detail page, but the
+    # tracked listing (same id) carries the canonical spelling — the
+    # folder must follow the tracked name so spelling drift can't fork
+    # one studio into several PikPak folders.
+    from app.models import TrackedListing
+    await _seed(tmp_path, monkeypatch, [
+        TrackedListing(kind="studio", id="7q", name="エスワンナンバーワンスタイル"),
+        TrackedListing(kind="series", id="s9", name="交わる体液、濃密セックス"),
+    ])
+    arch._tracked_name_cache.clear()
+    d = _detail(
+        "OFJE-296",
+        studio=("エスワン ナンバーワンスタイル", "7q"),
+        series=("交わる体液、 濃密セックス", "s9"),
+    )
+    p = await arch._studio_series_path(d, "OFJE-296")
+    assert p == (
+        "AVBT/製作商/エスワンナンバーワンスタイル/"
+        "交わる体液、濃密セックス/OFJE-296"
+    )
+    # Untracked studio keeps the detail spelling untouched.
+    arch._tracked_name_cache.clear()
+    d2 = _detail("XYZ-1", studio=("SomeStudio", "zz"), series=None)
+    assert await arch._studio_series_path(d2, "XYZ-1") == (
+        "AVBT/製作商/SomeStudio/未分類/XYZ-1"
+    )
 
 
 def _cache_row(code, studio=None, series=None):

@@ -20,15 +20,23 @@ def _detail(code, studio=None, series=None):
     )
 
 
-def test_studio_series_dir_and_path():
+async def test_studio_series_dir_and_path(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/pn.db", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(
+        arch, "SessionLocal", async_sessionmaker(engine, expire_on_commit=False)
+    )
+    arch._tracked_name_cache.clear()
     d = _detail("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g"))
-    assert arch._studio_series_dir(d) == "AVBT/製作商/PrestigeStudio/TowerSeries"
-    assert arch._studio_series_path(d, "YRK-288") == \
+    assert await arch._studio_series_dir(d) == "AVBT/製作商/PrestigeStudio/TowerSeries"
+    assert await arch._studio_series_path(d, "YRK-288") == \
         "AVBT/製作商/PrestigeStudio/TowerSeries/YRK-288"
+    await engine.dispose()
 
 
-def test_studio_series_dir_no_studio_is_none():
-    assert arch._studio_series_dir(_detail("X-1", studio=None)) is None
+async def test_studio_series_dir_no_studio_is_none():
+    assert await arch._studio_series_dir(_detail("X-1", studio=None)) is None
 
 
 def _cache_row(code, studio, series):

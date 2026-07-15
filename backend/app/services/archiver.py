@@ -220,23 +220,70 @@ async def _detail_for_archive(code: str) -> MovieDetail | None:
         return None
 
 
-def _studio_series_dir(detail: MovieDetail) -> str | None:
+# JavBus renders the SAME studio/series under different spellings on
+# different pages (detail pages for old S1 codes say
+# 「エスワンナンバーワンスタイル」, newer ones 「エスワン ナンバーワン
+# スタイル」 — same listing id 7q). Folder names built straight from the
+# detail cache therefore fork one studio into several PikPak folders
+# (live mess: three S1 studio folders, 2026-07-15). The tracked listing
+# name is refreshed from the listing page and is the single spelling the
+# user actually sees, so it wins whenever the ids match.
+_tracked_name_cache: dict[tuple[str, str], tuple[str, float]] = {}
+_TRACKED_NAME_TTL = 600.0
+
+
+async def _tracked_listing_name(kind: str, listing_id: str) -> str:
+    """Current TrackedListing name for ``(kind, listing_id)``, '' when the
+    listing isn't tracked. Cached briefly — archive passes resolve the
+    same studio hundreds of times in a row."""
+    if not listing_id:
+        return ""
+    key = (kind, listing_id)
+    now = asyncio.get_event_loop().time()
+    hit = _tracked_name_cache.get(key)
+    if hit is not None and now - hit[1] < _TRACKED_NAME_TTL:
+        return hit[0]
+    name = ""
+    try:
+        async with SessionLocal() as session:
+            row = await session.get(TrackedListing, key)
+            if row is not None:
+                name = row.name or ""
+    except Exception:  # noqa: BLE001 — resolver must never fail the archive
+        name = ""
+    _tracked_name_cache[key] = (name, now)
+    return name
+
+
+async def _studio_series_dir(detail: MovieDetail) -> str | None:
     """Build the ``<studio_root>/<studio>/<series｜未分類>`` folder (no
     code leaf) when the detail has a studio; ``None`` otherwise.
 
     kind_base_path("studio") → AVBT/製作商 by default (honours
     PIKPAK_STUDIO_FOLDER override) — the root of the nested layout. The
-    same relative shape is reused for the pCloud mirror."""
+    same relative shape is reused for the pCloud mirror. Studio / series
+    display names prefer the tracked listing's spelling (matched by id)
+    so spelling drift between JavBus pages can't fork folders."""
     studio = getattr(detail, "studio", None)
     if not (studio and (getattr(studio, "name", "") or getattr(studio, "id", ""))):
         return None
+    studio_name = (
+        await _tracked_listing_name("studio", getattr(studio, "id", "") or "")
+        or studio.name
+        or ""
+    )
     studio_safe = _safe_name(
-        studio.name or "", fallback=_safe_name(studio.id or "", fallback="unknown")
+        studio_name, fallback=_safe_name(studio.id or "", fallback="unknown")
     )
     series = getattr(detail, "series", None)
     if series and (getattr(series, "name", "") or getattr(series, "id", "")):
+        series_name = (
+            await _tracked_listing_name("series", getattr(series, "id", "") or "")
+            or series.name
+            or ""
+        )
         series_safe = _safe_name(
-            series.name or "",
+            series_name,
             fallback=_safe_name(series.id or "", fallback=_NO_SERIES_FOLDER),
         )
     else:
@@ -244,10 +291,10 @@ def _studio_series_dir(detail: MovieDetail) -> str | None:
     return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}"
 
 
-def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
+async def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:
     """``<studio>/<series｜未分類>/<code>`` when the detail has a studio;
     ``None`` when it has no studio to nest under."""
-    base = _studio_series_dir(detail)
+    base = await _studio_series_dir(detail)
     return f"{base}/{safe_code}" if base is not None else None
 
 
@@ -258,7 +305,7 @@ async def studio_series_dir_for_code(code: str) -> str | None:
     detail = await _detail_for_archive(code)
     if detail is None:
         return None
-    return _studio_series_dir(detail)
+    return await _studio_series_dir(detail)
 
 
 async def _resolve_archive_path_by_code(code: str) -> str:
@@ -274,7 +321,7 @@ async def _resolve_archive_path_by_code(code: str) -> str:
     safe_code = _archive_leaf(code)
     detail = await _detail_for_archive(code)
     if detail is not None:
-        nested = _studio_series_path(detail, safe_code)
+        nested = await _studio_series_path(detail, safe_code)
         if nested is not None:
             return nested
     # No studio → legacy single-kind fallback (unchanged behaviour).

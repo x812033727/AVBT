@@ -1054,3 +1054,62 @@ async def test_reap_ignores_fresh_and_file_id_rows(tmp_path, monkeypatch):
         rows = (await s.execute(select(OfflineTaskLog))).scalars().all()
     assert all(r.archived is False and r.finalized is False for r in rows)
     await engine.dispose()
+
+
+async def test_reap_not_starved_by_fresh_active_rows(tmp_path, monkeypatch):
+    """A burst of newer still-listed Collecting rows must not crowd an
+    older genuine orphan out of the pass — active skips are free and
+    only expensive flattened checks are capped."""
+    now = datetime.utcnow()
+    rows = [
+        OfflineTaskLog(code=f"NEW-{i:03d}", magnet="m", task_id=f"t-live-{i}",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=1))
+        for i in range(10)
+    ]
+    rows.append(
+        OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-gone", file_id="",
+                       archived=False, finalized=False,
+                       created_at=now - timedelta(hours=30)),
+    )
+    engine, maker = await _retry_db(tmp_path, monkeypatch, rows)
+
+    async def active():
+        return {f"t-live-{i}" for i in range(10)}
+
+    async def flattened(code):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 1
+    async with maker() as s:
+        by_code = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
+    assert by_code["MTM-013"].finalized is True
+    assert all(not by_code[f"NEW-{i:03d}"].finalized for i in range(10))
+    await engine.dispose()
+
+
+async def test_reap_ignores_rows_outside_window(tmp_path, monkeypatch):
+    """Historical rows (finalized column backfilled as 0) must never be
+    scanned — only current-pipeline rows are candidates."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="OLD-777", magnet="m", task_id="t-ancient",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(days=30)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):  # pragma: no cover — must not be reached
+        raise AssertionError("flattened check must not run outside the window")
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 0
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.archived is False and row.finalized is False
+    await engine.dispose()

@@ -890,6 +890,9 @@ _FINALIZE_RETRY_LIMIT = 5
 # whole loop.
 _FINALIZE_ROW_TIMEOUT = 300
 _PRESENCE_TIMEOUT = 600
+# Orphan reap only looks at rows from the current pipeline; older rows
+# predate the finalized column and are not operationally pending.
+_REAP_WINDOW = timedelta(days=7)
 
 
 async def _active_task_ids() -> set[str]:
@@ -1011,10 +1014,21 @@ async def _reap_orphan_rows() -> int:
     Only rows whose task is gone from the task list AND whose code is
     already flattened at the destination get stamped; anything still
     downloading, listed, or not yet landed keeps waiting. Pure DB
-    bookkeeping — no file operations."""
+    bookkeeping — no file operations.
+
+    The recency window keeps the reaper off the thousands of pre-2026-07
+    historical rows (``finalized`` was backfilled as 0 when the column
+    was added) — closing those would burn a flattened check (live folder
+    listings) per row for zero operational gain. Within the window,
+    still-listed tasks are skipped for free BEFORE the expensive-check
+    cap is applied, so a burst of fresh Collecting submissions can't
+    starve an older genuine orphan out of the pass (live near-miss:
+    round-3 backfill submitted 51 Collecting rows minutes after the
+    MTM-013 orphan appeared)."""
     from .offline_tasks import SETTLE_GRACE  # avoid cycle
 
     settle_cutoff = datetime.utcnow() - SETTLE_GRACE
+    reap_cutoff = datetime.utcnow() - _REAP_WINDOW
     done = 0
     async with SessionLocal() as session:
         rows = (
@@ -1029,9 +1043,10 @@ async def _reap_orphan_rows() -> int:
                     ),
                     OfflineTaskLog.code != "",
                     OfflineTaskLog.created_at < settle_cutoff,
+                    OfflineTaskLog.created_at > reap_cutoff,
                 )
-                .order_by(OfflineTaskLog.created_at.desc())
-                .limit(_FINALIZE_RETRY_LIMIT)
+                .order_by(OfflineTaskLog.created_at.asc())
+                .limit(500)
             )
         ).scalars().all()
         if not rows:
@@ -1041,9 +1056,13 @@ async def _reap_orphan_rows() -> int:
         except PikPakError as exc:
             logger.warning("orphan reap skipped: %s", exc)
             return 0
+        checked = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — not an orphan
+            if checked >= _FINALIZE_RETRY_LIMIT:
+                break  # cap the expensive flattened checks per pass
+            checked += 1
             try:
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
                     if not await _already_flattened(row.code):

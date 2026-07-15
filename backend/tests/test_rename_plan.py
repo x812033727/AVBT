@@ -71,6 +71,18 @@ def test_part_marker_trailing_index_fallback():
     assert _part_marker_index("HUNTA-513 (2).mp4", "HUNTA-513") == 0
 
 
+def test_part_marker_resolution_tail_next_to_code():
+    # A resolution/quality tail hanging off the code is not a part index:
+    # the fallback's ``\d{1,2}`` guard must hold for the main regex too.
+    assert _part_marker_index("GDHH-167-1080p.mp4", "GDHH-167") == 0
+    assert _part_marker_index("GDHH-167_1080p.mp4", "GDHH-167") == 0
+    assert _part_marker_index("ABC-123-720p.mp4", "ABC-123") == 0
+    assert _part_marker_index("ABC-123-4K.mp4", "ABC-123") == 0
+    # Real single-digit part markers next to the code still count.
+    assert _part_marker_index("GDHH-167-2.mp4", "GDHH-167") == 2
+    assert _part_marker_index("ABC-123_3.mp4", "ABC-123") == 3
+
+
 def test_plan_groups_hyphenless_discs_as_parts():
     children = [
         _f("HUNTA578AMP4.mp4", int(2.26 * GB)),

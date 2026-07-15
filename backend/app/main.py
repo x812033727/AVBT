@@ -15,6 +15,7 @@ from .routers import (
     compare,
     img,
     javbus,
+    ops,
     pcloud,
     pikpak,
     stats,
@@ -120,6 +121,7 @@ app.include_router(studios.router, dependencies=_guard)
 app.include_router(stats.router, dependencies=_guard)
 app.include_router(notify_router.router, dependencies=_guard)
 app.include_router(backup.router, dependencies=_guard)
+app.include_router(ops.router, dependencies=_guard)
 app.include_router(img.router)
 
 

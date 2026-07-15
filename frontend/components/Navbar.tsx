@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  ClipboardList,
   BarChart3,
   Building2,
   Cloud,
@@ -44,6 +45,7 @@ const TABS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/pcloud", label: "pCloud", icon: Cloud },
   { href: "/duplicates", label: "重複", icon: Copy },
   { href: "/history", label: "紀錄", icon: History },
+  { href: "/ops", label: "輪值", icon: ClipboardList },
   { href: "/settings", label: "設定", icon: Settings },
 ];
 

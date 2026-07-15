@@ -884,6 +884,18 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
 # many per pass. finalize is idempotent so re-runs are cheap.
 _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
 _FINALIZE_RETRY_LIMIT = 5
+# Rows are fetched newest-first, so with a SQL window equal to the
+# attempt cap a handful of un-finalizeable rows at the top (a rar-only
+# release has no archive folder and warns every pass) hog every slot
+# and starve everything older until it ages out of the 24h window
+# (live: MBRBA-032 burned a slot every 60s during the round-4 influx).
+# Fetch a wider window and skip recently-failed rows for free; the
+# cooldown is shorter than the reaper's 6h because transient failures
+# here (move still settling, presence catching up) resolve within the
+# hour.
+_FINALIZE_FETCH_LIMIT = 50
+_FINALIZE_RETRY_COOLDOWN = timedelta(minutes=30)
+_finalize_attempts: dict[int, datetime] = {}
 # pikpakapi calls carry no timeout of their own; one hung mutation once
 # froze the archiver loop permanently. Bound every finalize attempt and
 # the presence walk so a stuck await costs one row / one pass, not the
@@ -944,7 +956,7 @@ async def _finalize_retry_pass() -> int:
                     OfflineTaskLog.code != "",
                 )
                 .order_by(OfflineTaskLog.archived_at.desc())
-                .limit(_FINALIZE_RETRY_LIMIT)
+                .limit(_FINALIZE_FETCH_LIMIT)
             )
         ).scalars().all()
         if not rows:
@@ -976,9 +988,21 @@ async def _finalize_retry_pass() -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("finalize retry skipped (presence): %s", exc)
             return 0
+        # Drop stale attempt records so the map stays bounded.
+        attempt_floor = datetime.utcnow() - _FINALIZE_RETRY_COOLDOWN
+        for rid in [k for k, v in _finalize_attempts.items()
+                    if v < attempt_floor]:
+            del _finalize_attempts[rid]
+        attempted = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — try again next pass
+            if row.id in _finalize_attempts:
+                continue  # failed a recent attempt — let others in
+            if attempted >= _FINALIZE_RETRY_LIMIT:
+                break  # cap the expensive finalize attempts per pass
+            attempted += 1
+            _finalize_attempts[row.id] = datetime.utcnow()
             try:
                 # One stuck PikPak mutation must not freeze the whole
                 # archiver loop (a folder rename once hung it for good —

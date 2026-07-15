@@ -306,6 +306,7 @@ async def _retry_db(tmp_path, monkeypatch, rows):
     # Module-level reap cooldown must not leak between tests (fresh DBs
     # restart row ids at 1, so stale entries would shadow new rows).
     arch._reap_attempts.clear()
+    arch._finalize_attempts.clear()
     async with maker() as s:
         s.add_all(rows)
         await s.commit()
@@ -1152,4 +1153,61 @@ async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypat
         by_code = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
     assert by_code["MTM-013"].finalized is True
     assert all(not r.finalized for c, r in by_code.items() if c != "MTM-013")
+    await engine.dispose()
+
+
+async def test_finalize_failed_rows_cool_down_and_free_the_cap(
+        tmp_path, monkeypatch):
+    """Newest-first fetch + SQL limit == attempt cap let a block of
+    un-finalizeable rows (rar-only magnet: no folder, never flattened)
+    hog every slot each pass and starve older rows out of the 24h
+    window (live: MBRBA-032 burned a slot every 60s). Failed rows must
+    cool down and the freed slots go to rows not yet attempted."""
+    now = datetime.utcnow()
+    rows = [
+        OfflineTaskLog(code=f"ZOMBIE-{i:03d}", magnet="m", task_id=f"t-z-{i}",
+                       name="z", archived=True, finalized=False,
+                       archived_at=now - timedelta(minutes=i),
+                       created_at=now - timedelta(hours=1, minutes=i))
+        for i in range(arch._FINALIZE_RETRY_LIMIT)
+    ]
+    rows.append(
+        OfflineTaskLog(code="GOOD-001", magnet="m", task_id="t-good",
+                       name="g", archived=True, finalized=False,
+                       archived_at=now - timedelta(hours=2),
+                       created_at=now - timedelta(hours=3)),
+    )
+    engine, maker = await _retry_db(tmp_path, monkeypatch, rows)
+
+    attempts: list[str] = []
+
+    async def run(svc, code, *, folder_id=None):
+        attempts.append(code)
+        return {"errors": 0} if code == "GOOD-001" else None
+
+    async def not_flattened(code):
+        return False
+
+    async def no_active():
+        return set()
+
+    monkeypatch.setattr(fin, "run_finalize", run)
+    monkeypatch.setattr(arch, "_already_flattened", not_flattened)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    # Pass 1: the cap is spent on the newer zombies.
+    assert await arch._finalize_retry_pass() == 0
+    assert attempts == [f"ZOMBIE-{i:03d}" for i in range(5)]
+    # Pass 2: zombies are cooling down — the older row gets a slot
+    # instead of starving.
+    assert await arch._finalize_retry_pass() == 1
+    assert attempts[-1] == "GOOD-001"
+    # Pass 3: everything is either done or cooling — nothing re-runs.
+    before = len(attempts)
+    assert await arch._finalize_retry_pass() == 0
+    assert len(attempts) == before
+    async with maker() as s:
+        by_code = {r.code: r.finalized
+                   for r in (await s.execute(select(OfflineTaskLog))).scalars()}
+    assert by_code["GOOD-001"] is True
+    assert all(not v for c, v in by_code.items() if c != "GOOD-001")
     await engine.dispose()

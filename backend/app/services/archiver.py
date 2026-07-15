@@ -945,22 +945,37 @@ async def _finalize_retry_pass() -> int:
 
     cutoff = datetime.utcnow() - _FINALIZE_RETRY_WINDOW
     settle_cutoff = datetime.utcnow() - SETTLE_GRACE
+    orphan_cutoff = datetime.utcnow() - _REAP_WINDOW
     done = 0
     async with SessionLocal() as session:
         rows = (
             await session.execute(
                 select(OfflineTaskLog)
                 .where(
-                    OfflineTaskLog.archived.is_(True),
                     OfflineTaskLog.finalized.is_(False),
-                    OfflineTaskLog.archived_at > cutoff,
+                    or_(
+                        # Normal path: sweep/archiver stamped the move.
+                        (OfflineTaskLog.archived.is_(True))
+                        & (OfflineTaskLog.archived_at > cutoff),
+                        # Collecting-orphan path: file_id was empty at
+                        # submit, so the sweep moved the wrapper but the
+                        # stamp never matched — archived stays 0 and the
+                        # wrapper sat in limbo forever (live: MUDR-349 /
+                        # MUDR-358, wrappers full of junk 2h+ after
+                        # landing). Rows whose task is still downloading
+                        # are skipped in the loop via the active-task
+                        # check; a task that's simply gone with nothing
+                        # landed just no-ops into the failure cooldown.
+                        (OfflineTaskLog.archived.is_(False))
+                        & (OfflineTaskLog.created_at > orphan_cutoff),
+                    ),
                     # Freshly-submitted tasks may still be materialising
                     # files — wait out the settle grace before the first
                     # destructive finalize (see services/offline_tasks).
                     OfflineTaskLog.created_at < settle_cutoff,
                     OfflineTaskLog.code != "",
                 )
-                .order_by(OfflineTaskLog.archived_at.desc())
+                .order_by(OfflineTaskLog.created_at.desc())
                 .limit(_FINALIZE_RETRY_LIMIT)
             )
         ).scalars().all()
@@ -1013,6 +1028,11 @@ async def _finalize_retry_pass() -> int:
                 # no timeout anywhere down the pikpakapi stack).
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
                     if await run_finalize(pikpak_service, row.code):
+                        if not row.archived:
+                            # Collecting-orphan: the sweep's stamp never
+                            # matched, so close the move here too.
+                            row.archived = True
+                            row.archived_at = datetime.utcnow()
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1
@@ -1022,6 +1042,9 @@ async def _finalize_retry_pass() -> int:
                         # the video sits directly in the 系列 folder, so
                         # there is no per-code folder to finalize. The
                         # sweep's own cleanup already normalised it.
+                        if not row.archived:
+                            row.archived = True
+                            row.archived_at = datetime.utcnow()
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1

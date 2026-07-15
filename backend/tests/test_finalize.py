@@ -303,8 +303,9 @@ async def _retry_db(tmp_path, monkeypatch, rows):
         return set()
 
     monkeypatch.setattr(presence_index, "get", fake_get)
-    # Module-level reap cooldown must not leak between tests (fresh DBs
+    # Module-level cooldowns must not leak between tests (fresh DBs
     # restart row ids at 1, so stale entries would shadow new rows).
+    arch._finalize_attempts.clear()
     arch._reap_attempts.clear()
     async with maker() as s:
         s.add_all(rows)
@@ -1152,4 +1153,46 @@ async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypat
         by_code = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
     assert by_code["MTM-013"].finalized is True
     assert all(not r.finalized for c, r in by_code.items() if c != "MTM-013")
+    await engine.dispose()
+
+
+async def test_finalize_retry_picks_up_collecting_orphan(tmp_path, monkeypatch):
+    """A row submitted while Collecting never gets its file_id stamp, so
+    the sweep moves the wrapper but archived stays 0 — and the retry
+    pass used to ignore it forever (live: MUDR-349/358 wrappers full of
+    junk 2h+ after landing). Task gone + finalize succeeds → the row is
+    closed on both flags."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MUDR-349", magnet="m", task_id="t-gone",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=2)),
+        # Still downloading — must be skipped via the active-task check.
+        OfflineTaskLog(code="MUDR-999", magnet="m", task_id="t-live",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=2)),
+    ])
+
+    calls = []
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        calls.append(code)
+        return {"errors": 0}
+
+    async def active():
+        return {"t-live"}
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", active)
+    done = await arch._finalize_retry_pass()
+    assert done == 1
+    assert calls == ["MUDR-349"]
+
+    async with maker() as s:
+        rows = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
+    assert rows["MUDR-349"].finalized is True
+    assert rows["MUDR-349"].archived is True
+    assert rows["MUDR-349"].archived_at is not None
+    assert rows["MUDR-999"].archived is False
+    assert rows["MUDR-999"].finalized is False
     await engine.dispose()

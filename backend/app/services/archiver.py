@@ -1216,6 +1216,16 @@ async def _already_flattened(code: str) -> bool:
         return False
     if not (result.get("ok") and result.get("files")):
         return False
+    if result.get("source") == "task":
+        # files_for_code fell back to the offline task's own file
+        # listing — presence knows nothing about this code, so nothing
+        # has been archived: the files still sit in the download
+        # wrapper under their BT names, with bare-name paths the
+        # dirty-parent cleanup below can't even resolve (live:
+        # OYCVR-058, stamped finalized while fbfb.me@….part1-3.mp4 sat
+        # unarchived in the task area). Not flattened — keep waiting
+        # for the sweep.
+        return False
     # The loose files exist, but their NAMES may still carry BT noise:
     # the sweep's phase-2 rename queue lives in memory only, so a
     # restart between phase-1 (move) and phase-2 (rename) leaves

@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from ..config import kind_base_path, settings, task_folder_path
 from ..database import SessionLocal
@@ -997,6 +997,83 @@ async def _finalize_retry_pass() -> int:
     return done
 
 
+async def _reap_orphan_rows() -> int:
+    """Close rows the sweep's file_id stamp can never reach.
+
+    A magnet submitted while still "Collecting" has no file_id yet; when
+    the task then completes and drops off PikPak's task list between
+    tracker polls, the row keeps ``file_id == ""`` forever. The sweep
+    moves + flattens the wrapper fine, but ``_mark_offline_log_archived``
+    matches rows by file_id, so the row sits at ``archived=0`` and never
+    enters the finalize retry window (live case: MTM-013 2026-07-15 —
+    files landed as ``_1/_2``, row permanently pending).
+
+    Only rows whose task is gone from the task list AND whose code is
+    already flattened at the destination get stamped; anything still
+    downloading, listed, or not yet landed keeps waiting. Pure DB
+    bookkeeping — no file operations."""
+    from .offline_tasks import SETTLE_GRACE  # avoid cycle
+
+    settle_cutoff = datetime.utcnow() - SETTLE_GRACE
+    done = 0
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(OfflineTaskLog)
+                .where(
+                    OfflineTaskLog.archived.is_(False),
+                    OfflineTaskLog.finalized.is_(False),
+                    or_(
+                        OfflineTaskLog.file_id == "",
+                        OfflineTaskLog.file_id.is_(None),
+                    ),
+                    OfflineTaskLog.code != "",
+                    OfflineTaskLog.created_at < settle_cutoff,
+                )
+                .order_by(OfflineTaskLog.created_at.desc())
+                .limit(_FINALIZE_RETRY_LIMIT)
+            )
+        ).scalars().all()
+        if not rows:
+            return 0
+        try:
+            active = await _active_task_ids()
+        except PikPakError as exc:
+            logger.warning("orphan reap skipped: %s", exc)
+            return 0
+        for row in rows:
+            if row.task_id and row.task_id in active:
+                continue  # still downloading — not an orphan
+            try:
+                async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
+                    if not await _already_flattened(row.code):
+                        continue  # nothing landed (or needs real finalize)
+            except TimeoutError:
+                logger.warning(
+                    "orphan reap %s timed out after %ss",
+                    row.code, _FINALIZE_ROW_TIMEOUT,
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("orphan reap %s failed: %s", row.code, exc)
+                continue
+            now = datetime.utcnow()
+            row.archived = True
+            row.archived_at = now
+            row.finalized = True
+            row.finalized_at = now
+            row.message = "auto-closed: task gone, files flattened"
+            done += 1
+            logger.warning(
+                "orphan reap closed %s (task %s vanished before file_id "
+                "was tracked; files already flattened)",
+                row.code, row.task_id or "?",
+            )
+        if done:
+            await session.commit()
+    return done
+
+
 async def _already_flattened(code: str) -> bool:
     """True when ``code``'s video exists on PikPak even though it has no
     per-code archive folder — the sweep's flatten put ``CODE.ext``
@@ -1062,6 +1139,14 @@ async def archive_once() -> int:
         await _finalize_retry_pass()
     except Exception as exc:  # noqa: BLE001
         logger.warning("finalize retry pass failed: %s", exc)
+
+    # Close rows whose task vanished before a file_id was ever tracked —
+    # the sweep's file_id-based stamp can't reach them, so once the files
+    # are verifiably flattened the row would otherwise pend forever.
+    try:
+        await _reap_orphan_rows()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("orphan row reap failed: %s", exc)
 
     # Cheap DB peek: if nothing has been submitted-but-not-archived
     # since the last pass, skip the PikPak list_tasks round-trip

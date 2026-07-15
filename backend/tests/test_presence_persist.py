@@ -80,7 +80,7 @@ async def test_refresh_codes_updates_and_drops(tmp_path, monkeypatch):
         "GONE-002": [],                                   # deleted
     }
 
-    async def fake_live(code):
+    async def fake_live(code, *, exclude_ids=frozenset()):
         return live[code]
 
     idx._live_paths_for = fake_live  # type: ignore[method-assign]
@@ -126,3 +126,59 @@ def test_status_reports_stale_flag():
     assert idx.status()["stale"] is False
     idx.invalidate()
     assert idx.status()["stale"] is True
+
+
+class _Entry:
+    """Minimal stand-in for a PikPakFile (only .id / .name are read)."""
+
+    def __init__(self, id: str, name: str) -> None:
+        self.id = id
+        self.name = name
+
+
+async def test_refresh_codes_drops_ids_finalize_just_removed(
+    tmp_path, monkeypatch
+):
+    """A wrapper finalize just trashed must not survive in the index.
+
+    PikPak's listing is eventually consistent: for a window after
+    trash_files() the dead folder is still returned. Recomputing paths
+    from that listing reproduces the cached set byte for byte, so the
+    change check skips the write and the phantom path outlives the
+    folder (only an unrelated full walk ever cleared it).
+    """
+    engine, maker = await _db(tmp_path, monkeypatch, "p_ghost.db")
+    code = "GTAL-005"
+    series = "AVBT/製作商/ゴールデンタイム/未分類"
+    wrapper = _Entry("wrap-1", "[Initial D] GTAL-005")
+    video = _Entry("vid-1", "GTAL-005.mp4")
+
+    idx = PikPakPresenceIndex()
+    idx._codes = {code}
+    idx._paths = {code: [f"{series}/{wrapper.name}", f"{series}/{video.name}"]}
+    await idx._persist_code(code, idx._paths[code])
+
+    import app.services.archiver as arch
+
+    async def _no_nested(_code, allow_fetch=False):
+        return None
+
+    monkeypatch.setattr(arch, "studio_series_dir_for_code", _no_nested)
+
+    class _Svc:
+        async def lookup_folder_id(self, path):
+            return "series-id" if path == series else None
+
+        async def list_all_files(self, parent_id="", cap=0):
+            return [wrapper, video], False
+
+    monkeypatch.setattr(pres, "pikpak_service", _Svc())
+
+    changed = await idx.refresh_codes([code], exclude_ids={wrapper.id})
+
+    assert changed == 1
+    assert idx.paths_for(code) == [f"{series}/{video.name}"]
+    async with maker() as s:
+        rows = (await s.execute(select(PresenceEntry))).scalars().all()
+    assert [r.path for r in rows] == [f"{series}/{video.name}"]
+    await engine.dispose()

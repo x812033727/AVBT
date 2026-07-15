@@ -893,6 +893,14 @@ _PRESENCE_TIMEOUT = 600
 # Orphan reap only looks at rows from the current pipeline; older rows
 # predate the finalized column and are not operationally pending.
 _REAP_WINDOW = timedelta(days=7)
+# Rows that failed the flattened check stay candidates (their code may
+# land later), but re-checking them every pass would let a block of
+# never-landing zombies (task gone, files never materialised) hog the
+# per-pass cap forever and starve younger genuine orphans. Cooldown per
+# row id; flattened state only changes when a sweep lands files, so a
+# few hours of latency on the retry is free.
+_REAP_RETRY_COOLDOWN = timedelta(hours=6)
+_reap_attempts: dict[int, datetime] = {}
 
 
 async def _active_task_ids() -> set[str]:
@@ -1056,13 +1064,20 @@ async def _reap_orphan_rows() -> int:
         except PikPakError as exc:
             logger.warning("orphan reap skipped: %s", exc)
             return 0
+        # Drop stale attempt records so the map stays bounded.
+        attempt_floor = datetime.utcnow() - _REAP_RETRY_COOLDOWN
+        for rid in [k for k, v in _reap_attempts.items() if v < attempt_floor]:
+            del _reap_attempts[rid]
         checked = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — not an orphan
+            if row.id in _reap_attempts:
+                continue  # failed a recent check — let others have a slot
             if checked >= _FINALIZE_RETRY_LIMIT:
                 break  # cap the expensive flattened checks per pass
             checked += 1
+            _reap_attempts[row.id] = datetime.utcnow()
             try:
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
                     if not await _already_flattened(row.code):

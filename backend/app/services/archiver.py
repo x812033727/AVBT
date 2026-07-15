@@ -1098,6 +1098,16 @@ async def _reap_orphan_rows() -> int:
     enters the finalize retry window (live case: MTM-013 2026-07-15 —
     files landed as ``_1/_2``, row permanently pending).
 
+    The second path is a row that WAS archived but whose finalize never
+    landed. ``_finalize_retry_pass`` selects on ``archived_at > cutoff``,
+    so once a row ages past _FINALIZE_RETRY_WINDOW that pass drops it and
+    — with the reaper historically requiring archived=False and no
+    file_id — nothing owned it again. It stayed finalized=0 forever
+    despite clean flattened files, permanently inflating the "not cleaned
+    up" backlog the operator watches for new pipeline seams (live:
+    300MIUM-1276/1277/1295/1299/1319, DVMM-380 — archived 07-12 while the
+    pre-#160 drain was starved, still open at 80h).
+
     Only rows whose task is gone from the task list AND whose code is
     already flattened at the destination get stamped; anything still
     downloading, listed, or not yet landed keeps waiting. Pure DB
@@ -1116,17 +1126,31 @@ async def _reap_orphan_rows() -> int:
 
     settle_cutoff = datetime.utcnow() - SETTLE_GRACE
     reap_cutoff = datetime.utcnow() - _REAP_WINDOW
+    retry_cutoff = datetime.utcnow() - _FINALIZE_RETRY_WINDOW
     done = 0
     async with SessionLocal() as session:
         rows = (
             await session.execute(
                 select(OfflineTaskLog)
                 .where(
-                    OfflineTaskLog.archived.is_(False),
                     OfflineTaskLog.finalized.is_(False),
                     or_(
-                        OfflineTaskLog.file_id == "",
-                        OfflineTaskLog.file_id.is_(None),
+                        # Collecting orphan: file_id was never tracked, so
+                        # the sweep's stamp path can't own this row.
+                        (OfflineTaskLog.archived.is_(False))
+                        & or_(
+                            OfflineTaskLog.file_id == "",
+                            OfflineTaskLog.file_id.is_(None),
+                        ),
+                        # Archived but never finalized, and now past the
+                        # retry pass's own lookback — that pass keys off
+                        # archived_at > cutoff, so once a row ages out
+                        # nothing else will ever close it. Inside the
+                        # window the retry pass still owns it (it can run
+                        # a real finalize and purge junk); after, this is
+                        # the only backstop left.
+                        (OfflineTaskLog.archived.is_(True))
+                        & (OfflineTaskLog.archived_at < retry_cutoff),
                     ),
                     OfflineTaskLog.code != "",
                     OfflineTaskLog.created_at < settle_cutoff,
@@ -1171,16 +1195,22 @@ async def _reap_orphan_rows() -> int:
                 logger.warning("orphan reap %s failed: %s", row.code, exc)
                 continue
             now = datetime.utcnow()
+            was_archived = bool(row.archived)
             row.archived = True
-            row.archived_at = now
+            # Keep the original archive time on rows the sweep already
+            # stamped — overwriting it would relabel 07-12 work as today's.
+            if not was_archived:
+                row.archived_at = now
             row.finalized = True
             row.finalized_at = now
             row.message = "auto-closed: task gone, files flattened"
             done += 1
             logger.warning(
-                "orphan reap closed %s (task %s vanished before file_id "
-                "was tracked; files already flattened)",
+                "orphan reap closed %s (task %s gone, %s; files already "
+                "flattened)",
                 row.code, row.task_id or "?",
+                "archived but finalize never landed within the retry window"
+                if was_archived else "vanished before file_id was tracked",
             )
         if done:
             await session.commit()

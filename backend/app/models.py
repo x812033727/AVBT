@@ -188,3 +188,21 @@ class OfflineTaskLog(Base):
     tracked_slug: Mapped[str] = mapped_column(String(64), default="")
     tracked_name: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PresenceEntry(Base):
+    """One (code, path) pair of the archived-code index.
+
+    The index used to live in memory only, so every restart / TTL expiry
+    re-walked the whole PikPak drive (10k+ codes, minutes of API calls)
+    just to answer "is this code already archived?". Persisting it makes
+    the walk an explicit action (settings → 重建索引) while the pipeline
+    keeps the rows current per-code as it lands and finalizes work."""
+
+    __tablename__ = "presence_entry"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    path: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

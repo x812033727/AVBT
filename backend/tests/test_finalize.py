@@ -303,6 +303,9 @@ async def _retry_db(tmp_path, monkeypatch, rows):
         return set()
 
     monkeypatch.setattr(presence_index, "get", fake_get)
+    # Module-level reap cooldown must not leak between tests (fresh DBs
+    # restart row ids at 1, so stale entries would shadow new rows).
+    arch._reap_attempts.clear()
     async with maker() as s:
         s.add_all(rows)
         await s.commit()
@@ -1112,4 +1115,41 @@ async def test_reap_ignores_rows_outside_window(tmp_path, monkeypatch):
     async with maker() as s:
         row = (await s.execute(select(OfflineTaskLog))).scalars().one()
     assert row.archived is False and row.finalized is False
+    await engine.dispose()
+
+
+async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypatch):
+    """Zombie rows that keep failing the flattened check must not hog
+    the per-pass cap: on the next pass they are in cooldown and the
+    slots go to rows not yet attempted."""
+    now = datetime.utcnow()
+    rows = [
+        OfflineTaskLog(code=f"ZOMBIE-{i:03d}", magnet="m", task_id=f"t-z-{i}",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(days=3, hours=i))
+        for i in range(arch._FINALIZE_RETRY_LIMIT)
+    ]
+    rows.append(
+        OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-gone", file_id="",
+                       archived=False, finalized=False,
+                       created_at=now - timedelta(hours=30)),
+    )
+    engine, maker = await _retry_db(tmp_path, monkeypatch, rows)
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):
+        return code == "MTM-013"
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    # Pass 1: the cap is spent on the older zombies.
+    assert await arch._reap_orphan_rows() == 0
+    # Pass 2: zombies are cooling down — the genuine orphan gets a slot.
+    assert await arch._reap_orphan_rows() == 1
+    async with maker() as s:
+        by_code = {r.code: r for r in (await s.execute(select(OfflineTaskLog))).scalars()}
+    assert by_code["MTM-013"].finalized is True
+    assert all(not r.finalized for c, r in by_code.items() if c != "MTM-013")
     await engine.dispose()

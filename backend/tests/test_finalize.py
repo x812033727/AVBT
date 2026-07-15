@@ -225,6 +225,30 @@ async def test_executor_flattens_renames_and_purges():
     assert [n.name for n in svc._graph["root"]] == ["MIDV-001.mp4"]
 
 
+async def test_executor_reports_removed_ids_for_presence_refresh():
+    """finalize must name what it deleted.
+
+    PikPak keeps listing a just-trashed wrapper, so a presence refresh
+    that re-reads the folder right after finalize sees the dead entry,
+    computes the pre-finalize paths, and skips its write as a no-op —
+    stranding the phantom folder in the index until an unrelated full
+    walk clears it. The ids travel with the summary so the refresh can
+    ignore them instead.
+    """
+    svc = FakeSvc(_wrapper_graph())
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    r = events[-1]["result"]
+    # Everything actually removed — the wrapper included — is reported.
+    assert set(r["gone_ids"]) == set(svc.purged) | set(svc.trashed)
+    assert "wrap" in r["gone_ids"]
+
+
+async def test_executor_dry_run_reports_no_removed_ids():
+    svc = FakeSvc(_wrapper_graph())
+    events = await _collect(svc, "MIDV-001", "root", dry_run=True)
+    assert events[-1]["result"]["gone_ids"] == []
+
+
 async def test_executor_dry_run_touches_nothing():
     svc = FakeSvc(_wrapper_graph())
     events = await _collect(svc, "MIDV-001", "root", dry_run=True)

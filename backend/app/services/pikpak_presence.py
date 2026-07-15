@@ -249,22 +249,36 @@ class PikPakPresenceIndex:
 
     # ---------- incremental updates ----------
 
-    async def refresh_codes(self, codes: list[str]) -> int:
+    async def refresh_codes(
+        self, codes: list[str], *, exclude_ids: set[str] | None = None
+    ) -> int:
         """Re-read just these codes' archive folders and update the index
         (memory + DB). Costs ~1-2 listings per code — the cheap
         alternative to a full walk when the pipeline lands or finalizes
-        specific codes. Returns how many codes changed."""
+        specific codes. Returns how many codes changed.
+
+        ``exclude_ids`` are entries the caller has just deleted. PikPak's
+        listing is eventually consistent, so refreshing straight after a
+        trash still sees the dead entry — which reproduces the cached
+        paths exactly, trips the no-change check below, and strands the
+        phantom path in the index for good (nothing re-reads a finalized
+        code, and only an unrelated full walk ever cleared it). Naming
+        the ids makes the update deterministic instead of a race.
+        """
         wanted = [c for c in {normalize_code(c) or c for c in codes} if c]
         if not wanted:
             return 0
         if self._codes is None:
             await self._load_from_db()
         sem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
+        gone = frozenset(exclude_ids or ())
 
         async def one(code: str) -> tuple[str, list[str]] | None:
             async with sem:
                 try:
-                    return code, await self._live_paths_for(code)
+                    return code, await self._live_paths_for(
+                        code, exclude_ids=gone
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("presence refresh %s failed: %s", code, exc)
                     return None
@@ -292,13 +306,17 @@ class PikPakPresenceIndex:
             logger.info("presence refreshed %d/%d codes", changed, len(wanted))
         return changed
 
-    async def _live_paths_for(self, code: str) -> list[str]:
+    async def _live_paths_for(
+        self, code: str, *, exclude_ids: frozenset[str] = frozenset()
+    ) -> list[str]:
         """Current archive paths for one code, read live from PikPak.
 
         Looks in the code's resolved 製作商/<studio>/<series> folder (both
         layouts: a ``CODE`` folder leaf and loose ``CODE*.ext`` videos)
         and the legacy archive folder. Returns [] when the code isn't
-        there any more (caller drops it from the index)."""
+        there any more (caller drops it from the index). ``exclude_ids``
+        skips entries the caller deleted but the listing may still
+        return — see :meth:`refresh_codes`."""
         from .archiver import studio_series_dir_for_code  # avoid cycle
 
         found: list[str] = []
@@ -329,6 +347,8 @@ class PikPakPresenceIndex:
             if not folder_id:
                 continue
             for child in await self._list(folder_id):
+                if child.id in exclude_ids:
+                    continue
                 if normalize_code(child.name) == code:
                     path = f"{d}/{child.name}"
                     if path not in found:

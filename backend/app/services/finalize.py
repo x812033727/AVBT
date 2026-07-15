@@ -379,9 +379,13 @@ async def finalize_code_folder_stream(
             }}
             return
 
+    # Ids this run actually removed. PikPak keeps listing them for a
+    # while, so the presence refresh downstream must be told to ignore
+    # them rather than race the drive's eventual consistency.
+    gone_ids: list[str] = []
     summary = {"kept": len(plan.keep), "renamed": 0, "moved": 0, "purged": 0,
                "trashed": 0, "skipped": 0, "settling": 0, "errors": 0,
-               "dry_run": dry_run}
+               "dry_run": dry_run, "gone_ids": gone_ids}
     renames = [(k, t) for k, t in plan.keep if k.name != t]
     move_ids = ({k.id for k, _t in plan.keep} if flatten
                 else {k.id for k in plan.move_to_root})
@@ -483,12 +487,14 @@ async def finalize_code_folder_stream(
                 ids = [e.id for e in plan.purge_files]
                 for i in range(0, len(ids), _PURGE_CHUNK):
                     await svc.delete_forever(ids[i:i + _PURGE_CHUNK])
+                gone_ids.extend(ids)
             summary["purged"] += len(plan.purge_files)
             for e in plan.purge_files:
                 yield ev("purge", e.name)
         if plan.trash_files:
             if not dry_run:
                 await svc.trash_files([e.id for e in plan.trash_files])
+                gone_ids.extend(e.id for e in plan.trash_files)
             summary["trashed"] += len(plan.trash_files)
             for e in plan.trash_files:
                 yield ev("trash", e.name, reason="duplicate")
@@ -544,6 +550,7 @@ async def finalize_code_folder_stream(
                 yield ev("skip", folder.name, kind="folder", reason="not_empty")
                 continue
             await svc.trash_files([folder.id])
+            gone_ids.append(folder.id)
             summary["trashed"] += 1
             yield ev("trash", folder.name, kind="folder",
                      reason="emptied_shell")
@@ -580,6 +587,7 @@ async def finalize_code_folder_stream(
                              reason="not_empty")
                 else:
                     await svc.trash_files([folder_id])
+                    gone_ids.append(folder_id)
                     summary["trashed"] += 1
                     yield ev("trash", folder_leaf, kind="folder",
                              reason="emptied_shell")
@@ -626,7 +634,9 @@ async def run_finalize(svc, code: str, *, folder_id: str | None = None) -> dict 
     try:
         from .pikpak_presence import presence_index  # avoid cycle
 
-        await presence_index.refresh_codes([code])
+        await presence_index.refresh_codes(
+            [code], exclude_ids=set(summary.get("gone_ids") or ())
+        )
     except Exception as exc:  # noqa: BLE001
         logger.debug("presence refresh after finalize %s failed: %s", code, exc)
     return summary

@@ -179,6 +179,22 @@ async def trash_files(ids: list[str] = Body(..., embed=True)):
         raise _wrap(exc) from exc
 
 
+@router.post("/files/rename")
+async def rename_file(
+    file_id: str = Body(..., embed=True),
+    new_name: str = Body(..., embed=True),
+):
+    """Rename a single file or folder in place (admin/maintenance use —
+    keeps manual reorganisation on the server's persistent PikPak login
+    instead of one-off client logins that trip the login throttle)."""
+    if not file_id or not new_name.strip():
+        raise HTTPException(status_code=400, detail="缺少 file_id 或 new_name")
+    try:
+        return await pikpak_service.rename_file(file_id, new_name.strip())
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+
 @router.post("/files/move")
 async def move_files(
     file_ids: list[str] = Body(..., embed=True),

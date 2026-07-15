@@ -10,8 +10,9 @@ them as "task gone" (live: MMGO-005 rows 20521/20899).
 
 from types import SimpleNamespace
 
+import app.routers.pikpak as pikpak_router
 import app.services.archiver as arch
-from app.services.pikpak import PikPakService
+from app.services.pikpak import ACTIVE_PHASES, PikPakService
 
 
 async def test_list_tasks_paginates_and_forwards_phases(monkeypatch):
@@ -93,3 +94,27 @@ async def test_active_task_ids_includes_pending(monkeypatch):
     assert "run1" in ids
     assert "done1" not in ids
     assert "PHASE_TYPE_PENDING" in (captured["phases"] or [])
+
+
+async def test_tasks_endpoint_reports_pending(monkeypatch):
+    """The operator's in-flight view must not hide the queue.
+
+    DB `pending` has drifted, so /api/pikpak/tasks is the only in-flight
+    truth — and a queued task that reads as absent gets diagnosed as a
+    dead seed and has its magnet resent (live: MMGO-005 VOx_Q5Tj).
+    """
+    captured: dict = {}
+
+    async def fake_list_tasks(size=100, phases=None):
+        captured["phases"] = phases
+        return [
+            SimpleNamespace(id="run1", phase="PHASE_TYPE_RUNNING"),
+            SimpleNamespace(id="pend1", phase="PHASE_TYPE_PENDING"),
+        ]
+
+    monkeypatch.setattr(pikpak_router.pikpak_service, "list_tasks", fake_list_tasks)
+
+    tasks = await pikpak_router.list_tasks(size=500)
+
+    assert captured["phases"] == ACTIVE_PHASES
+    assert [t.id for t in tasks] == ["run1", "pend1"]

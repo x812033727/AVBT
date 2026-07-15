@@ -1,3 +1,4 @@
+// Mirrors backend jav_code.VIDEO_EXTS — keep the two lists in sync.
 const VIDEO_EXTS = new Set([
   ".mp4",
   ".mkv",
@@ -8,6 +9,11 @@ const VIDEO_EXTS = new Set([
   ".ts",
   ".m4v",
   ".webm",
+  ".mpg",
+  ".mpeg",
+  ".rmvb",
+  ".m2ts",
+  ".vob",
 ]);
 
 export function isVideo(name: string | null | undefined): boolean {

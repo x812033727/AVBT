@@ -1009,6 +1009,26 @@ async def _finalize_retry_pass() -> int:
         except PikPakError as exc:
             logger.warning("finalize retry skipped: %s", exc)
             return 0
+        # Cheap DB-only filters first. The presence refresh below is
+        # ~1-2 live PikPak listings per code, so refreshing a row this
+        # pass will not touch is pure load: dead rows (task gone, nothing
+        # landed, so the reaper's flattened check never owns them) stay
+        # selected for the full _REAP_WINDOW, and refreshing every
+        # selected row re-listed 281 codes every 60s pass to find ~1
+        # change — sustained PikPak timeouts plus a minutes-long archiver
+        # loop (live 2026-07-15). The cooldown below exists precisely to
+        # stop that re-listing; it only works if it gates the refresh too.
+        now = datetime.utcnow()
+        candidates = []
+        for row in rows:
+            if row.task_id and row.task_id in active:
+                continue  # still downloading — try again next pass
+            last = _finalize_attempts.get(row.id)
+            if last is not None and now - last < _FINALIZE_RETRY_COOLDOWN:
+                continue  # just failed — let the cooldown expire first
+            candidates.append(row)
+        if not candidates:
+            return 0
         # Both the presence-path folder fallback and the flattened check
         # read the presence index, and a snapshot from BEFORE the sweep
         # moved these wrappers only knows the old loose-file path — the
@@ -1021,20 +1041,14 @@ async def _finalize_retry_pass() -> int:
             from .pikpak_presence import presence_index  # avoid cycle
 
             await asyncio.wait_for(
-                presence_index.refresh_codes([r.code for r in rows]),
+                presence_index.refresh_codes([r.code for r in candidates]),
                 timeout=_PRESENCE_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("finalize retry skipped (presence): %s", exc)
             return 0
         pass_start = asyncio.get_event_loop().time()
-        now = datetime.utcnow()
-        for row in rows:
-            if row.task_id and row.task_id in active:
-                continue  # still downloading — try again next pass
-            last = _finalize_attempts.get(row.id)
-            if last is not None and now - last < _FINALIZE_RETRY_COOLDOWN:
-                continue  # just failed — let the cooldown expire first
+        for row in candidates:
             if asyncio.get_event_loop().time() - pass_start > _FINALIZE_PASS_BUDGET:
                 logger.info(
                     "finalize retry pass budget spent after %d rows; "

@@ -1274,3 +1274,55 @@ async def test_finalize_retry_picks_up_collecting_orphan(tmp_path, monkeypatch):
     assert rows["MUDR-999"].archived is False
     assert rows["MUDR-999"].finalized is False
     await engine.dispose()
+
+
+async def test_finalize_retry_refreshes_only_attempted_codes(tmp_path, monkeypatch):
+    """The presence refresh is ~1-2 live PikPak listings per code, so it
+    must cover only the rows this pass will actually finalize. Rows held
+    back by the active-task check or the failure cooldown are re-listed
+    for nothing — and dead rows (task gone, nothing landed) stay selected
+    for the whole 7-day orphan window, so refreshing every selected row
+    re-listed 281 codes every 60s pass to find ~1 change (live 2026-07-15:
+    sustained PikPak timeouts + a minutes-long archiver loop). The
+    cooldown exists precisely to stop that re-listing."""
+    now = datetime.utcnow()
+    engine, _maker = await _retry_db(tmp_path, monkeypatch, [
+        # Held back: its task is still downloading.
+        OfflineTaskLog(code="MIDV-001", magnet="m", task_id="t-run",
+                       archived=True, archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+        # Held back: failed moments ago, still inside the cooldown.
+        OfflineTaskLog(code="MIDV-002", magnet="m", archived=True,
+                       archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+        # The only row this pass will attempt.
+        OfflineTaskLog(code="MIDV-003", magnet="m", archived=True,
+                       archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+    ])
+
+    refreshed: list[str] = []
+
+    async def spy_refresh(codes):
+        refreshed.extend(codes)
+        return 0
+
+    from app.services.pikpak_presence import presence_index
+
+    monkeypatch.setattr(presence_index, "refresh_codes", spy_refresh)
+
+    async def fake_run_finalize(svc, code, *, folder_id=None):
+        return {"errors": 0}
+
+    async def active():
+        return {"t-run"}
+
+    monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", active)
+    # MIDV-002 is row id 2 — park it in the cooldown.
+    arch._finalize_attempts[2] = now
+
+    done = await arch._finalize_retry_pass()
+    assert done == 1
+    assert refreshed == ["MIDV-003"]
+    await engine.dispose()

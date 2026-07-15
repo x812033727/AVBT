@@ -31,7 +31,11 @@ from .pikpak_presence import presence_index
 logger = logging.getLogger(__name__)
 
 _MAX_NAMES = 20  # cap the example names in a response
-_MAX_PATHS = 3   # presence may know several copies of one work
+# Cap on folders actually LISTED per lookup (each costs API calls).
+# Loose-file presence paths are free and must never be truncated: the
+# flattened layout makes every part of one work its own path, so a
+# blanket paths[:N] would undercount multi-part works.
+_MAX_PATHS = 3
 _MAX_SUBFOLDERS = 5  # nested-level scan cap inside one task folder
 
 
@@ -142,7 +146,7 @@ async def count_for_code(code: str) -> dict:
         return {"ok": False, "error": "無效番號"}
 
     await presence_index.get()  # lazily (re)build within TTL
-    paths = presence_index.paths_for(code)[:_MAX_PATHS]
+    paths = presence_index.paths_for(code)
 
     entries: list[dict] = []
     best_names: list[str] = []
@@ -167,8 +171,8 @@ async def count_for_code(code: str) -> dict:
         entry_path = f"{parent}/{leaves[0]}" if len(leaves) == 1 else parent
         entries.append({"path": entry_path, "video_count": len(leaves)})
         if len(leaves) > best_count:
-            best_count, best_names = len(leaves), leaves
-    for path in folder_paths:
+            best_count, best_names = len(leaves), leaves[:_MAX_NAMES]
+    for path in folder_paths[:_MAX_PATHS]:
         try:
             folder_id = await pikpak_service.lookup_folder_id(path)
         except Exception as exc:  # noqa: BLE001 — stale presence path
@@ -222,7 +226,7 @@ async def files_for_code(code: str) -> dict:
         return {"ok": False, "error": "無效番號"}
 
     await presence_index.get()
-    paths = presence_index.paths_for(code)[:_MAX_PATHS]
+    paths = presence_index.paths_for(code)
 
     files: list[dict] = []
     seen_ids: set[str] = set()
@@ -234,31 +238,43 @@ async def files_for_code(code: str) -> dict:
         seen_ids.add(entry["id"])
         files.append({**entry, "path": path})
 
+    # Presence recorded bare video files (flattened layout): paths carry
+    # no ids, so list each parent folder ONCE and match every wanted
+    # leaf inside it — a multi-part work is many paths in one parent.
+    loose_by_parent: dict[str, set[str]] = {}
+    folder_paths: list[str] = []
     for path in paths:
         parent, _, leaf = path.rpartition("/")
+        if is_video(leaf):
+            loose_by_parent.setdefault(parent, set()).add(leaf)
+        else:
+            folder_paths.append(path)
+
+    for parent, wanted in list(loose_by_parent.items())[:_MAX_PATHS]:
         try:
-            if is_video(leaf):
-                # Presence recorded a bare video file. Paths carry no
-                # ids, so list the parent folder and match by name.
-                folder_id = await pikpak_service.lookup_folder_id(parent)
-                if not folder_id:
-                    continue
-                children, partial = await pikpak_service.list_all_files(folder_id)
-                any_partial = any_partial or bool(partial)
-                for child in children:
-                    if (
-                        getattr(child, "kind", "") != "drive#folder"
-                        and child.name == leaf
-                    ):
-                        _add(
-                            {
-                                "id": child.id,
-                                "name": child.name,
-                                "size": getattr(child, "size", None),
-                            },
-                            path,
-                        )
+            folder_id = await pikpak_service.lookup_folder_id(parent)
+            if not folder_id:
                 continue
+            children, partial = await pikpak_service.list_all_files(folder_id)
+            any_partial = any_partial or bool(partial)
+            for child in children:
+                if (
+                    getattr(child, "kind", "") != "drive#folder"
+                    and child.name in wanted
+                ):
+                    _add(
+                        {
+                            "id": child.id,
+                            "name": child.name,
+                            "size": getattr(child, "size", None),
+                        },
+                        f"{parent}/{child.name}",
+                    )
+        except Exception as exc:  # noqa: BLE001 — one stale path shouldn't kill the lookup
+            logger.debug("files-for-code %s via %s failed: %s", code, parent, exc)
+            continue
+    for path in folder_paths[:_MAX_PATHS]:
+        try:
             folder_id = await pikpak_service.lookup_folder_id(path)
             if not folder_id:
                 continue

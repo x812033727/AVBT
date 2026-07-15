@@ -359,6 +359,61 @@ async def test_count_still_maxes_across_duplicate_homes(monkeypatch):
     assert len(r["entries"]) == 2
 
 
+async def test_count_all_loose_parts_beyond_folder_cap(monkeypatch):
+    """Scattered layout: a 6-part work is 6 presence paths. Loose-file
+    paths cost no listing, so the folder cap must not truncate parts."""
+    parent = "AVBT/製作商/SODクリエイト/未分類"
+    monkeypatch.setattr(vc, "presence_index", FakePresence({
+        "SDMU-845": [f"{parent}/SDMU-845_{i}.mp4" for i in range(1, 7)],
+    }))
+    monkeypatch.setattr(vc, "pikpak_service", FakePikPak())
+    r = await vc.count_for_code("SDMU-845")
+    assert r["ok"] and r["video_count"] == 6
+    assert r["video_names"] == [f"SDMU-845_{i}.mp4" for i in range(1, 7)]
+
+
+async def test_count_folder_homes_still_capped(monkeypatch):
+    """Folder homes each cost a lookup+listing — the cap stays for those."""
+    homes = [f"AVBT/已完成/copy{i}/ABC-123" for i in range(5)]
+    fake = FakePikPak(
+        tree={f"fid{i}": [f(f"v{i}", "ABC-123.mp4")] for i in range(5)},
+        paths={home: f"fid{i}" for i, home in enumerate(homes)},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    monkeypatch.setattr(vc, "presence_index", FakePresence({"ABC-123": homes}))
+    r = await vc.count_for_code("ABC-123")
+    assert r["ok"] and r["video_count"] == 1
+    assert len(r["entries"]) == vc._MAX_PATHS
+
+
+class CountingPikPak(FakePikPak):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.list_calls = 0
+
+    async def list_all_files(self, parent_id):
+        self.list_calls += 1
+        return await super().list_all_files(parent_id)
+
+
+async def test_files_for_code_all_loose_parts_one_listing(monkeypatch):
+    """files_for_code must return every part of a scattered work and
+    list each parent folder once, not once per part."""
+    parent = "AVBT/製作商/SODクリエイト/未分類"
+    monkeypatch.setattr(vc, "presence_index", FakePresence({
+        "SDMU-845": [f"{parent}/SDMU-845_{i}.mp4" for i in range(1, 7)],
+    }))
+    fake = CountingPikPak(
+        tree={"series": [f(f"i{i}", f"SDMU-845_{i}.mp4") for i in range(1, 7)]},
+        paths={parent: "series"},
+    )
+    monkeypatch.setattr(vc, "pikpak_service", fake)
+    r = await vc.files_for_code("SDMU-845")
+    assert r["ok"]
+    assert [x["name"] for x in r["files"]] == [f"SDMU-845_{i}.mp4" for i in range(1, 7)]
+    assert fake.list_calls == 1
+
+
 async def test_files_for_code_sorted_by_name(monkeypatch):
     """Play list must read _1, _2 even when presence yields _2 first."""
     monkeypatch.setattr(vc, "presence_index", FakePresence({

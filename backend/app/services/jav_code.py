@@ -60,8 +60,11 @@ VIDEO_EXTS = {
     # Legacy rip containers. Missing these is not cosmetic: finalize
     # permanently purges "non-video" files, so an unlisted container
     # (live near-miss: PPPD-539.mpg, 2026-07-15) is one cleanup pass
-    # away from destruction.
+    # away from destruction. SACE-045's sace-045.asf (2026-07-15) sat
+    # unrecognised for hours: finalize saw "no video" and spun on the
+    # retry loop — one real .mp4 sibling away from a permanent purge.
     ".mpg", ".mpeg", ".rmvb", ".m2ts", ".vob",
+    ".asf", ".rm", ".divx", ".ogm",
 }
 
 

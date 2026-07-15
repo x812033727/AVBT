@@ -119,6 +119,7 @@ def test_ext_and_is_video():
 def test_legacy_containers_are_video():
     # finalize permanently purges "non-video" files — a missing legacy
     # container here means a keeper is one cleanup away from deletion.
-    for ext in (".mpg", ".mpeg", ".rmvb", ".m2ts", ".vob"):
+    for ext in (".mpg", ".mpeg", ".rmvb", ".m2ts", ".vob",
+                ".asf", ".rm", ".divx", ".ogm"):
         assert is_video(f"PPPD-539{ext}") is True, ext
     assert extract_jav_code("PPPD-539MPG") == "PPPD-539"

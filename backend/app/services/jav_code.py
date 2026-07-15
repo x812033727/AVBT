@@ -32,8 +32,15 @@ _CH_SUFFIX_RE = r"(?:[-_]?CH)?"
 # the whole name reads as code-less.
 _PART_SUFFIX_RE = r"(?:CD\d+(?:-[A-Z])?|HHB\d*)?"
 
+# DMM poster-image naming glued onto the content id: torrents named
+# after the cover art keep its ``pl`` (package-large) tail —
+# ``oycvr00058pl``. Without consuming it the tail boundary check fails
+# and the wrapper reads as code-less, so the sweep never moves it
+# (live: OYCVR-058, stuck in AVBT/TASK while its row was closed).
+_POSTER_SUFFIX_RE = r"(?:PL)?"
+
 _CODE_RE = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
@@ -163,7 +170,7 @@ def is_video(name: str) -> bool:
 # The Chinese-sub marker (``ch``/``-ch``/``_ch``) is consumed but NOT
 # captured — different sub languages aren't different products.
 _CODE_RE_FULL = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 

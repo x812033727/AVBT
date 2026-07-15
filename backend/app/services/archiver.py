@@ -197,7 +197,9 @@ async def resolve_listing_for_code(code: str) -> tuple[str, str] | None:
     return None
 
 
-async def _detail_for_archive(code: str) -> MovieDetail | None:
+async def _detail_for_archive(
+    code: str, *, allow_fetch: bool = True
+) -> MovieDetail | None:
     """Get a code's MovieDetail for path routing.
 
     Reads the persistent ``movie_detail_cache`` row directly, bypassing
@@ -213,6 +215,10 @@ async def _detail_for_archive(code: str) -> MovieDetail | None:
             return MovieDetail.model_validate_json(row.detail)
         except Exception:  # noqa: BLE001 — corrupt row → try a live fetch
             logger.warning("archive: corrupt detail row for %s", code)
+    if not allow_fetch:
+        # Callers on a hot path (presence refresh runs per landed code)
+        # must not turn a cache miss into a JavBus round-trip.
+        return None
     try:
         return await scraper.fetch_detail_resolved(code)
     except Exception as exc:  # noqa: BLE001
@@ -298,11 +304,14 @@ async def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None
     return f"{base}/{safe_code}" if base is not None else None
 
 
-async def studio_series_dir_for_code(code: str) -> str | None:
+async def studio_series_dir_for_code(
+    code: str, *, allow_fetch: bool = True
+) -> str | None:
     """Public helper: resolve a code's ``製作商/<studio>/<series>`` folder
     (no code leaf) from the detail cache, or ``None`` when it has no
-    studio. Reused by the pCloud organizer to mirror the PikPak layout."""
-    detail = await _detail_for_archive(code)
+    studio. Reused by the pCloud organizer to mirror the PikPak layout.
+    ``allow_fetch=False`` keeps a cache miss from hitting JavBus."""
+    detail = await _detail_for_archive(code, allow_fetch=allow_fetch)
     if detail is None:
         return None
     return await _studio_series_dir(detail)
@@ -994,23 +1003,19 @@ async def _finalize_retry_pass() -> int:
             logger.warning("finalize retry skipped: %s", exc)
             return 0
         # Both the presence-path folder fallback and the flattened check
-        # read the presence index. A snapshot built BEFORE the sweep
+        # read the presence index, and a snapshot from BEFORE the sweep
         # moved these wrappers only knows the old loose-file path — the
-        # fallback then misses and the flattened check wrongly stamps
-        # the row (observed live on DVDMS-306). Force a rebuild only in
-        # that stale case (a full drive walk every 60s pass would grind
-        # the loop) and fail closed like the task-list guard.
+        # fallback then misses and the flattened check wrongly stamps the
+        # row (observed live on DVDMS-306). Refresh just the codes this
+        # pass will touch: one listing each, versus the full-drive walk
+        # this used to force (10k codes, minutes, every stale pass).
+        # Fail closed like the task-list guard.
         try:
             from .pikpak_presence import presence_index  # avoid cycle
 
-            newest = max(
-                (r.archived_at for r in rows if r.archived_at), default=None
-            )
-            stale = presence_index.built_at is None or (
-                newest is not None and presence_index.built_at < newest
-            )
             await asyncio.wait_for(
-                presence_index.get(force=stale), timeout=_PRESENCE_TIMEOUT
+                presence_index.refresh_codes([r.code for r in rows]),
+                timeout=_PRESENCE_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("finalize retry skipped (presence): %s", exc)
@@ -1345,6 +1350,7 @@ async def archive_once() -> int:
         ).scalars().all()
 
         notifications: list[str] = []
+        moved_codes: list[str] = []
         for row in rows:
             if not _safe_code(row.code):
                 continue
@@ -1357,6 +1363,7 @@ async def archive_once() -> int:
                 row.archived = True
                 row.archived_at = datetime.utcnow()
                 moved += 1
+                moved_codes.append(row.code)
                 # Best-effort finalize: keep only canonical videos in the
                 # 番號 folder, purge junk. The PikPak move above is async
                 # server-side, so the wrapper may not have landed yet —
@@ -1392,11 +1399,17 @@ async def archive_once() -> int:
         if moved:
             await session.commit()
             # Newly-archived codes change which codes count as "present".
+            # Update just those entries (one listing each) — the index is
+            # persisted now, so a blanket invalidation would cost a full
+            # drive walk on the next read for zero extra accuracy.
             try:
                 from . import missing as missing_svc  # avoid cycle
-                await missing_svc.invalidate_all_caches_async(presence=True)
+                from .pikpak_presence import presence_index  # avoid cycle
+
+                await presence_index.refresh_codes(moved_codes)
+                missing_svc.invalidate_result_caches()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("archive: presence cache invalidation failed: %s", exc)
+                logger.warning("archive: presence refresh failed: %s", exc)
             for msg in notifications:
                 webhook_queue.enqueue_nowait(msg, event="archive_done")
 

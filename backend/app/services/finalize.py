@@ -618,4 +618,15 @@ async def run_finalize(svc, code: str, *, folder_id: str | None = None) -> dict 
         # content is already correct, but keep retrying so the shell is
         # removed once the gate opens.
         return None
+    # Finalize is where a code's archived paths take their final shape
+    # (renamed keepers, junk gone, wrapper emptied). Push that one code
+    # into the persisted index rather than invalidating everything: the
+    # index survives restarts now, and a blanket invalidation would only
+    # buy a multi-minute full walk on the next read.
+    try:
+        from .pikpak_presence import presence_index  # avoid cycle
+
+        await presence_index.refresh_codes([code])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("presence refresh after finalize %s failed: %s", code, exc)
     return summary

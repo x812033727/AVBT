@@ -1,13 +1,23 @@
-"""Cached index of every JAV code currently present in the PikPak account.
+"""Persistent index of every JAV code currently present in the PikPak account.
 
 The archiver writes new completions into a hierarchical layout like
 ``AVBT/<kind label>/<name>/<code>/`` (e.g. ``AVBT/系列/MIDV/MIDV-001``).
 Codes that pre-date the hierarchy still sit under ``AVBT/已完成/<code>``.
 
-A "missing code" UI needs a flat lookup ("is code X present anywhere?"),
-so we walk those known roots once and keep the resulting set in memory
-with a short TTL. Cross-category membership is handled at query time:
-the index doesn't care which kind/name folder physically stores a code.
+A "missing code" UI needs a flat lookup ("is code X present anywhere?").
+The answer is stored in the ``presence_entry`` table and mirrored in
+memory; cross-category membership is handled at query time — the index
+doesn't care which kind/name folder physically stores a code.
+
+Walking the whole drive is EXPENSIVE (10k+ codes, minutes of PikPak
+calls). It therefore happens only when explicitly asked for (settings →
+重建索引 / ``rebuild(force=True)``) or to bootstrap an empty table. Every
+other update is per-code: the pipeline calls :meth:`refresh_codes` for
+the codes it just landed / finalized, which costs one folder listing
+each instead of a full walk. A snapshot loaded from the DB is trusted
+indefinitely — out-of-band changes (files moved by hand in the PikPak
+web UI) surface as a stale hint in ``status()``, not as a background
+re-walk.
 
 Each scan target is taken from ``config.all_kind_paths()``, which honours
 per-kind env overrides like ``PIKPAK_SERIES_FOLDER`` — so a non-standard
@@ -21,7 +31,11 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy import delete, select
+
 from ..config import all_kind_paths, settings
+from ..database import SessionLocal
+from ..models import AppMeta, PresenceEntry
 from .jav_code import normalize_code
 from .pikpak import PikPakError, pikpak_service
 
@@ -39,6 +53,11 @@ _MAX_KIND_DEPTH = 3
 # ``size=500`` call silently truncated large folders (e.g. a busy
 # ``AVBT/已完成``), making present codes look missing.
 _LIST_MAX_ITEMS = 5000
+# app_meta key holding the last full-walk timestamp (ISO string).
+_BUILT_AT_KEY = "presence:built_at"
+# Per-code refresh fan-out. Each code costs ~1-2 listings, so a modest
+# width keeps a finalize pass responsive without hammering PikPak.
+_REFRESH_CONCURRENCY = 4
 
 
 class PikPakPresenceIndex:
@@ -49,6 +68,8 @@ class PikPakPresenceIndex:
         self._unrecognized: list[dict[str, str]] = []
         self._built_at: datetime | None = None
         self._last_error: str = ""
+        self._stale: bool = False
+        self._loaded_from_db: bool = False
         self._lock = asyncio.Lock()
         self._sem = asyncio.Semaphore(_LIST_CONCURRENCY)
 
@@ -66,6 +87,10 @@ class PikPakPresenceIndex:
             "last_error": self._last_error,
             "ttl_seconds": settings.presence_ttl_seconds,
             "ready": self._codes is not None,
+            # A bulk operation touched the drive in ways the per-code
+            # updates can't track — the numbers still work, but a
+            # 重建索引 would make them exact.
+            "stale": self._stale,
         }
 
     def detail(self) -> dict[str, Any]:
@@ -101,7 +126,12 @@ class PikPakPresenceIndex:
         return out
 
     def invalidate(self) -> None:
-        self._built_at = None  # next get() will rebuild
+        """Flag the snapshot as possibly-behind (bulk reorganize, manual
+        cleanup). Deliberately does NOT drop the data or arm a re-walk:
+        a full walk is minutes of PikPak calls and now only happens on
+        an explicit rebuild(force=True). Per-code refreshes keep the
+        pipeline's own landings exact in the meantime."""
+        self._stale = True
 
     def peek(self) -> set[str] | None:
         """Non-blocking access. Returns whatever is currently cached
@@ -109,9 +139,17 @@ class PikPakPresenceIndex:
         return set(self._codes) if self._codes is not None else None
 
     async def get(self, *, force: bool = False) -> set[str]:
-        if not force and self._is_fresh():
+        """Codes currently archived. Cheap by default: memory, else the
+        persisted table. Only an explicit ``force`` (or a never-built
+        index) pays for a full drive walk."""
+        if force:
+            return await self.rebuild(force=True)
+        if self._codes is not None:
+            return set(self._codes)
+        if await self._load_from_db():
             return set(self._codes or set())
-        return await self.rebuild(force=force)
+        # Nothing persisted yet — bootstrap once.
+        return await self.rebuild(force=True)
 
     async def rebuild(self, *, force: bool = False) -> set[str]:
         async with self._lock:
@@ -128,6 +166,9 @@ class PikPakPresenceIndex:
                 self._codes = codes
                 self._built_at = datetime.utcnow()
                 self._last_error = ""
+                self._stale = False
+                self._loaded_from_db = True
+                await self._save_to_db()
                 logger.info("presence index rebuilt: %d codes", len(codes))
                 return set(codes)
             except Exception as exc:  # noqa: BLE001
@@ -136,9 +177,170 @@ class PikPakPresenceIndex:
                 # Keep whatever stale data we had to avoid empty results.
                 return set(self._codes or set())
 
+    # ---------- persistence ----------
+
+    async def _load_from_db(self) -> bool:
+        """Populate the in-memory mirror from ``presence_entry``. Returns
+        False when nothing is persisted yet (caller bootstraps)."""
+        try:
+            async with SessionLocal() as session:
+                rows = (
+                    await session.execute(
+                        select(PresenceEntry.code, PresenceEntry.path)
+                    )
+                ).all()
+                meta = await session.get(AppMeta, _BUILT_AT_KEY)
+        except Exception as exc:  # noqa: BLE001 — never fail a read path
+            logger.warning("presence load from DB failed: %s", exc)
+            return False
+        if not rows:
+            return False
+        paths: dict[str, list[str]] = {}
+        for code, path in rows:
+            paths.setdefault(code, []).append(path)
+        self._paths = paths
+        self._codes = set(paths)
+        if meta and meta.value:
+            try:
+                self._built_at = datetime.fromisoformat(meta.value)
+            except ValueError:
+                self._built_at = None
+        logger.info("presence index loaded from DB: %d codes", len(self._codes))
+        self._loaded_from_db = True
+        return True
+
+    async def _save_to_db(self) -> None:
+        """Replace the persisted snapshot with the in-memory one."""
+        try:
+            async with SessionLocal() as session:
+                await session.execute(delete(PresenceEntry))
+                session.add_all(
+                    [
+                        PresenceEntry(code=code, path=path)
+                        for code, bucket in self._paths.items()
+                        for path in bucket
+                    ]
+                )
+                await session.merge(
+                    AppMeta(
+                        key=_BUILT_AT_KEY,
+                        value=(
+                            self._built_at.isoformat() if self._built_at else ""
+                        ),
+                    )
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("presence save to DB failed: %s", exc)
+
+    async def _persist_code(self, code: str, paths: list[str]) -> None:
+        """Upsert one code's rows (empty ``paths`` deletes it)."""
+        try:
+            async with SessionLocal() as session:
+                await session.execute(
+                    delete(PresenceEntry).where(PresenceEntry.code == code)
+                )
+                session.add_all(
+                    [PresenceEntry(code=code, path=p) for p in paths]
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("presence persist %s failed: %s", code, exc)
+
+    # ---------- incremental updates ----------
+
+    async def refresh_codes(self, codes: list[str]) -> int:
+        """Re-read just these codes' archive folders and update the index
+        (memory + DB). Costs ~1-2 listings per code — the cheap
+        alternative to a full walk when the pipeline lands or finalizes
+        specific codes. Returns how many codes changed."""
+        wanted = [c for c in {normalize_code(c) or c for c in codes} if c]
+        if not wanted:
+            return 0
+        if self._codes is None:
+            await self._load_from_db()
+        sem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
+
+        async def one(code: str) -> tuple[str, list[str]] | None:
+            async with sem:
+                try:
+                    return code, await self._live_paths_for(code)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("presence refresh %s failed: %s", code, exc)
+                    return None
+
+        results = await asyncio.gather(*[one(c) for c in wanted])
+        changed = 0
+        for res in results:
+            if res is None:
+                continue
+            code, paths = res
+            if sorted(self._paths.get(code, [])) == sorted(paths):
+                continue
+            changed += 1
+            if paths:
+                self._paths[code] = paths
+                if self._codes is None:
+                    self._codes = set()
+                self._codes.add(code)
+            else:
+                self._paths.pop(code, None)
+                if self._codes is not None:
+                    self._codes.discard(code)
+            await self._persist_code(code, paths)
+        if changed:
+            logger.info("presence refreshed %d/%d codes", changed, len(wanted))
+        return changed
+
+    async def _live_paths_for(self, code: str) -> list[str]:
+        """Current archive paths for one code, read live from PikPak.
+
+        Looks in the code's resolved 製作商/<studio>/<series> folder (both
+        layouts: a ``CODE`` folder leaf and loose ``CODE*.ext`` videos)
+        and the legacy archive folder. Returns [] when the code isn't
+        there any more (caller drops it from the index)."""
+        from .archiver import studio_series_dir_for_code  # avoid cycle
+
+        found: list[str] = []
+        dirs: list[str] = []
+        # Where the archiver would put it (detail cache only — a miss
+        # must not become a JavBus fetch on this per-code hot path).
+        try:
+            nested = await studio_series_dir_for_code(code, allow_fetch=False)
+        except Exception:  # noqa: BLE001
+            nested = None
+        if nested:
+            dirs.append(nested)
+        # Where we last saw it: catches codes whose detail isn't cached
+        # and codes that moved out (the re-list then returns nothing and
+        # the caller drops the entry).
+        for known in self._paths.get(code, []):
+            parent = known.rsplit("/", 1)[0]
+            if parent and parent not in dirs:
+                dirs.append(parent)
+        legacy = (settings.pikpak_archive_folder or "AVBT/已完成").strip("/")
+        if legacy and legacy not in dirs:
+            dirs.append(legacy)
+        for d in dirs:
+            try:
+                folder_id = await pikpak_service.lookup_folder_id(d)
+            except Exception:  # noqa: BLE001
+                continue
+            if not folder_id:
+                continue
+            for child in await self._list(folder_id):
+                if normalize_code(child.name) == code:
+                    path = f"{d}/{child.name}"
+                    if path not in found:
+                        found.append(path)
+        return found
+
     # ---------- internals ----------
 
     def _is_fresh(self) -> bool:
+        """Whether the last FULL walk is within the TTL. No longer gates
+        reads (the persisted snapshot is authoritative) — kept so a
+        concurrent double-click on 重建索引 doesn't walk twice."""
         if self._codes is None or self._built_at is None:
             return False
         ttl = max(30, settings.presence_ttl_seconds)

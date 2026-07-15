@@ -302,7 +302,14 @@ async def _retry_db(tmp_path, monkeypatch, rows):
     async def fake_get(*, force=False):
         return set()
 
+    async def fake_refresh(codes):
+        return 0
+
     monkeypatch.setattr(presence_index, "get", fake_get)
+    # The retry pass refreshes each pending code's folder — unstubbed
+    # this reaches the real PikPak/JavBus clients (a live run once took
+    # the suite from 13s to 20min).
+    monkeypatch.setattr(presence_index, "refresh_codes", fake_refresh)
     # Module-level cooldowns must not leak between tests (fresh DBs
     # restart row ids at 1, so stale entries would shadow new rows).
     arch._finalize_attempts.clear()
@@ -787,9 +794,10 @@ async def test_finalize_retry_row_timeout_does_not_freeze_pass(tmp_path, monkeyp
     await engine.dispose()
 
 
-async def test_retry_pass_forces_presence_only_when_stale(tmp_path, monkeypatch):
-    """Snapshot newer than every pending archived_at → plain get();
-    older/absent snapshot → get(force=True)."""
+async def test_retry_pass_refreshes_only_this_pass_codes(tmp_path, monkeypatch):
+    """The pass must refresh exactly the codes it is about to finalize —
+    never the whole index (that walk is 10k+ codes / minutes and used to
+    run on every stale pass)."""
     from app.services.pikpak_presence import presence_index
 
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -799,15 +807,25 @@ async def test_retry_pass_forces_presence_only_when_stale(tmp_path, monkeypatch)
                        created_at=now - timedelta(hours=1),
                        archived=True, archived_at=now - timedelta(minutes=10),
                        finalized=False),
+        OfflineTaskLog(task_id="t2", code="CCC-004", name="d",
+                       magnet="magnet:?xt=4",
+                       created_at=now - timedelta(hours=2),
+                       archived=True, archived_at=now - timedelta(minutes=20),
+                       finalized=False),
     ])
-    forces = []
+    refreshed: list[list[str]] = []
+    forced: list[bool] = []
+
+    async def fake_refresh(codes):
+        refreshed.append(sorted(codes))
+        return len(codes)
 
     async def fake_get(*, force=False):
-        forces.append(force)
+        forced.append(force)
         return set()
 
     async def run(svc, code, *, folder_id=None):
-        return None  # keep the row pending so both passes reach presence
+        return None  # keep rows pending
 
     async def not_flattened(code):
         return False
@@ -815,16 +833,15 @@ async def test_retry_pass_forces_presence_only_when_stale(tmp_path, monkeypatch)
     async def no_active():
         return set()
 
+    monkeypatch.setattr(presence_index, "refresh_codes", fake_refresh)
     monkeypatch.setattr(presence_index, "get", fake_get)
     monkeypatch.setattr(fin, "run_finalize", run)
     monkeypatch.setattr(arch, "_already_flattened", not_flattened)
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
 
-    monkeypatch.setattr(presence_index, "_built_at", now)  # fresh
     await arch._finalize_retry_pass()
-    monkeypatch.setattr(presence_index, "_built_at", None)  # absent
-    await arch._finalize_retry_pass()
-    assert forces == [False, True]
+    assert refreshed == [["CCC-003", "CCC-004"]]
+    assert forced == []  # no full-index read at all
     await engine.dispose()
 
 

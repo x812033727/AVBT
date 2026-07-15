@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import TrackedListing
+from ..models import AppMeta, TrackedListing
 from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
 from . import missing as missing_svc
@@ -44,9 +44,10 @@ _CHECK_SEMAPHORE = asyncio.Semaphore(max(1, settings.tracker_check_concurrency))
 
 class TrackerState:
     def __init__(self) -> None:
+        # Seeded from the env default, then overridden by the operator's
+        # stored choice — see ``load_persisted_toggles``.
         self.enabled: bool = settings.tracker_enabled
-        # Gate for the historical-missing part of auto_send. In-memory
-        # like ``enabled``: a restart falls back to the env default.
+        # Gate for the historical-missing part of auto_send.
         self.backfill_enabled: bool = settings.tracker_backfill_enabled
         self.last_run: datetime | None = None
         self.last_error: str = ""
@@ -711,7 +712,54 @@ async def check_all_stream(*, force: bool = True) -> AsyncIterator[dict]:
 check_actress = check_listing
 
 
+# Runtime toggles persist in AppMeta, the same way the notify switches
+# do (CLAUDE.md: 執行期可調的開關存 app_meta). Memory alone meant every
+# restart silently reverted the operator's choice to the env default —
+# both default True, so a deploy re-enabled an auto-send that had been
+# deliberately turned off and the first run_loop iteration walked all
+# 47 tracked listings straight into JavBus 429 backoff (live 2026-07-15).
+_TOGGLE_KEYS: dict[str, str] = {
+    "enabled": "tracker:enabled",
+    "backfill_enabled": "tracker:backfill_enabled",
+}
+
+
+async def set_toggle(name: str, enabled: bool) -> None:
+    """Flip a runtime toggle and remember it across restarts."""
+    key = _TOGGLE_KEYS[name]
+    setattr(state, name, enabled)
+    async with SessionLocal() as session:
+        row = await session.get(AppMeta, key)
+        if row is None:
+            row = AppMeta(key=key)
+            session.add(row)
+        row.value = "1" if enabled else "0"
+        await session.commit()
+
+
+async def load_persisted_toggles() -> None:
+    """Apply stored toggles over the env defaults at startup. A missing
+    row means the operator never touched that switch — keep the default
+    rather than inventing one. Never fatal: a toggle we can't read just
+    leaves the env default in place."""
+    try:
+        async with SessionLocal() as session:
+            for name, key in _TOGGLE_KEYS.items():
+                row = await session.get(AppMeta, key)
+                if row is not None and row.value in ("0", "1"):
+                    setattr(state, name, row.value == "1")
+                    logger.info(
+                        "tracker %s restored from app_meta: %s",
+                        name, row.value == "1",
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tracker toggle load failed: %s", exc)
+
+
 async def run_loop() -> None:
+    # Before the first check_all: an un-restored toggle would let a
+    # disabled tracker scan once on every restart.
+    await load_persisted_toggles()
     consecutive_errors = 0
     while True:
         try:

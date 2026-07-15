@@ -91,13 +91,13 @@ async def tracker_status():
 
 @router.post("/status/toggle")
 async def tracker_toggle(enabled: bool = Body(..., embed=True)):
-    tracker.state.enabled = enabled
+    await tracker.set_toggle("enabled", enabled)
     return tracker.state.to_dict()
 
 
 @router.post("/status/toggle-backfill")
 async def tracker_toggle_backfill(enabled: bool = Body(..., embed=True)):
-    tracker.state.backfill_enabled = enabled
+    await tracker.set_toggle("backfill_enabled", enabled)
     return tracker.state.to_dict()
 
 

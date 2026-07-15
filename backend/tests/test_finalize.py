@@ -1077,6 +1077,67 @@ async def test_reap_ignores_fresh_and_file_id_rows(tmp_path, monkeypatch):
     await engine.dispose()
 
 
+async def test_reap_closes_archived_row_past_retry_window(tmp_path, monkeypatch):
+    """An archived row whose finalize never landed must not strand.
+
+    _finalize_retry_pass only looks back _FINALIZE_RETRY_WINDOW, and the
+    reaper demanded archived=False with no file_id — so a row that was
+    archived but never finalized fell through both once its archived_at
+    aged out, staying finalized=0 forever even though its files were
+    flattened and correct (live: 300MIUM-1276/1277/1295/1299/1319 and
+    DVMM-380, archived 07-12 by the pre-#160 starved drain, still open at
+    80h with clean single-file landings).
+    """
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="300MIUM-1295", magnet="m", task_id="t-gone",
+                       file_id="f-set", archived=True, finalized=False,
+                       created_at=now - timedelta(hours=80),
+                       archived_at=now - timedelta(hours=80)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 1
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.finalized is True and row.finalized_at is not None
+    await engine.dispose()
+
+
+async def test_reap_leaves_archived_row_inside_retry_window(tmp_path, monkeypatch):
+    """Inside the window the retry pass owns the row — it can still run a
+    real finalize (which purges junk); the reaper must not close it out
+    from under that and skip the cleanup."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="FRESH-001", magnet="m", task_id="t-gone",
+                       file_id="f-set", archived=True, finalized=False,
+                       created_at=now - timedelta(hours=2),
+                       archived_at=now - timedelta(hours=2)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):  # pragma: no cover — must not be reached
+        raise AssertionError("retry pass still owns this row")
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 0
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.finalized is False
+    await engine.dispose()
+
+
 async def test_reap_not_starved_by_fresh_active_rows(tmp_path, monkeypatch):
     """A burst of newer still-listed Collecting rows must not crowd an
     older genuine orphan out of the pass — active skips are free and

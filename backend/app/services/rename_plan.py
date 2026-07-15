@@ -43,7 +43,9 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 # CD1/CD2 / variant letters A/B/C live on the BASE side of the regex
 # and survive (they mark different content).
 _DUP_SUFFIX_RE = re.compile(
-    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P|高清|超清|[-_]?CH)\s*$",
+    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"|\((?:HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P)\)"
+    r"|高清|超清|[-_]?CH)\s*$",
     re.IGNORECASE,
 )
 
@@ -54,6 +56,8 @@ _DUP_SUFFIX_RE = re.compile(
 _BT_PREFIX_BRACKET_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _BT_PREFIX_AT_RE = re.compile(r"^(?:[^@/\s]+@)+")
 _BT_SUFFIX_TILDE_RE = re.compile(r"\s*~\s*[A-Z0-9._\-]+\s*$", re.IGNORECASE)
+# Site-domain tail glued onto the stem (``OAE-314(4K)-WWW.52IV.NET``).
+_BT_SUFFIX_WWW_RE = re.compile(r"[-_ ]WWW\.[A-Z0-9][A-Z0-9.\-]*$", re.IGNORECASE)
 
 # Some releases glue a literal extension token onto the stem without a
 # dot (``HUNTA578AMP4.mp4`` = HUNTA-578 disc A + "MP4"). Only a token
@@ -98,8 +102,12 @@ def _canonical_video_name(name: str) -> str:
         stem = _BT_PREFIX_BRACKET_RE.sub("", stem)
         stem = _BT_PREFIX_AT_RE.sub("", stem)
         stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
+        stem = _BT_SUFFIX_WWW_RE.sub("", stem)
         stem = _GLUED_EXT_RE.sub("", stem)
-        stem = _DUP_SUFFIX_RE.sub("", stem).strip()
+        # ``DVDMS-445A..mp4``-style doubled dots leave a trailing ``.``
+        # after the extension strip; it hides the code from the
+        # end-anchored match below and never carries meaning by itself.
+        stem = _DUP_SUFFIX_RE.sub("", stem).strip(" .")
     # Try to anchor on the JAV code, then strip any part marker hanging
     # off the end (CD<n> / -<n> / _<n> / lone variant letter). When the
     # code itself can't be extracted (e.g. ``CD3`` confuses the lookahead

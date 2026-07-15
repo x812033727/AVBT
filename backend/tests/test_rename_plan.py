@@ -171,3 +171,33 @@ def test_plan_composite_cd_letter_discs_sequential():
         "OFJE-296CD2-A.mp4": "OFJE-296_3.mp4",
         "OFJE-296CD2-B.mp4": "OFJE-296_4.mp4",
     }
+
+
+def test_canonical_trailing_dot_junk():
+    # Live loss 2026-07-15: ``DVDMS-445A..mp4`` — the doubled dot leaves
+    # a trailing ``.`` on the stem after the extension strip, the
+    # end-anchored code match never fires and both discs skip the plan.
+    assert _canonical_video_name("DVDMS-445A..mp4") == "DVDMS-445"
+    assert _canonical_video_name("DVDMS-446C..mp4") == "DVDMS-446"
+
+
+def test_canonical_www_suffix_and_paren_resolution():
+    # Live case 2026-07-15: ``OAE-314(4K)-WWW.52IV.NET.mkv`` — the site
+    # domain tail and the parenthesised resolution both survive the
+    # wrapper strip, so the canonical never anchors to the code.
+    assert _canonical_video_name("OAE-314(4K)-WWW.52IV.NET.mkv") == "OAE-314"
+
+
+def test_plan_double_dot_discs_as_parts():
+    kids = [_f("DVDMS-445A..mp4", 4 * GB), _f("DVDMS-445B..mp4", 4 * GB)]
+    plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {
+        "DVDMS-445A..mp4": "DVDMS-445_1.mp4",
+        "DVDMS-445B..mp4": "DVDMS-445_2.mp4",
+    }
+
+
+def test_plan_www_suffixed_single_file_renamed():
+    kids = [_f("OAE-314(4K)-WWW.52IV.NET.mkv", 26 * GB)]
+    plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {"OAE-314(4K)-WWW.52IV.NET.mkv": "OAE-314.mkv"}

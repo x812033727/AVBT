@@ -572,10 +572,11 @@ async def missing_summary_stream(
     global _summary_result
     async with _summary_lock:
         # Same pre-flight as the non-streaming path. Errors during
-        # presence rebuild / DB read are fatal — surface as a single
-        # ``error`` event then bail.
+        # the presence read / DB read are fatal — surface as a single
+        # ``error`` event then bail. ``refresh`` re-fetches listings; it
+        # does not re-walk the drive (#163/#169).
         try:
-            presence = await presence_index.get(force=refresh)
+            presence = await presence_index.get()
             async with SessionLocal() as session:
                 rows = (
                     await session.execute(
@@ -662,7 +663,8 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
     async with _summary_lock:
         if not refresh and _all_result is not None:
             return _all_result
-        presence = await presence_index.get(force=refresh)
+        # Listing refresh, not a drive walk — see missing_for_listing.
+        presence = await presence_index.get()
         async with SessionLocal() as session:
             rows = (
                 await session.execute(

@@ -79,3 +79,56 @@ async def test_cleanup_failure_never_raises(monkeypatch):
     await arch._cleanup_loose_parents_if_dirty([
         {"id": "f1", "name": "x.mp4", "path": "AVBT/a/x.mp4"},
     ])
+
+
+async def _flattened_with_result(monkeypatch, result):
+    """Drive _already_flattened to its files_for_code verdict."""
+    import app.services.finalize as fin
+    import app.services.video_count as vc
+
+    async def no_path(code):
+        return f"AVBT/製作商/S/系列/{code}"
+
+    async def no_folder(path):
+        return None
+
+    async def no_code_folders(svc, code):
+        return []
+
+    async def fake_files_for_code(code):
+        return result
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", no_path)
+    monkeypatch.setattr(
+        arch, "pikpak_service", SimpleNamespace(lookup_folder_id=no_folder),
+    )
+    monkeypatch.setattr(fin, "presence_code_folders", no_code_folders)
+    monkeypatch.setattr(vc, "files_for_code", fake_files_for_code)
+
+    async def no_cleanup(files):
+        return None
+
+    monkeypatch.setattr(arch, "_cleanup_loose_parents_if_dirty", no_cleanup)
+    return await arch._already_flattened("OYCVR-058")
+
+
+async def test_task_source_listing_is_not_flattened(monkeypatch):
+    """presence knows nothing and files_for_code fell back to the task's
+    own listing — the files are still in the download wrapper, so the
+    row must NOT be stamped (live: OYCVR-058, closed with three
+    fbfb.me@….partN.mp4 files never archived)."""
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [{"id": "f1", "name": "fbfb.me@oycvr00058.part1.mp4",
+                   "path": "fbfb.me@oycvr00058.part1.mp4"}],
+        "source": "task",
+    }) is False
+
+
+async def test_presence_source_listing_is_flattened(monkeypatch):
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [{"id": "f1", "name": "OYCVR-058_1.mp4",
+                   "path": "AVBT/製作商/S/系列/OYCVR-058_1.mp4"}],
+        "source": "presence",
+    }) is True

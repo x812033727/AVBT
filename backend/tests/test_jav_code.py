@@ -123,3 +123,17 @@ def test_legacy_containers_are_video():
                 ".asf", ".rm", ".divx", ".ogm"):
         assert is_video(f"PPPD-539{ext}") is True, ext
     assert extract_jav_code("PPPD-539MPG") == "PPPD-539"
+
+
+def test_dmm_poster_suffix_stripped():
+    # Torrents named after DMM cover art keep its ``pl`` (package-large)
+    # tail glued to the content id — the wrapper must still parse or the
+    # sweep leaves it in AVBT/TASK forever (live: OYCVR-058).
+    assert extract_jav_code("oycvr00058pl") == "OYCVR-058"
+    assert extract_jav_code("oycvr-058pl") == "OYCVR-058"
+    assert extract_jav_code_full("oycvr00058pl") == "OYCVR-058"
+    # Variant letter before the poster tail still collapses to base.
+    assert extract_jav_code("abp-123apl") == "ABP-123"
+    # Guards: existing suffix forms keep working.
+    assert extract_jav_code("SNOS-015ch.mp4") == "SNOS-015"
+    assert extract_jav_code("OFJE-296CD1-B") == "OFJE-296"

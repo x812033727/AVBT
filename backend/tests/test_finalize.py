@@ -950,3 +950,107 @@ async def test_explicit_folder_id_without_path_keeps_folder(monkeypatch):
     # keeper ends up in the code folder root, folder NOT removed
     assert [n.name for n in svc._graph["root"]] == ["MIDV-001.mp4"]
     assert "root" not in svc.purged and "root" not in svc.trashed
+
+
+# ---------------------------------------------------------------------------
+# orphan row reap (task vanished before file_id was tracked)
+# ---------------------------------------------------------------------------
+
+async def test_reap_closes_vanished_task_with_flattened_files(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-gone", file_id="",
+                       archived=False, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 1
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.archived is True
+    assert row.finalized is True
+    assert row.archived_at is not None and row.finalized_at is not None
+    assert "task gone" in (row.message or "")
+    await engine.dispose()
+
+
+async def test_reap_skips_task_still_in_list(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-live", file_id="",
+                       archived=False, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+    ])
+
+    async def active():
+        return {"t-live"}
+
+    async def flattened(code):  # pragma: no cover — must not be reached
+        raise AssertionError("flattened check must not run for live tasks")
+
+    monkeypatch.setattr(arch, "_active_task_ids", active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 0
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.archived is False and row.finalized is False
+    await engine.dispose()
+
+
+async def test_reap_skips_unflattened_code(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="MTM-013", magnet="m", task_id="t-gone", file_id="",
+                       archived=False, finalized=False,
+                       created_at=now - timedelta(hours=1)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def not_flattened(code):
+        return False
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", not_flattened)
+    assert await arch._reap_orphan_rows() == 0
+    async with maker() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+    assert row.archived is False and row.finalized is False
+    await engine.dispose()
+
+
+async def test_reap_ignores_fresh_and_file_id_rows(tmp_path, monkeypatch):
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        # Inside the settle grace — a just-submitted Collecting task also
+        # has file_id == "" and must not be touched.
+        OfflineTaskLog(code="NEW-001", magnet="m", task_id="t-new", file_id="",
+                       archived=False, finalized=False, created_at=now),
+        # file_id known — the sweep's own stamp path owns this row.
+        OfflineTaskLog(code="OLD-002", magnet="m", task_id="t-old",
+                       file_id="f-123", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=2)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    assert await arch._reap_orphan_rows() == 0
+    async with maker() as s:
+        rows = (await s.execute(select(OfflineTaskLog))).scalars().all()
+    assert all(r.archived is False and r.finalized is False for r in rows)
+    await engine.dispose()

@@ -45,6 +45,7 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 _DUP_SUFFIX_RE = re.compile(
     r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P"
     r"|\((?:HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P)\)"
+    r"|[-_](?:H26[45]|X26[45]|HEVC|AV1)"
     r"|高清|超清|[-_]?CH)\s*$",
     re.IGNORECASE,
 )
@@ -58,6 +59,16 @@ _BT_PREFIX_AT_RE = re.compile(r"^(?:[^@/\s]+@)+")
 _BT_SUFFIX_TILDE_RE = re.compile(r"\s*~\s*[A-Z0-9._\-]+\s*$", re.IGNORECASE)
 # Site-domain tail glued onto the stem (``OAE-314(4K)-WWW.52IV.NET``).
 _BT_SUFFIX_WWW_RE = re.compile(r"[-_ ]WWW\.[A-Z0-9][A-Z0-9.\-]*$", re.IGNORECASE)
+# Bare ``<token>.<tld>`` tail without the WWW. prefix
+# (``300MIUM-1270-UNCENSORED-NYAP2P.COM``). The token body excludes
+# ``-`` and ``.`` on purpose: a greedy class with ``-`` would swallow
+# code and title text in front of the domain (live near-miss: the
+# repair script's first draft turned ``300MIUM-1270-UNCENSORED-NYAP2P
+# .COM`` into ``300MIUM``). Only the final token pair is site noise.
+_BT_SUFFIX_DOMAIN_RE = re.compile(
+    r"[-_. ][A-Z0-9]+\.(?:COM|NET|ORG|CC|CO|ME|TV|XYZ|LA|CLUB|VIP|INFO)$",
+    re.IGNORECASE,
+)
 
 # Some releases glue a literal extension token onto the stem without a
 # dot (``HUNTA578AMP4.mp4`` = HUNTA-578 disc A + "MP4"). Only a token
@@ -111,6 +122,7 @@ def _canonical_video_name(name: str) -> str:
             stem = stem[m.end():]
         stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
         stem = _BT_SUFFIX_WWW_RE.sub("", stem)
+        stem = _BT_SUFFIX_DOMAIN_RE.sub("", stem)
         stem = _GLUED_EXT_RE.sub("", stem)
         # Release-group tag glued on the tail that mirrors a site prefix
         # stripped from THIS name (``gg5.co@435MFC-248-C_GG5``): it hides
@@ -132,7 +144,9 @@ def _canonical_video_name(name: str) -> str:
     # in extract_jav_code), retry once with the CD<n> suffix removed.
     code = extract_jav_code(stem)
     if not code:
-        stripped = re.sub(r"CD\d+\s*$", "", stem, flags=re.IGNORECASE)
+        stripped = re.sub(
+            r"(?:CD\d+|[. _-]?PART\d+_?)\s*$", "", stem, flags=re.IGNORECASE
+        )
         if stripped != stem:
             retry = extract_jav_code(stripped)
             if retry:
@@ -143,8 +157,12 @@ def _canonical_video_name(name: str) -> str:
         # strips from the canonical (``200GANA-3119`` → ``GANA-3119``).
         # Without it, the canonical for ``200GANA-3119_2.mp4`` would stay
         # as ``200GANA-3119`` and fail to group with ``GANA-3119.mp4``.
+        # ``[. _-]?PART\d+_?`` — VR releases split as ``KAVR-497.PART1_``
+        # (trailing underscore included); the trailing ``[-_]?`` tolerates
+        # a dangling separator left by a stripped tail (``FUN2048.COM -
+        # AP752-``). Both live cases 2026-07-15.
         tail_re = re.compile(
-            rf"\d{{0,4}}{_flex_code_re(code)}(?:CD\d+(?:-[A-Z])?|HHB\d*|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?\s*$",
+            rf"\d{{0,4}}{_flex_code_re(code)}(?:[. _-]?PART\d+_?|CD\d+(?:-[A-Z])?|HHB\d*|-\d+|_\d+|[-_ ]?[A-Z](?![A-Za-z0-9]))?[-_]?\s*$",
             re.IGNORECASE,
         )
         m = tail_re.search(stem)
@@ -191,7 +209,8 @@ def _part_marker_index(name: str, code: str) -> int:
     stem = _GLUED_EXT_RE.sub("", stem)
     pattern = re.compile(
         rf"{_flex_code_re(code)}"
-        r"(?:CD(?P<cd>\d+)|HHB(?P<hhb>\d+)|-(?P<dash>\d+)|_(?P<us>\d+)"
+        r"(?:[. _-]?PART(?P<part>\d+)_?"
+        r"|CD(?P<cd>\d+)|HHB(?P<hhb>\d+)|-(?P<dash>\d+)|_(?P<us>\d+)"
         r"|[-_ ]?(?P<letter>[A-Z])(?![A-Za-z0-9]))",
         re.IGNORECASE,
     )
@@ -201,11 +220,11 @@ def _part_marker_index(name: str, code: str) -> int:
         # (``(Hunter)(HUNTA-398)<title>_2``) where it isn't adjacent to
         # the code. Trust a small trailing index only — a year or
         # resolution tail (``..._2024``) must not claim a part slot.
-        m2 = re.search(r"(?:CD|[-_])(\d{1,2})\s*$", stem)
+        m2 = re.search(r"(?:CD|PART|[-_])(\d{1,2})_?\s*$", stem, re.IGNORECASE)
         if m2:
             return int(m2.group(1))
         return 0
-    for key in ("cd", "hhb", "dash", "us"):
+    for key in ("part", "cd", "hhb", "dash", "us"):
         if m.group(key):
             return int(m.group(key))
     if m.group("letter"):

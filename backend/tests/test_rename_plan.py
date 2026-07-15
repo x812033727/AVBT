@@ -221,3 +221,51 @@ def test_plan_site_tag_tail_single_file_renamed():
     kids = [_f("gg5.co@435MFC-248-C_GG5.mp4", 4 * GB)]
     plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
     assert plan == {"gg5.co@435MFC-248-C_GG5.mp4": "MFC-248.mp4"}
+
+
+def test_canonical_part_markers():
+    # Live case 2026-07-15: VR releases split as ``KAVR-497.PART1_.mp4``
+    # (trailing underscore included) — the marker was unrecognised, so
+    # each part got its own canonical and none were renamed to ``_N``.
+    assert _canonical_video_name("KAVR-497.PART1_.mp4") == "KAVR-497"
+    assert _canonical_video_name("KAVR-497.PART3_.mp4") == "KAVR-497"
+    assert _canonical_video_name("bbs2048.org@oycvr00074.part2.mp4") == "OYCVR-074"
+    assert _part_marker_index("KAVR-497.PART2_.mp4", "KAVR-497") == 2
+    assert _part_marker_index("bbs2048.org@oycvr00074.part2.mp4", "OYCVR-074") == 2
+
+
+def test_plan_part_marker_group():
+    kids = [
+        _f("KAVR-497.PART1_.mp4", 8 * GB),
+        _f("KAVR-497.PART2_.mp4", 8 * GB),
+        _f("KAVR-497.PART3_.mp4", 7 * GB),
+    ]
+    plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {
+        "KAVR-497.PART1_.mp4": "KAVR-497_1.mp4",
+        "KAVR-497.PART2_.mp4": "KAVR-497_2.mp4",
+        "KAVR-497.PART3_.mp4": "KAVR-497_3.mp4",
+    }
+
+
+def test_canonical_bare_domain_tail():
+    # Live case 2026-07-15: ``300MIUM-1270-UNCENSORED-NYAP2P.COM.mp4`` —
+    # a site-domain tail without the ``WWW.`` prefix survived the strip.
+    # Only the final ``<token>.<tld>`` pair goes; the UNCENSORED variant
+    # marker is real content information and stays.
+    assert (_canonical_video_name("300MIUM-1270-UNCENSORED-NYAP2P.COM.mp4")
+            == "300MIUM-1270-UNCENSORED")
+    assert _canonical_video_name("FFT-029-nyap2p.com.mp4") == "FFT-029"
+    # The WWW.-style tail keeps working through the new rule.
+    assert _canonical_video_name("OAE-314(4K)-WWW.52IV.NET.mkv") == "OAE-314"
+
+
+def test_canonical_codec_tail_and_dangling_dash():
+    # Live case 2026-07-15: ``FUN2048.COM - AP752-.mp4`` (dangling dash)
+    # and ``hjd2048.com-0819atom387-h264.mp4`` (codec tail). A SPACE-
+    # separated codec word could be title text and must not group.
+    assert _canonical_video_name("FUN2048.COM - AP752-.mp4") != "FUN2048"
+    assert _canonical_video_name("kfa55.com@748SPAY-444-.mp4") == "SPAY-444"
+    assert _canonical_video_name("ATOM387-h264.mp4") == "ATOM-387"
+    assert (_canonical_video_name("ABC-123 x264.mp4")
+            != _canonical_video_name("ABC-123.mp4"))

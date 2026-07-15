@@ -1200,7 +1200,55 @@ async def _already_flattened(code: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.debug("flattened check %s failed: %s", code, exc)
         return False
-    return bool(result.get("ok")) and bool(result.get("files"))
+    if not (result.get("ok") and result.get("files")):
+        return False
+    # The loose files exist, but their NAMES may still carry BT noise:
+    # the sweep's phase-2 rename queue lives in memory only, so a
+    # restart between phase-1 (move) and phase-2 (rename) leaves
+    # ``dccdom.com@200GANA-3146.mp4`` sitting in the series folder —
+    # and stamping finalized here made that permanent (live case
+    # 2026-07-15: 56 files across ~40 codes after a deploy restart).
+    # Run the same phase-2 cleanup on the parent folder(s) first; the
+    # stamp still happens this pass — content is verified present, and
+    # the cleanup is idempotent.
+    await _cleanup_loose_parents_if_dirty(result["files"])
+    return True
+
+
+async def _cleanup_loose_parents_if_dirty(files: list[dict]) -> None:
+    """Re-run phase-2 cleanup on the series folder(s) holding ``files``
+    when any of them still needs a canonical rename. Best-effort: a
+    failure here must never block the flattened stamp."""
+    from .finalize import PART_MIN_BYTES  # avoid cycle
+    from .jav_code import is_video
+    from .rename_plan import _build_video_rename_plan  # avoid cycle
+
+    try:
+        names = {f.get("name") for f in files}
+        parents: set[str] = set()
+        for f in files:
+            file_path, name = f.get("path") or "", f.get("name") or ""
+            if file_path.endswith(f"/{name}"):
+                parents.add(file_path[: -len(name) - 1])
+        dirty_pids: set[str] = set()
+        for parent in parents:
+            pid = await pikpak_service.lookup_folder_id(parent)
+            if not pid:
+                continue
+            children = await pikpak_service.list_files(pid, size=500)
+            plan, _members = _build_video_rename_plan(
+                children, PART_MIN_BYTES, is_video
+            )
+            if names & set(plan):
+                dirty_pids.add(pid)
+        if dirty_pids:
+            cleaned = await _cleanup_target_parents(dirty_pids)
+            logger.info(
+                "flattened stamp: phase-2 rename was pending, cleaned "
+                "%d folder(s)", cleaned,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("flattened canonical cleanup failed: %s", exc)
 
 
 async def archive_once() -> int:

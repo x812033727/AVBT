@@ -13,6 +13,7 @@ release noise and must be stripped.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Video extensions that BT release tools often append directly into the
 # folder name itself (``SACE022MP4`` rather than ``SACE-022/SACE022.mp4``).
@@ -315,3 +316,15 @@ def detect_part_hint(name: str, code: str | None = None) -> str:
         if m:
             return m.group(1)
     return ""
+
+
+# Folder names arrive from JavBus and drift: the same series comes back
+# "新人NO.1 STYLE" one day and "新人NO.1STYLE" the next, and a resolver
+# that only matches exactly forks a second folder for it (live 2026-07-16:
+# 6 such pairs, still being created by new downloads — the drifted twin
+# splits a series and strands its files from every per-folder decision).
+# Two names with the same key are the same folder.
+def folder_key(name: str) -> str:
+    """Match key for a folder name: spacing / width / case don't count."""
+    key = unicodedata.normalize("NFKC", (name or "").strip())
+    return re.sub(r"\s+", "", key).casefold()

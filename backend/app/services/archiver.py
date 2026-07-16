@@ -772,6 +772,23 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("series junk sweep failed: %s", exc)
+        # Same gap, different leftover: a second magnet landing beside
+        # CODE.mp4 becomes CODE(1).mp4, and nothing owned that either
+        # (112 accumulated by 2026-07-16). Keeps the biggest — the
+        # backfill only sends magnets ≥1.8x what we hold, so the newcomer
+        # was always meant to replace the old copy — and trashes the rest.
+        # User-authorised for the pipeline after reviewing the live run.
+        try:
+            from .dup_copies import sweep_dup_copies  # avoid cycle
+
+            dups = await sweep_dup_copies(pikpak_service, dry_run=False)
+            if dups.get("trashed") or dups.get("renamed"):
+                logger.info(
+                    "dup copies sweep: trashed %d, renamed %d",
+                    dups.get("trashed", 0), dups.get("renamed", 0),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dup copies sweep failed: %s", exc)
 
     # Stop the DB-driven pass from re-moving what we just moved. Without
     # this, every loop iteration retries the move (PikPak rejects it

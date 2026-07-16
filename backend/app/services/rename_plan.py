@@ -37,16 +37,21 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 #   "(N)"   — PikPak's auto-dedupe on download collision
 #   "_N"    — our preferred multi-part convention (so we stay idempotent
 #             once files have been renamed once)
-#   quality tags — HD / 720p / 1080p / 高清 / …
+#   quality tags — HD / SD / 720p / 1080p / 高清 / …
 #   "ch"    — Chinese-subbed scene tag (``SNOS-015ch`` → ``SNOS-015``).
 #             Optional ``-`` / ``_`` separator before the marker.
 # CD1/CD2 / variant letters A/B/C live on the BASE side of the regex
-# and survive (they mark different content).
+# and survive (they mark different content). So does anything naming a
+# different CUT rather than a different encode — ``-UNCENSORED`` /
+# ``_UNC`` / ``-UC`` / ``-AI`` (AI-decensored). Stripping those would let
+# an uncensored rip group with the censored retail release, and the
+# dedupe keeps the BIGGER file — which is usually the censored one.
+# Quality is same-content-worse; a cut is different content.
 _DUP_SUFFIX_RE = re.compile(
-    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P"
-    r"|\((?:HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P)\)"
-    r"|[-_](?:H26[45]|X26[45]|HEVC|AV1)"
-    r"|高清|超清|[-_]?CH)\s*$",
+    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"|\((?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)\)"
+    r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
+    r"|高清|超清|[-_]?CH)[-_ ]*$",
     re.IGNORECASE,
 )
 
@@ -329,6 +334,57 @@ def low_bitrate_copies(files: list) -> list:
     return out
 
 
+# The quality tags from _DUP_SUFFIX_RE, end-anchored on their own — used
+# to recognise a file whose NAME declares it a re-encode. ``(N)`` / ``_N``
+# / ``CH`` are deliberately absent: a dedupe or part suffix says nothing
+# about the encode.
+_QUALITY_TAG_RE = re.compile(
+    r"(?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
+    r"|高清|超清)[-_ ]*$",
+    re.IGNORECASE,
+)
+
+
+def quality_tagged_copies(files: list, code: str) -> list:
+    """Members whose own name declares a re-encode of ANOTHER member: the
+    stem ends with a quality tag while the group also holds a different
+    encode (a bare name, or a different tag).
+
+    ``low_bitrate_copies`` needs every runtime probed and a ≤½ size gap;
+    a same-torrent SD rip at 62% of the HD file (live: KBTK-012-SD,
+    2.85GB beside 4.56GB, 2026-07-16) slips both gates and would claim a
+    fake ``_2``. The name itself is evidence enough here: ``SD`` names an
+    encode, not content, so the file must never be numbered as a disc —
+    dropping it from the group hands it to the keep-the-biggest dedup.
+
+    The "another encode" requirement carries the safety. When every
+    member wears the SAME tag (``CODE-SD`` + ``CODE-SD (2)``) the group
+    is one encode whose same-name collision means discs — judging those
+    as copies would trash a real disc, so a single-tag group returns [].
+    Marker-bearing names (``CODE-HD_2``) never read as tagged at all:
+    the tag must be terminal, and a part index sits after it.
+    """
+    tags: dict[str, str | None] = {}
+    for f in files:
+        stem = f.name
+        m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
+        if m:
+            stem = stem[: m.start()]
+        # A ``(N)`` collision suffix belongs to the whole name, not the
+        # encode — look through it so both halves of a pair agree.
+        stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
+        m = _QUALITY_TAG_RE.search(stem)
+        tags[f.name] = m.group(0).strip(" -_.").upper() if m else None
+    if len(set(tags.values())) < 2:
+        return []  # all bare, or all one encode — nothing to judge
+    return [
+        f for f in files
+        if tags[f.name] is not None
+        and _part_marker_index(f.name, code) == 0
+    ]
+
+
 def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
@@ -427,8 +483,12 @@ def _build_video_rename_plan(
         # for weeks; their runtimes matched _1 exactly and they were a
         # seventh of its size — re-encodes that a marker-only rule (and a
         # size-only rule) both waved through as discs. Drop them here so
-        # the dedup can take them.
+        # the dedup can take them. Name-declared re-encodes (a trailing
+        # quality tag) get the same treatment — they beat gates the
+        # runtime rule can't judge (unprobed files, >½-size SD rips).
         copies = low_bitrate_copies(files)
+        copies += [f for f in quality_tagged_copies(files, canon)
+                   if f not in copies]
         if copies:
             files = [f for f in files if f not in copies]
             if len(files) < 2:

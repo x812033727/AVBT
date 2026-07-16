@@ -9,6 +9,7 @@ from app.services.rename_plan import (
     _build_video_rename_plan,
     _canonical_video_name,
     _part_marker_index,
+    quality_tagged_copies,
 )
 
 GB = 1024 ** 3
@@ -307,3 +308,60 @@ def test_canonical_codec_tail_and_dangling_dash():
     assert _canonical_video_name("ATOM387-h264.mp4") == "ATOM-387"
     assert (_canonical_video_name("ABC-123 x264.mp4")
             != _canonical_video_name("ABC-123.mp4"))
+
+
+def test_sd_rip_never_claims_a_part_slot_in_wrapper_scope():
+    # Live case 2026-07-16 (KBTK-012): a same-torrent SD rip at 62% of
+    # the HD file. Durations unprobed and >½ the size, so neither
+    # low_bitrate_copies nor _split_size_outliers can judge it — only
+    # the name gives it away. Without the tag rule the pair became a
+    # fake ``_1``/``_2`` (the exact mine that reverted PR #182).
+    kids = [
+        _f("KBTK-012.mp4", int(4.56 * GB)),
+        _f("KBTK-012-SD.mp4", int(2.85 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {}      # no fake multipart pair
+    assert members == set()  # both stay visible to the keep-biggest dedup
+
+
+def test_sd_rip_series_scope_left_to_dedup():
+    # SKMJ-480 — the pair that got PR #182 reverted. In a 系列 folder
+    # (require_marker=True) neither file carries a disc marker, so the
+    # group must fall through to the dedup, not become ``_1``/``_2``.
+    kids = [
+        _f("SKMJ-480.mp4", int(7.4 * GB)),
+        _f("SKMJ-480-SD.mp4", int(2.41 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(
+        kids, 500 * 1024 ** 2, _is_video, require_marker=True
+    )
+    assert plan == {}
+    assert members == set()
+
+
+def test_quality_tag_with_part_marker_still_a_disc():
+    # ``CODE-HD_1`` / ``CODE-HD_2`` — discs of an HD encode. The tag
+    # rule must not steal marker-bearing files from the group.
+    kids = [
+        _f("ABC-123-HD_1.mp4", 5 * GB),
+        _f("ABC-123-HD_2.mp4", 5 * GB),
+    ]
+    assert quality_tagged_copies(kids, "ABC-123") == []
+    plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {
+        "ABC-123-HD_1.mp4": "ABC-123_1.mp4",
+        "ABC-123-HD_2.mp4": "ABC-123_2.mp4",
+    }
+    assert members == {"ABC-123-HD_1.mp4", "ABC-123-HD_2.mp4"}
+
+
+def test_quality_tag_collision_pair_still_discs():
+    # Same-name collision inside one torrent means discs even when the
+    # shared name carries a tag — ``(N)`` marks the collision, not a
+    # re-encode, so the pair keeps its slots.
+    kids = [
+        _f("SKMJ-480-SD.mp4", 3 * GB),
+        _f("SKMJ-480-SD (2).mp4", 3 * GB),
+    ]
+    assert quality_tagged_copies(kids, "SKMJ-480") == []

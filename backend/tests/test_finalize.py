@@ -49,6 +49,30 @@ def test_single_video_plus_junk_and_sample_folder():
     assert not plan.no_video and not plan.skipped_all_clean
 
 
+def test_container_beside_a_video_is_trashed_not_purged():
+    # An .iso is the video in a wrapper, not junk. It used to fall into
+    # "non-video → delete_forever", which would have destroyed the likes
+    # of SNIS-494.iso (23.8GB) the moment one landed next to an .mp4 —
+    # they survived only by never sharing a folder with a video.
+    v = _file("MIDV-001.mp4", "v", 2048)
+    iso = _file("MIDV-001.iso", "i", 4096)
+    txt = _file("下載說明.txt", "t", 0)
+    entries = [(v, "root"), (iso, "root"), (txt, "root")]
+    plan = build_finalize_plan("MIDV-001", entries, "root")
+    assert plan.keep == [(v, "MIDV-001.mp4")]
+    assert [e.id for e in plan.trash_files] == ["i"]
+    assert [e.id for e in plan.purge_files] == ["t"]
+
+
+def test_container_alone_still_aborts_as_no_video():
+    # Nothing playable to keep, so there is nothing to decide — abort
+    # without touching the only copy of the work.
+    iso = _file("SNIS-494.iso", "i", 23000)
+    plan = build_finalize_plan("SNIS-494", [(iso, "root")], "root")
+    assert plan.no_video
+    assert not plan.purge_files and not plan.trash_files
+
+
 def test_two_substantial_parts_get_underscore_names():
     a = _file("SDMM-053.mp4", "a", 900)
     b = _file("SDMM-053 (2).mp4", "b", 900)
@@ -963,6 +987,27 @@ async def test_shell_folder_purged_after_gate_opens(monkeypatch):
     assert "t" in svc.purged and "codef" in svc.trashed
     assert sorted(n.name for n in svc._graph["series"]) == [
         "MIDV-001_1.mp4", "MIDV-001_2.mp4"]
+
+
+async def test_shell_container_is_trashed_not_purged(monkeypatch):
+    """Same evacuated shell, but a disc image is among the leftovers. A
+    video for the code existing at the parent is not proof the image
+    holds the same content, so it keeps its 30-day undo."""
+    graph = {
+        "series": [_folder("MIDV-001", "codef"),
+                   _file("MIDV-001_1.mp4", "v1", 3000)],
+        "codef": [_file("ads.txt", "t", 0), _file("MIDV-001.iso", "i", 4096)],
+    }
+    svc = FakeSvc(graph, path_ids={
+        "AVBT/製作商/S/系/MIDV-001": "codef",
+        "AVBT/製作商/S/系": "series",
+    })
+    _patch_paths(monkeypatch, {"resolve": "AVBT/製作商/S/系/MIDV-001"})
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "MIDV-001", dry_run=False)]
+    assert events[-1]["result"]["errors"] == 0
+    assert "t" in svc.purged and "i" not in svc.purged
+    assert "i" in svc.trashed
 
 
 async def test_flatten_uniquifies_against_series_siblings(monkeypatch):

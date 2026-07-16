@@ -38,6 +38,14 @@ def test_in_flight_file_is_never_junk():
     assert is_series_junk("MFC-261.mp4", 5 * MB, "PHASE_TYPE_RUNNING") is False
 
 
+def test_container_becomes_junk_once_its_video_lands():
+    # The tail of the swap: the disc image is kept only while it is the
+    # sole copy of the work. A real video for the code beside it makes it
+    # redundant — trashed, not purged, so a bad rip is still undoable.
+    assert is_series_junk("SNIS-494.iso", 23 * GB, code_has_video=False) is False
+    assert is_series_junk("SNIS-494.iso", 23 * GB, code_has_video=True) is True
+
+
 class FakeSvc:
     def __init__(self, tree):
         self.tree = tree
@@ -75,6 +83,32 @@ async def test_purge_trashes_only_junk():
     summary = await purge_series_junk(svc, dry_run=False)
     assert sorted(svc.trashed) == ["junk1", "junk2"]
     assert summary == {"scanned": 5, "trashed": 2, "dry_run": False}
+
+
+async def test_walk_trashes_a_superseded_container_only():
+    # SNIS-494.iso survives while it is alone (the _tree case above); add
+    # the swapped-in video and the same walk retires it. The still-alone
+    # AP-619.zip must not be swept along with it.
+    tree = _tree()
+    tree["series1"] += [
+        _f("SNIS-494.mp4", 4 * GB, fid="swapped"),
+        _f("AP-619.zip", 2 * GB, fid="lonely"),
+    ]
+    svc = FakeSvc(tree)
+    await purge_series_junk(svc, dry_run=False)
+    assert sorted(svc.trashed) == ["junk1", "junk2", "keep2"]
+
+
+async def test_half_landed_video_does_not_condemn_its_container():
+    # An in-flight replacement is not proof of anything: if it dies the
+    # container is all that is left. Only a COMPLETE video retires one.
+    tree = _tree()
+    tree["series1"].append(
+        _f("SNIS-494.mp4", 4 * GB, fid="partial", phase="PHASE_TYPE_RUNNING")
+    )
+    svc = FakeSvc(tree)
+    await purge_series_junk(svc, dry_run=False)
+    assert "keep2" not in svc.trashed
 
 
 async def test_dry_run_touches_nothing():

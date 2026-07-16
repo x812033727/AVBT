@@ -12,6 +12,12 @@ Deletion is tiered by how reversible a mistake would be:
 
 - non-video files and sub-``JUNK_BYTES`` ad clips → **permanently
   deleted** (user decision: reclaim quota immediately);
+- a disc image / archive (``CONTAINER_EXTS``) → **trash only**: it is
+  not junk, it is the video in a wrapper we cannot play. Permanently
+  deleting one was a live hazard — the 9 rescued containers (SNIS-494.iso
+  at 23.8GB …) survived only by sitting alone in their series folders,
+  where the finalize path never reached them. One landing beside a video
+  would have been destroyed with no undo;
 - a same-canonical *substantial* video that loses to a bigger sibling
   (resolution re-download) → **trash only** (recoverable ~30 days) —
   that's the one call a heuristic can plausibly get wrong;
@@ -38,7 +44,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .jav_code import ext_of, extract_jav_code, is_video
+from .jav_code import CONTAINER_EXTS, ext_of, extract_jav_code, is_video
 from .rename_plan import (
     _build_video_rename_plan,
     _split_size_outliers,
@@ -104,7 +110,9 @@ def build_finalize_plan(
       (resolution dup — recoverable on purpose);
     - video < ``junk_bytes`` → purge (ad clip), unless nothing else
       would be kept — the last video always survives;
-    - non-video file → purge;
+    - container (.iso/.zip …) → trash (redundant once a video is kept,
+      but never destroyed);
+    - other non-video file → purge;
     - folder → purge after keepers are evacuated;
     - zero videos anywhere → ``no_video`` abort, all lists empty.
     """
@@ -112,7 +120,10 @@ def build_finalize_plan(
     folders = [e for e, _p in entries if _is_folder(e)]
     files = [(e, p) for e, p in entries if not _is_folder(e)]
     videos = [(e, p) for e, p in files if is_video_fn(e.name)]
-    non_videos = [e for e, _p in files if not is_video_fn(e.name)]
+    non_videos = [e for e, _p in files if not is_video_fn(e.name)
+                  and ext_of(e.name) not in CONTAINER_EXTS]
+    containers = [e for e, _p in files if not is_video_fn(e.name)
+                  and ext_of(e.name) in CONTAINER_EXTS]
 
     if not videos:
         plan.no_video = True
@@ -175,7 +186,7 @@ def build_finalize_plan(
     plan.keep = targets
     plan.move_to_root = [k for k, _t in targets if parent_of.get(k.id) != root_id]
     plan.purge_files = non_videos + ad_purge
-    plan.trash_files = dup_trash
+    plan.trash_files = dup_trash + containers
     plan.purge_folders = folders
     plan.skipped_all_clean = (
         not folders
@@ -364,9 +375,16 @@ async def finalize_code_folder_stream(
             # Evacuated shell from an earlier settle-gated run: the
             # videos are confirmed loose at the parent, so everything
             # still in here is junk. Re-plan as deletion-only and let
-            # the normal (settle-gated) phases below remove it.
+            # the normal (settle-gated) phases below remove it. Containers
+            # still go to the trash, not delete_forever — "a video for this
+            # code exists at the parent" does not prove the disc image is
+            # the same content.
+            leftovers = [e for e, _p in entries if not _is_folder(e)]
             plan = FinalizePlan(
-                purge_files=[e for e, _p in entries if not _is_folder(e)],
+                purge_files=[e for e in leftovers
+                             if ext_of(e.name) not in CONTAINER_EXTS],
+                trash_files=[e for e in leftovers
+                             if ext_of(e.name) in CONTAINER_EXTS],
                 purge_folders=[f for f, _d in folder_depth],
             )
         else:
@@ -497,7 +515,10 @@ async def finalize_code_folder_stream(
                 gone_ids.extend(e.id for e in plan.trash_files)
             summary["trashed"] += len(plan.trash_files)
             for e in plan.trash_files:
-                yield ev("trash", e.name, reason="duplicate")
+                yield ev("trash", e.name,
+                         reason=("container"
+                                 if ext_of(e.name) in CONTAINER_EXTS
+                                 else "duplicate"))
     except Exception as exc:  # noqa: BLE001
         summary["errors"] += 1
         yield {"type": "error", "message": f"刪除垃圾檔失敗: {exc}"}

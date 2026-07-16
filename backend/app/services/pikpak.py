@@ -162,6 +162,7 @@ class PikPakService:
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
         self._canonical_cache: dict[str, tuple[str, float]] = {}
+        self._create_lock = asyncio.Lock()
         self._username: str = ""
         # Login-failure cooldown state (see module constants above).
         self._login_blocked_until: float = 0.0
@@ -536,20 +537,42 @@ class PikPakService:
         if name in self._folder_cache:
             return self._folder_cache[name]
         # Exact hit is the common case and costs one call; only a miss
-        # pays for the segment walk.
+        # pays for the segment walk and the lock below.
         existing = await self.lookup_folder_id(name)
         if existing:
             return existing
-        canonical = await self._canonical_path(name)
-        path = f"/{canonical}"
-        folder_id = await self._call(lambda c: c.path_to_id(path, create=True))
-        # path_to_id returns a list of path-segments in newer versions
-        if isinstance(folder_id, list) and folder_id:
-            folder_id = folder_id[-1].get("id", "")
-        self._folder_cache[name] = folder_id or ""
-        if canonical != name:
-            self._folder_cache[canonical] = folder_id or ""
-        return self._folder_cache[name]
+
+        # Resolving a missing path is check-then-create, and PikPak allows
+        # duplicate folder names: two archives resolving the same absent
+        # path at once both saw "absent" and both created, which is how
+        # Aircontrol ended up with "ALL NUDE" twice and MAS-096.iso ended
+        # up in a folder no path resolved to. Serialise creation — it is
+        # rare (the cache answers everything else) and correctness here is
+        # worth more than the concurrency.
+        async with self._create_lock:
+            # Someone may have created it while we waited for the lock.
+            # This re-check is the whole point of holding it.
+            if name in self._folder_cache:
+                return self._folder_cache[name]
+            existing = await self.lookup_folder_id(name)
+            if existing:
+                return existing
+            # Uncached: the memo may predate a folder another waiter just
+            # created, and a stale "no twin" answer is how we would fork
+            # one all over again.
+            canonical = await self._canonical_path_uncached(name)
+            path = f"/{canonical}"
+            folder_id = await self._call(
+                lambda c: c.path_to_id(path, create=True))
+            # path_to_id returns a list of path-segments in newer versions
+            if isinstance(folder_id, list) and folder_id:
+                folder_id = folder_id[-1].get("id", "")
+            self._folder_cache[name] = folder_id or ""
+            if canonical != name:
+                self._folder_cache[canonical] = folder_id or ""
+            # New folders exist now; every memoised "no twin" may be wrong.
+            self._canonical_cache.clear()
+            return self._folder_cache[name]
 
     async def lookup_folder_id(self, name: str | None) -> str:
         """Like ``folder_id`` but does NOT auto-create missing segments.

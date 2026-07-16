@@ -25,6 +25,7 @@ from ..schemas import (
     VideoCountResult,
 )
 from ..services import archiver, episode_finder
+from ..services import container_swap as container_swap_svc
 from ..services import series_junk as series_junk_svc
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
@@ -461,6 +462,13 @@ async def finalize_code_stream(opts: FinalizeOptions):
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+@router.get("/container-only")
+async def container_only():
+    """Codes archived as a disc image / archive with no playable video —
+    the swap worklist. Presence-index read only: no PikPak, no JavBus."""
+    return await container_swap_svc.container_only_codes()
 
 
 @router.get("/presence/status", response_model=PresenceStatus)

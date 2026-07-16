@@ -12,9 +12,12 @@ library — ``社 区 最 新 情 报.mp4``, ``威尼斯人_真人棋牌…mp4``
 Rules, deliberately conservative:
 
 - **junk** = a video under ``JUNK_BYTES``, or a file that is not a video
-  and not one of ``KEEP_EXTS``
-- ``KEEP_EXTS`` protects the DVD/BD originals and archives kept on
-  purpose (``.iso``/``.zip``; e.g. the rescued SNIS-494.iso at 23.8GB)
+  and not a container (``CONTAINER_EXTS``)
+- a container (``.iso``/``.zip``; e.g. the rescued SNIS-494.iso at
+  23.8GB) is the video in disguise, so it survives — *until* a real
+  playable video for the same code lands beside it, which is what the
+  container swap arranges. Then it is redundant and gets trashed, which
+  is the tail end of the swap: download the video, drop the disc image.
 - a file PikPak is still writing (``phase`` not COMPLETE) is never
   touched — that is the #129 rule: touching an in-flight file kills the
   transfer and the partial vanishes
@@ -31,24 +34,50 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..config import all_kind_paths
-from .jav_code import ext_of, is_video
+from .jav_code import CONTAINER_EXTS, ext_of, extract_jav_code, is_video
 
 logger = logging.getLogger(__name__)
 
 JUNK_BYTES = 300 * 1024 * 1024
-# Non-video containers archived on purpose (rescued DVD/BD originals).
-KEEP_EXTS = {".iso", ".zip"}
 _LIST_CONCURRENCY = 5
 _TRASH_BATCH = 50
 
 
-def is_series_junk(name: str, size: int | None, phase: str = "") -> bool:
-    """Whether a file sitting directly in a 系列 folder is BT junk."""
+def is_series_junk(
+    name: str,
+    size: int | None,
+    phase: str = "",
+    *,
+    code_has_video: bool = False,
+) -> bool:
+    """Whether a file sitting directly in a 系列 folder is BT junk.
+
+    ``code_has_video`` says a real playable video for this file's code is
+    already in the same folder; it only ever promotes a container to junk.
+    """
     if phase not in ("", "PHASE_TYPE_COMPLETE"):
         return False  # still being written — hands off (#129)
     if not is_video(name):
-        return ext_of(name) not in KEEP_EXTS
+        if ext_of(name) not in CONTAINER_EXTS:
+            return True
+        return code_has_video  # superseded by the real thing
     return (size or 0) < JUNK_BYTES
+
+
+def _codes_with_video(entries: list) -> set[str]:
+    """Codes in this folder that already have a real playable video —
+    substantial enough to clear the ad-clip bar, and fully written, so a
+    half-landed transfer never condemns the container it replaces."""
+    out: set[str] = set()
+    for e in entries:
+        if not is_video(e.name) or (e.size or 0) < JUNK_BYTES:
+            continue
+        if (getattr(e, "phase", "") or "") not in ("", "PHASE_TYPE_COMPLETE"):
+            continue
+        code = extract_jav_code(e.name)
+        if code:
+            out.add(code)
+    return out
 
 
 async def purge_series_junk_stream(
@@ -90,11 +119,15 @@ async def purge_series_junk_stream(
         for series in await ls(studio.id):
             if series.kind != "drive#folder":
                 continue
-            for f in await ls(series.id):
-                if f.kind == "drive#folder":
-                    continue
+            entries = [f for f in await ls(series.id) if f.kind != "drive#folder"]
+            playable = _codes_with_video(entries)
+            for f in entries:
                 scanned += 1
-                if is_series_junk(f.name, f.size, getattr(f, "phase", "")):
+                code = extract_jav_code(f.name)
+                if is_series_junk(
+                    f.name, f.size, getattr(f, "phase", ""),
+                    code_has_video=bool(code) and code in playable,
+                ):
                     hits.append(
                         (f.id,
                          f"{studio_path}/{studio.name}/{series.name}/{f.name}")

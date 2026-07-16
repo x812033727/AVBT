@@ -74,6 +74,13 @@ VIDEO_EXTS = {
     ".asf", ".rm", ".divx", ".ogm",
 }
 
+# Disc images / archives that hold the video instead of being it. They are
+# NOT playable and NOT junk, so both cleanup passes have to know them:
+# series_junk leaves them alone, finalize trashes rather than permanently
+# deletes them. Kept here so the two can never drift apart — that drift is
+# exactly what nearly destroyed the legacy .mpg keepers.
+CONTAINER_EXTS = {".iso", ".zip", ".rar", ".7z"}
+
 
 # Chinese labels for each tracked-listing kind. Used as the folder name
 # under AVBT/ so users see ``AVBT/系列/回胴錄`` instead of

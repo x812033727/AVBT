@@ -65,8 +65,22 @@ _BT_SUFFIX_WWW_RE = re.compile(r"[-_ ]WWW\.[A-Z0-9][A-Z0-9.\-]*$", re.IGNORECASE
 # code and title text in front of the domain (live near-miss: the
 # repair script's first draft turned ``300MIUM-1270-UNCENSORED-NYAP2P
 # .COM`` into ``300MIUM``). Only the final token pair is site noise.
+_SITE_TLDS = r"(?:COM|NET|ORG|CC|CO|ME|TV|XYZ|LA|CLUB|VIP|INFO)"
 _BT_SUFFIX_DOMAIN_RE = re.compile(
-    r"[-_. ][A-Z0-9]+\.(?:COM|NET|ORG|CC|CO|ME|TV|XYZ|LA|CLUB|VIP|INFO)$",
+    rf"[-_. ][A-Z0-9]+\.{_SITE_TLDS}$",
+    re.IGNORECASE,
+)
+# Bare host at the HEAD, glued onto the code with no separator
+# (``hhd800.comHRSM-130``, ``carib.com010112-123``). The ``@`` and
+# bracket rules need a separator and the domain rules above are
+# end-anchored, so nothing claimed this host: its tld fused onto the
+# code instead (``COMHRSM-130``), which cost the code its presence
+# entry. Anchored at the start and stopping at the tld, so a code-like
+# head token whose tail isn't a real tld (``FC2.PPV-1234567``) is
+# untouched. The optional separator lets the separated spellings share
+# this one rule.
+_BT_PREFIX_DOMAIN_RE = re.compile(
+    rf"^(?:[A-Z0-9]+\.)+{_SITE_TLDS}[-_. ]?",
     re.IGNORECASE,
 )
 
@@ -119,6 +133,10 @@ def _canonical_video_name(name: str) -> str:
         if m:
             for part in m.group(0).rstrip("@").split("@"):
                 site_labels.add(part.split(".")[0].upper())
+            stem = stem[m.end():]
+        m = _BT_PREFIX_DOMAIN_RE.match(stem)
+        if m:
+            site_labels.add(m.group(0).strip(" -_.").split(".")[0].upper())
             stem = stem[m.end():]
         stem = _BT_SUFFIX_TILDE_RE.sub("", stem)
         stem = _BT_SUFFIX_WWW_RE.sub("", stem)

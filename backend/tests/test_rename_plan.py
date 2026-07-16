@@ -272,6 +272,32 @@ def test_canonical_bare_domain_tail():
     assert _canonical_video_name("OAE-314(4K)-WWW.52IV.NET.mkv") == "OAE-314"
 
 
+def test_canonical_glued_domain_head():
+    # Live case 2026-07-16: ``hhd800.comHRSM-130.mp4`` — the site domain
+    # sits at the HEAD glued straight onto the code. The ``@``/bracket
+    # prefix rules never fire (no separator) and the domain rules are
+    # end-anchored, so the host's ``COM`` fused onto the code and the
+    # file landed as ``COMHRSM-130.mp4``: presence lost HRSM-130 and the
+    # task row never finalized, stranding an empty wrapper folder.
+    assert _canonical_video_name("hhd800.comHRSM-130.mp4") == "HRSM-130"
+    assert _canonical_video_name("carib.com010112-123.mp4") == "010112-123"
+    # Multi-label host: every ``<token>.`` up to the tld is site noise.
+    assert _canonical_video_name("www.hhd800.comHRSM-129.mp4") == "HRSM-129"
+    # A head token whose tail is not a real tld is content, not a host —
+    # FC2 PPV codes must survive untouched.
+    assert _canonical_video_name("FC2.PPV-1234567.mp4") == "FC2.PPV-1234567"
+    # Separator forms already resolved through other rules — no regress.
+    assert _canonical_video_name("hhd800.com@HRSM-130.mp4") == "HRSM-130"
+    assert _canonical_video_name("hhd800.com-HRSM-130.mp4") == "HRSM-130"
+    assert _canonical_video_name("hjd2048.com-0819atom387-h264.mp4") == "ATOM-387"
+
+
+def test_plan_glued_domain_head_single_file_renamed():
+    kids = [_f("hhd800.comHRSM-130.mp4", 10 * GB)]
+    plan, _members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {"hhd800.comHRSM-130.mp4": "HRSM-130.mp4"}
+
+
 def test_canonical_codec_tail_and_dangling_dash():
     # Live case 2026-07-15: ``FUN2048.COM - AP752-.mp4`` (dangling dash)
     # and ``hjd2048.com-0819atom387-h264.mp4`` (codec tail). A SPACE-

@@ -275,6 +275,8 @@ def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
     is_video_fn,
+    *,
+    require_marker: bool = False,
 ) -> tuple[dict[str, str], set[str]]:
     """Pre-scan video children and return ``(plan, group_members)``:
 
@@ -296,6 +298,23 @@ def _build_video_rename_plan(
       that's already correctly named — without this guard, on a second
       run ``SDMM-053_1.mp4``, ``_2``, ``_3``, ``_4`` would all collapse
       to ``SDMM-053.mp4`` + ``(2)/(3)/(4)`` dedup suffixes.
+
+    ``require_marker`` — only treat a group as multi-part when a member
+    actually carries a disc marker (``CD2``, ``-3``, ``_2_``, a variant
+    letter). It exists because the bare ``CODE.mp4`` + ``CODE (2).mp4``
+    shape means different things in different places:
+
+    - inside one task's wrapper, two files claiming the same name came
+      from the same torrent, so they are two discs (the default, False);
+    - in a 系列 folder they arrived from separate downloads months apart
+      and are two copies of the whole film. Every one of the 112 such
+      pairs found on 2026-07-16 was a duplicate, and the ten whose
+      duration PikPak knew were all full-length (SONE-092 153 min beside
+      its 8.16GB twin; REBD-1013 184 min).
+
+    Reading the second case as discs is not cosmetic: multi-part members
+    are deliberately excluded from the dedup that would otherwise remove
+    the loser, so both survive forever as a fake ``_1``/``_2`` pair.
     """
     # Pass 1: count files-with-variant per base code, so we know which
     # variants are "lonely" and should be stripped.
@@ -342,6 +361,10 @@ def _build_video_rename_plan(
         # Multi-file group: multipart naming if all substantial.
         if not all((f.size or 0) >= min_size for f in files):
             continue
+        if require_marker and not any(
+            _part_marker_index(f.name, canon) > 0 for f in files
+        ):
+            continue  # copies of one film, not discs — leave them to dedup
         # A stray low-res whole-film rip must not claim a part slot.
         files, _outliers = _split_size_outliers(files, canon)
         # Members get protected from the single-file default-name path.

@@ -652,8 +652,12 @@ async def _phase2_cleanup_target(
     # share a canonical). Those get _N naming and are EXCLUDED from
     # the winner-based dedup below — otherwise we'd trash the smaller
     # episodes thinking they were resolution duplicates.
+    # require_marker: this runs on a 系列 folder, where two files claiming
+    # the same code arrived from separate downloads and are copies, not
+    # discs. Without it they become a fake _1/_2 pair AND get excluded
+    # from the dedup below, so the loser never goes.
     multipart_plan, multipart_members = _build_video_rename_plan(
-        children, PART_MIN, is_video
+        children, PART_MIN, is_video, require_marker=True
     )
     handled_ids: set[str] = set()
     idx = idx_start

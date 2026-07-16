@@ -76,6 +76,9 @@ async def test_resolution_failure_rejected(monkeypatch):
         ("notjavbus.com", False),      # no partial-string tricks
         ("javbus.com.evil.io", False),
         ("pics.dmm.co.jp", True),
+        ("image.mgstage.com", True),   # MGS-family covers live here
+        ("i.imgur.com", True),
+        ("mgstage.com.evil.io", False),
     ],
 )
 def test_host_allowed(host, want):

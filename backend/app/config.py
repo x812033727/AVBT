@@ -297,6 +297,11 @@ _IMG_PROXY_DEFAULT_SUFFIXES = (
     ".dmm.com",
     ".buscdn.art",
     ".buscdn.cloud",
+    # MGS-family covers (SIRO/LUXU/MIUM/ABF …) point straight at the
+    # MGStage CDN; without it those covers 400 in the proxy and render
+    # broken (live 2026-07-17: 40 works affected).
+    ".mgstage.com",
+    ".imgur.com",
 )
 
 

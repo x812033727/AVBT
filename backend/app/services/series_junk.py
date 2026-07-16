@@ -41,6 +41,16 @@ from .jav_code import CONTAINER_EXTS, ext_of, extract_jav_code, is_video
 logger = logging.getLogger(__name__)
 
 JUNK_BYTES = 300 * 1024 * 1024
+# How small a replacement may be, relative to the container it retires.
+# A disc image carries the film uncompressed, so an equal-quality mp4 is
+# legitimately a fraction of its size (live: IPTD-770 4.3GB → 2.3GB, 53%;
+# ATOM-121 8.1GB → 2.6GB, 32%). Far below that is not a re-encode, it is
+# a worse rip: SNIS-494's Blu-ray image is 23.85GB and the magnet the
+# swap found was a 2.0GB avi — 8%. Retiring the only high-quality copy
+# for that is the 淨降級 the backfill's own "magnet must be ≥1.8× what we
+# have" rule exists to prevent; this is the same rule facing the other
+# way. Below the bar both are kept and a human decides.
+MIN_REPLACEMENT_FRACTION = 0.25
 _LIST_CONCURRENCY = 5
 _TRASH_BATCH = 50
 
@@ -50,28 +60,31 @@ def is_series_junk(
     size: int | None,
     phase: str = "",
     *,
-    code_has_video: bool = False,
+    video_bytes: int = 0,
 ) -> bool:
     """Whether a file sitting directly in a 系列 folder is BT junk.
 
-    ``code_has_video`` says a real playable video for this file's code
-    exists somewhere in the archive; it only ever promotes a container to
-    junk.
+    ``video_bytes`` is the biggest playable video for this file's code
+    anywhere in the archive (0 = none). It only ever promotes a container
+    to junk, and only when it is a credible replacement rather than a
+    downgrade.
     """
     if phase not in ("", "PHASE_TYPE_COMPLETE"):
         return False  # still being written — hands off (#129)
     if not is_video(name):
         if ext_of(name) not in CONTAINER_EXTS:
             return True
-        return code_has_video  # superseded by the real thing
+        if not video_bytes:
+            return False  # the only copy of the work
+        return video_bytes >= (size or 0) * MIN_REPLACEMENT_FRACTION
     return (size or 0) < JUNK_BYTES
 
 
-def _codes_with_video(entries: list) -> set[str]:
-    """Codes with a real playable video anywhere in the scanned tree —
-    substantial enough to clear the ad-clip bar, and fully written, so a
+def _codes_with_video(entries: list) -> dict[str, int]:
+    """Code → biggest playable video for it anywhere in the scanned tree.
+    Substantial enough to clear the ad-clip bar, and fully written, so a
     half-landed transfer never condemns the container it replaces."""
-    out: set[str] = set()
+    out: dict[str, int] = {}
     for e in entries:
         if not is_video(e.name) or (e.size or 0) < JUNK_BYTES:
             continue
@@ -79,7 +92,7 @@ def _codes_with_video(entries: list) -> set[str]:
             continue
         code = extract_jav_code(e.name)
         if code:
-            out.add(code)
+            out[code] = max(out.get(code, 0), e.size or 0)
     return out
 
 
@@ -140,9 +153,14 @@ async def purge_series_junk_stream(
         code = extract_jav_code(f.name)
         if is_series_junk(
             f.name, f.size, getattr(f, "phase", ""),
-            code_has_video=bool(code) and code in playable,
+            video_bytes=playable.get(code, 0) if code else 0,
         ):
             hits.append((f.id, path))
+        elif code and ext_of(f.name) in CONTAINER_EXTS and playable.get(code):
+            # Kept on purpose — say so, or it looks like the sweep missed it.
+            logger.info(
+                "series junk: %s kept, replacement is only %.0f%% of it",
+                path, 100 * playable[code] / (f.size or 1))
 
     for _fid, path in hits:
         yield {"type": "progress", "action": "trash", "target": path}

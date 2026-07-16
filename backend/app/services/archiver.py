@@ -756,6 +756,22 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("cleanup target parents failed: %s", exc)
+        # Junk that rode a wrapper into the flattened layout has no
+        # owner: finalize only purges inside a 番號 folder, and the
+        # retry pass just stamps an already-flattened code. Sweep it
+        # here, on the same cleanup_all cadence (user-authorised
+        # 2026-07-16 after 111 ad clips turned up library-wide).
+        try:
+            from .series_junk import purge_series_junk  # avoid cycle
+
+            junk = await purge_series_junk(pikpak_service, dry_run=False)
+            if junk.get("trashed"):
+                logger.info(
+                    "series junk sweep: trashed %d loose junk file(s)",
+                    junk["trashed"],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("series junk sweep failed: %s", exc)
 
     # Stop the DB-driven pass from re-moving what we just moved. Without
     # this, every loop iteration retries the move (PikPak rejects it

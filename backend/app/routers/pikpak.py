@@ -25,6 +25,7 @@ from ..schemas import (
     VideoCountResult,
 )
 from ..services import archiver, episode_finder
+from ..services import series_junk as series_junk_svc
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
 from ..services.finalize import finalize_code_folder_stream as finalize_stream_svc
@@ -542,6 +543,24 @@ async def archiver_status():
 async def archiver_run_now():
     moved = await archiver.archive_once()
     return {"moved": moved, **archiver.state.to_dict()}
+
+
+@router.post("/series-junk/purge")
+async def purge_series_junk_now(dry_run: bool = True):
+    """Trash the BT junk (ad clips / stray non-video) sitting loose in
+    the 系列 folders. finalize only purges inside a 番號 folder, so junk
+    that rode along into the flattened layout had no owner. Recoverable:
+    everything goes to the PikPak trash."""
+    async def gen():
+        try:
+            async for event in series_junk_svc.purge_series_junk_stream(
+                pikpak_service, dry_run=dry_run
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/archiver/sweep")

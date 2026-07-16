@@ -60,9 +60,14 @@ async def container_only_codes(*, verify: bool = True) -> list[dict[str, Any]]:
                        exc)
     out: list[dict[str, Any]] = []
     for code in candidates:
-        containers = _container_only(presence_index.paths_for(code))
+        paths = presence_index.paths_for(code)
+        containers = _container_only(paths)
         if containers:
             out.append({"code": code, "paths": containers})
         else:
-            logger.info("container-only: %s was stale, dropped", code)
+            # Say which: a landed swap and a phantom row both drop out
+            # here, and reading "stale" for a successful swap sent me
+            # hunting a bug that wasn't there.
+            logger.info("container-only: %s dropped (%s)", code,
+                        "swap landed" if paths else "no longer archived")
     return out

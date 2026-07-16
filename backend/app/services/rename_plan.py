@@ -37,21 +37,16 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 #   "(N)"   — PikPak's auto-dedupe on download collision
 #   "_N"    — our preferred multi-part convention (so we stay idempotent
 #             once files have been renamed once)
-#   quality tags — HD / SD / 720p / 1080p / 高清 / …
+#   quality tags — HD / 720p / 1080p / 高清 / …
 #   "ch"    — Chinese-subbed scene tag (``SNOS-015ch`` → ``SNOS-015``).
 #             Optional ``-`` / ``_`` separator before the marker.
 # CD1/CD2 / variant letters A/B/C live on the BASE side of the regex
-# and survive (they mark different content). So does anything naming a
-# different CUT rather than a different encode — ``-UNCENSORED`` /
-# ``_UNC`` / ``-UC`` / ``-AI`` (AI-decensored). Stripping those would let
-# an uncensored rip group with the censored retail release, and the
-# dedupe keeps the BIGGER file — which is usually the censored one.
-# Quality is same-content-worse; a cut is different content.
+# and survive (they mark different content).
 _DUP_SUFFIX_RE = re.compile(
-    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
-    r"|\((?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)\)"
-    r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
-    r"|高清|超清|[-_]?CH)[-_ ]*$",
+    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"|\((?:HD|FHD|UHD|4K|2K|8K|720P|1080P|2160P|4320P)\)"
+    r"|[-_](?:H26[45]|X26[45]|HEVC|AV1)"
+    r"|高清|超清|[-_]?CH)\s*$",
     re.IGNORECASE,
 )
 

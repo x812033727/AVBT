@@ -15,9 +15,11 @@ Rules, deliberately conservative:
   and not a container (``CONTAINER_EXTS``)
 - a container (``.iso``/``.zip``; e.g. the rescued SNIS-494.iso at
   23.8GB) is the video in disguise, so it survives — *until* a real
-  playable video for the same code lands beside it, which is what the
-  container swap arranges. Then it is redundant and gets trashed, which
-  is the tail end of the swap: download the video, drop the disc image.
+  playable video for the same code turns up **anywhere under 製作商**,
+  which is what the container swap arranges. Then it is redundant and
+  gets trashed: that is the tail end of the swap. Anywhere, not beside
+  it: series folder names drift (``新人NO.1 STYLE`` vs ``新人NO.1STYLE``)
+  and the replacement lands wherever the archiver resolves today.
 - a file PikPak is still writing (``phase`` not COMPLETE) is never
   touched — that is the #129 rule: touching an in-flight file kills the
   transfer and the partial vanishes
@@ -52,8 +54,9 @@ def is_series_junk(
 ) -> bool:
     """Whether a file sitting directly in a 系列 folder is BT junk.
 
-    ``code_has_video`` says a real playable video for this file's code is
-    already in the same folder; it only ever promotes a container to junk.
+    ``code_has_video`` says a real playable video for this file's code
+    exists somewhere in the archive; it only ever promotes a container to
+    junk.
     """
     if phase not in ("", "PHASE_TYPE_COMPLETE"):
         return False  # still being written — hands off (#129)
@@ -65,7 +68,7 @@ def is_series_junk(
 
 
 def _codes_with_video(entries: list) -> set[str]:
-    """Codes in this folder that already have a real playable video —
+    """Codes with a real playable video anywhere in the scanned tree —
     substantial enough to clear the ad-clip bar, and fully written, so a
     half-landed transfer never condemns the container it replaces."""
     out: set[str] = set()
@@ -111,27 +114,35 @@ async def purge_series_junk_stream(
                 logger.debug("series junk list %s failed: %s", folder_id, exc)
                 return []
 
-    hits: list[tuple[str, str]] = []  # (file id, display path)
-    scanned = 0
+    # Collect the whole tree first. A container only retires once a real
+    # video for its code exists, and that video does NOT reliably land
+    # beside it: series folder names drift (live: SNIS-494.iso sits in
+    # "新人NO.1 STYLE" while its swapped-in .avi landed in "新人NO.1STYLE"),
+    # so a per-folder answer would keep every drifted container forever.
+    # The walk already reads every file — decide against all of them.
+    collected: list[tuple[Any, str]] = []  # (entry, display path)
     for studio in await ls(root_id):
         if studio.kind != "drive#folder":
             continue
         for series in await ls(studio.id):
             if series.kind != "drive#folder":
                 continue
-            entries = [f for f in await ls(series.id) if f.kind != "drive#folder"]
-            playable = _codes_with_video(entries)
-            for f in entries:
-                scanned += 1
-                code = extract_jav_code(f.name)
-                if is_series_junk(
-                    f.name, f.size, getattr(f, "phase", ""),
-                    code_has_video=bool(code) and code in playable,
-                ):
-                    hits.append(
-                        (f.id,
-                         f"{studio_path}/{studio.name}/{series.name}/{f.name}")
-                    )
+            for f in await ls(series.id):
+                if f.kind == "drive#folder":
+                    continue
+                collected.append(
+                    (f, f"{studio_path}/{studio.name}/{series.name}/{f.name}"))
+
+    playable = _codes_with_video([e for e, _p in collected])
+    hits: list[tuple[str, str]] = []  # (file id, display path)
+    scanned = len(collected)
+    for f, path in collected:
+        code = extract_jav_code(f.name)
+        if is_series_junk(
+            f.name, f.size, getattr(f, "phase", ""),
+            code_has_video=bool(code) and code in playable,
+        ):
+            hits.append((f.id, path))
 
     for _fid, path in hits:
         yield {"type": "progress", "action": "trash", "target": path}

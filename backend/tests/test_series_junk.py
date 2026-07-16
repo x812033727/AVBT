@@ -99,6 +99,20 @@ async def test_walk_trashes_a_superseded_container_only():
     assert sorted(svc.trashed) == ["junk1", "junk2", "keep2"]
 
 
+async def test_container_retires_when_its_video_lands_in_a_drifted_folder():
+    # Series folder names drift, so the swapped-in video does not reliably
+    # land beside the container it replaces: live, SNIS-494.iso sat in
+    # "新人NO.1 STYLE" while its .avi arrived in "新人NO.1STYLE". A
+    # per-folder answer keeps every drifted container forever.
+    tree = _tree()
+    tree["studio1"].append(_f("別的系列", None, "drive#folder", "series2"))
+    tree["series2"] = [_f("SNIS-494.avi", 4 * GB, fid="swapped")]
+    svc = FakeSvc(tree)
+    await purge_series_junk(svc, dry_run=False)
+    assert "keep2" in svc.trashed          # the .iso, one folder over
+    assert "swapped" not in svc.trashed
+
+
 async def test_half_landed_video_does_not_condemn_its_container():
     # An in-flight replacement is not proof of anything: if it dies the
     # container is all that is left. Only a COMPLETE video retires one.

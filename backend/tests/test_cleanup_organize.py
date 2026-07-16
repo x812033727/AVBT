@@ -399,3 +399,68 @@ async def test_flatten_letter_discs_ordered_by_marker_not_size(
     assert renames.get("c") == "SKMJ-058_3.mp4"
     assert renames.get("d") == "SKMJ-058_4.mp4"
     await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# require_marker — the same shape means different things in different places
+# ---------------------------------------------------------------------------
+
+def _vid(name, gb):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, size=int(gb * 1e9), kind="drive#file", id=name)
+
+
+def test_bare_pair_is_discs_inside_a_wrapper():
+    # Default (wrapper scope): two files claiming CODE.mp4 came from the
+    # same torrent, so they are two discs. PikPak stored the second as
+    # "(2)" on the name collision.
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan
+
+    plan, _m = _build_video_rename_plan(
+        [_vid("SDMM-053.mp4", 2), _vid("SDMM-053 (2).mp4", 2)],
+        500 * 1024 * 1024, is_video,
+    )
+    assert sorted(plan.values()) == ["SDMM-053_1.mp4", "SDMM-053_2.mp4"]
+
+
+def test_bare_pair_is_copies_in_a_series_folder():
+    # Series scope: they arrived from separate downloads. Live 2026-07-16:
+    # all 112 such pairs were duplicates, and every one whose duration
+    # PikPak knew was full-length. Calling them discs also excludes them
+    # from the dedup, so the loser would survive forever as a fake _1.
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan
+
+    plan, members = _build_video_rename_plan(
+        [_vid("SKMJ-480.mp4", 7.4), _vid("SKMJ-480 (2).mp4", 2.41)],
+        500 * 1024 * 1024, is_video, require_marker=True,
+    )
+    assert plan == {} and members == set()
+
+
+def test_real_discs_survive_require_marker():
+    # A marker means different content, and that is true in both scopes.
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan
+
+    plan, _m = _build_video_rename_plan(
+        [_vid("OFJE-276CD1-A.mp4", 2), _vid("OFJE-276CD1-B.mp4", 2),
+         _vid("OFJE-276CD2-A.mp4", 2)],
+        500 * 1024 * 1024, is_video, require_marker=True,
+    )
+    assert sorted(plan.values()) == [
+        "OFJE-276_1.mp4", "OFJE-276_2.mp4", "OFJE-276_3.mp4"]
+
+
+def test_zero_padded_twin_is_not_a_disc():
+    # Live: URKN-1901.mp4 and URKN-01901.mp4, byte-identical sizes — the
+    # same file under two spellings, one _canonical_video_name apart.
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan
+
+    plan, members = _build_video_rename_plan(
+        [_vid("URKN-1901.mp4", 3.51), _vid("URKN-01901.mp4", 3.51)],
+        500 * 1024 * 1024, is_video, require_marker=True,
+    )
+    assert plan == {} and members == set()

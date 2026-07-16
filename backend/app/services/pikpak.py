@@ -21,7 +21,13 @@ from pikpakapi import PikPakApi
 
 from ..config import settings, task_folder_path
 from ..schemas import OfflineSubmit, PikPakFile, PikPakQuota, PikPakTask
-from .jav_code import ext_of, extract_jav_code, extract_jav_code_full, is_video
+from .jav_code import (
+    ext_of,
+    extract_jav_code,
+    extract_jav_code_full,
+    folder_key,
+    is_video,
+)
 
 # Rename-plan helpers moved to services/rename_plan.py; re-exported
 # here so existing import sites (pcloud, episode_finder, reorganize)
@@ -35,6 +41,10 @@ from .rename_plan import (  # noqa: F401
     _split_size_outliers,
     _uniquify_target,
 )
+
+# How long a resolved (or absent) folder-name twin stays memoised. Folder
+# layout changes slowly; this only bounds how often a lookup miss re-walks.
+_CANONICAL_TTL = 300.0
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,7 @@ class PikPakService:
         self._client: PikPakApi | None = None
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
+        self._canonical_cache: dict[str, tuple[str, float]] = {}
         self._username: str = ""
         # Login-failure cooldown state (see module constants above).
         self._login_blocked_until: float = 0.0
@@ -473,17 +484,71 @@ class PikPakService:
             expire=quota.get("expires_at") or quota.get("expire"),
         )
 
+    async def _canonical_path(self, name: str) -> str:
+        """Rewrite each segment to the existing sibling folder that means
+        the same thing, so a name that drifted reuses its folder instead
+        of forking a second one.
+
+        JavBus hands back the same series as "新人NO.1 STYLE" one day and
+        "新人NO.1STYLE" the next; path_to_id matches exactly, so the drifted
+        spelling created a twin and split the series across two folders
+        (live 2026-07-16: 6 pairs, still growing). Segments are rewritten
+        only while they resolve — the first genuinely missing one and
+        everything below it is left alone for the caller to create.
+
+        Memoised, including the "no twin" answer: this runs on every
+        lookup MISS, and misses are routine — ``_live_paths_for`` probes a
+        legacy path per code that usually isn't there. Unmemoised, a
+        presence refresh re-walks the drive root once per code, which is
+        the shape of the #163 self-inflicted slowdown.
+        """
+        hit = self._canonical_cache.get(name)
+        if hit and time.monotonic() - hit[1] < _CANONICAL_TTL:
+            return hit[0]
+        canonical = await self._canonical_path_uncached(name)
+        self._canonical_cache[name] = (canonical, time.monotonic())
+        return canonical
+
+    async def _canonical_path_uncached(self, name: str) -> str:
+        segments = [p for p in name.split("/") if p.strip()]
+        out: list[str] = []
+        parent_id = ""
+        for seg in segments:
+            children, _partial = await self.list_all_files(parent_id)
+            folders = {c.name: c.id for c in children
+                       if c.kind == "drive#folder"}
+            match = folders.get(seg)
+            if match is None:
+                key = folder_key(seg)
+                twin = next((n for n in folders if folder_key(n) == key), None)
+                if twin is None:
+                    out.extend(segments[len(out):])   # missing — create as asked
+                    return "/".join(out)
+                logger.info("folder %r reuses existing %r", seg, twin)
+                seg, match = twin, folders[twin]
+            out.append(seg)
+            parent_id = match
+        return "/".join(out)
+
     async def folder_id(self, name: str | None) -> str:
         if not name:
             return ""
         if name in self._folder_cache:
             return self._folder_cache[name]
-        path = name if name.startswith("/") else f"/{name}"
+        # Exact hit is the common case and costs one call; only a miss
+        # pays for the segment walk.
+        existing = await self.lookup_folder_id(name)
+        if existing:
+            return existing
+        canonical = await self._canonical_path(name)
+        path = f"/{canonical}"
         folder_id = await self._call(lambda c: c.path_to_id(path, create=True))
         # path_to_id returns a list of path-segments in newer versions
         if isinstance(folder_id, list) and folder_id:
             folder_id = folder_id[-1].get("id", "")
         self._folder_cache[name] = folder_id or ""
+        if canonical != name:
+            self._folder_cache[canonical] = folder_id or ""
         return self._folder_cache[name]
 
     async def lookup_folder_id(self, name: str | None) -> str:
@@ -515,7 +580,16 @@ class PikPakService:
                 folder_id = leaf.get("id", "")
         if folder_id:
             self._folder_cache[name] = folder_id
-        return folder_id or ""
+            return folder_id
+        # No exact folder — but the caller's name may have drifted from
+        # the one on disk (JavBus spacing), and folder_id() now reuses the
+        # existing spelling. A read that only matches exactly would miss
+        # the very folder the write went to (live: presence saw MAS-096 as
+        # gone because its path resolved to a twin it never checked).
+        canonical = await self._canonical_path(name)
+        if canonical == name:
+            return ""
+        return await self.lookup_folder_id(canonical)
 
     async def offline_download(self, payload: OfflineSubmit) -> PikPakTask:
         # Default to the dedicated task folder (AVBT/TASK) instead of the

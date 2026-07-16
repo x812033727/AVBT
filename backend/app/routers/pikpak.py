@@ -26,6 +26,7 @@ from ..schemas import (
 )
 from ..services import archiver, episode_finder
 from ..services import container_swap as container_swap_svc
+from ..services import dup_copies as dup_copies_svc
 from ..services import series_junk as series_junk_svc
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
@@ -553,6 +554,26 @@ async def archiver_status():
 async def archiver_run_now():
     moved = await archiver.archive_once()
     return {"moved": moved, **archiver.state.to_dict()}
+
+
+@router.post("/dup-copies/sweep")
+async def sweep_dup_copies_now(dry_run: bool = True):
+    """Retire the CODE(1).mp4 leftovers an upgrade download leaves beside
+    CODE.mp4 — keep the biggest, trash the rest. Recoverable: everything
+    goes to the PikPak trash. Real discs (CODE_1/CODE_2) are never
+    touched; the (N) suffix is PikPak's own name-collision marker, so it
+    only ever appears when two files claimed the same identity."""
+    async def gen():
+        try:
+            async for event in dup_copies_svc.sweep_dup_copies_stream(
+                pikpak_service, dry_run=dry_run
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)},
+                             ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/series-junk/purge")

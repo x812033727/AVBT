@@ -213,6 +213,11 @@ class PikPakFile(BaseModel):
     # ("PHASE_TYPE_COMPLETE" when fully written; RUNNING while PikPak is
     # still fetching it). Empty for files that never came from a task.
     phase: str = ""
+    # Runtime in seconds, from the listing's own ``params.duration`` — no
+    # extra call. 0 when PikPak hasn't probed the file. It answers a
+    # question size alone cannot: two videos of the same length are the
+    # same film, however different their bitrates.
+    duration: int = 0
 
 
 class PikPakTask(BaseModel):

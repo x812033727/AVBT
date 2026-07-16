@@ -144,6 +144,21 @@ _BATCH_OP_LIMIT = 100
 _ORGANIZE_MAX_DEPTH = 4
 
 
+def _duration_of(raw: dict) -> int:
+    """Runtime in seconds from a listing entry, 0 when PikPak doesn't know.
+
+    ``params.duration`` rides along with every file_list response, so this
+    costs nothing — and it settles what size cannot. Live 2026-07-16:
+    CLUB-561 had three files of 219/221/221 min at 10.2/6.85/1.02GB (one
+    film, three bitrates) while OFJE-276's six real discs ran 115-123 min
+    at 5.1-5.5GB each. By size alone those two shapes are the same.
+    """
+    try:
+        return int((raw.get("params") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _chunked(items: list, size: int):
     """Yield ``items`` in consecutive slices of at most ``size``."""
     for i in range(0, len(items), size):
@@ -700,6 +715,7 @@ class PikPakService:
             created_time=f.get("created_time"),
             thumbnail_link=f.get("thumbnail_link"),
             phase=f.get("phase", "") or "",
+            duration=_duration_of(f),
         )
 
     async def list_all_files(

@@ -271,6 +271,46 @@ def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
     return files, []
 
 
+# How close two runtimes must be to call them the same film, and how much
+# smaller a same-length file must be before it is obviously a re-encode
+# rather than a disc. Both gates must pass, and the size one carries the
+# safety: OFJE-276's six real discs run 115-123 min — a 6.5% spread, only
+# just outside the duration gate — but they are 5.1-5.5GB each, so the
+# size gate would still spare them if their runtimes happened to cluster.
+# Whereas GDHH-167's fake _5 is 195 min beside a 195-min _1 at a seventh
+# of the size. Two files of the same length where one is under half the
+# other is a bitrate difference, not a different disc.
+_SAME_FILM_DURATION_TOLERANCE = 0.05
+_COPY_MAX_SIZE_FRACTION = 0.5
+
+
+def low_bitrate_copies(files: list) -> list:
+    """Members that are the biggest file again, just re-encoded smaller.
+
+    Returns [] unless every member's runtime is known — an unprobed file
+    must never be judged, and a group where PikPak knows nothing tells us
+    nothing. Judgement stays conservative on purpose: same-size copies
+    (STOL-094: 239 min / 11.01GB beside 236 min / 10.65GB) are NOT
+    reported, because at that point only a human can say whether the
+    release really is two discs.
+    """
+    known = [f for f in files if getattr(f, "duration", 0) > 0]
+    if len(known) != len(files) or len(files) < 2:
+        return []
+    biggest = max(files, key=lambda f: (f.size or 0))
+    out = []
+    for f in files:
+        if f is biggest:
+            continue
+        same_length = (abs(f.duration - biggest.duration)
+                       <= max(f.duration, biggest.duration)
+                       * _SAME_FILM_DURATION_TOLERANCE)
+        much_smaller = (f.size or 0) <= (biggest.size or 0) * _COPY_MAX_SIZE_FRACTION
+        if same_length and much_smaller:
+            out.append(f)
+    return out
+
+
 def _build_video_rename_plan(
     children: list,  # list[PikPakFile]; type kept loose to avoid forward ref
     min_size: int,
@@ -365,6 +405,16 @@ def _build_video_rename_plan(
             _part_marker_index(f.name, canon) > 0 for f in files
         ):
             continue  # copies of one film, not discs — leave them to dedup
+        # A marker can lie. GDHH-167_5 and CLUB-512_5 sat on disk as _N
+        # for weeks; their runtimes matched _1 exactly and they were a
+        # seventh of its size — re-encodes that a marker-only rule (and a
+        # size-only rule) both waved through as discs. Drop them here so
+        # the dedup can take them.
+        copies = low_bitrate_copies(files)
+        if copies:
+            files = [f for f in files if f not in copies]
+            if len(files) < 2:
+                continue  # nothing left to number — the dedup owns it
         # A stray low-res whole-film rip must not claim a part slot.
         files, _outliers = _split_size_outliers(files, canon)
         # Members get protected from the single-file default-name path.

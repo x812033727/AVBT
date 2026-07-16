@@ -97,8 +97,9 @@ _GLUED_EXT_RE = re.compile(
     r"(?<=[0-9A-Za-z])(?:MP4|MKV|AVI|WMV|MPG|MPEG|MOV|M4V|FLV|RMVB)\s*$",
     re.IGNORECASE,
 )
-# Leading parenthesised tag groups (``(Hunter)(HUNTA-398)<title>``).
-_HEAD_PAREN_RE = re.compile(r"^\s*(?:\(([^)]*)\)|\[([^\]]*)\])\s*")
+# Parenthesised tag groups (``(Hunter)(HUNTA-398)<title>``,
+# ``DivX+nike(AVGP047)``).
+_PAREN_TAG_RE = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
 
 
 def _flex_code_re(code: str) -> str:
@@ -198,20 +199,18 @@ def _canonical_video_name(name: str) -> str:
             stem = code
         else:
             # ``(Hunter)(HUNTA-398)<long title>`` — the title tail keeps
-            # the anchored match above from firing. A LEADING paren/
-            # bracket group whose content alone yields the same code is
-            # an explicit code tag, so the code IS the canonical. A
-            # free-text mid-name code (``MIDV-001 making-of``) has no
-            # such tag and stays untouched.
-            head = stem
-            while True:
-                m2 = _HEAD_PAREN_RE.match(head)
-                if not m2:
-                    break
-                if extract_jav_code(m2.group(1) or m2.group(2) or "") == code:
+            # the anchored match above from firing. A paren/bracket
+            # group whose content alone yields the same code is an
+            # explicit code tag, so the code IS the canonical — whether
+            # it leads the stem or sits glued after a release label
+            # (``DivX+nike(AVGP047)``, stamped finalized under its BT
+            # name, 2026-07-16). A free-text mid-name code
+            # (``MIDV-001 making-of``) has no such tag and stays
+            # untouched.
+            for inner_p, inner_b in _PAREN_TAG_RE.findall(stem):
+                if extract_jav_code(inner_p or inner_b) == code:
                     stem = code
                     break
-                head = head[m2.end():]
     return stem.upper()
 
 

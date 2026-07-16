@@ -761,6 +761,19 @@ def test_canonical_strips_non_bracket_site_prefixes():
     assert _canonical_video_name("MIDV-001 making-of.mp4") != "MIDV-001"
 
 
+def test_paren_code_tag_is_canonical_wherever_it_sits():
+    """An explicit ``(CODE)`` tag names the work even when the group
+    doesn't lead the stem (live: ``DivX+nike(AVGP047).avi`` kept its BT
+    name through the flattened stamp, 2026-07-16)."""
+    from app.services.rename_plan import _canonical_video_name
+    assert _canonical_video_name("DivX+nike(AVGP047).avi") == "AVGP-047"
+    # leading tag runs keep working
+    assert _canonical_video_name(
+        "(Hunter)(HUNTA-398)なんとかかんとか長いタイトル.mp4") == "HUNTA-398"
+    # a paren group that is NOT the code is no tag
+    assert _canonical_video_name("MIDV-001 making-of (sample).mp4") != "MIDV-001"
+
+
 def test_prefixed_parts_rename_to_bare_code():
     files = [_file("HD-DVDMS-475_1.mp4", "a", 3000),
              _file("HD-DVDMS-475_2.mp4", "b", 2700)]

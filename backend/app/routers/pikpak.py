@@ -465,10 +465,12 @@ async def finalize_code_stream(opts: FinalizeOptions):
 
 
 @router.get("/container-only")
-async def container_only():
+async def container_only(verify: bool = Query(True)):
     """Codes archived as a disc image / archive with no playable video —
-    the swap worklist. Presence-index read only: no PikPak, no JavBus."""
-    return await container_swap_svc.container_only_codes()
+    the swap worklist. Scans the presence index, then re-reads just the
+    candidates from PikPak so a stale row can't cost a pointless
+    download. ``verify=false`` skips that (index only, no PikPak call)."""
+    return await container_swap_svc.container_only_codes(verify=verify)
 
 
 @router.get("/presence/status", response_model=PresenceStatus)

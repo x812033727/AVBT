@@ -24,7 +24,7 @@ def _f(name, size, kind="drive#file", fid="x", phase="PHASE_TYPE_COMPLETE"):
         ("MFC-261_2.mp4", 800 * MB, False),            # a real disc
         ("18p2p帳號.rtf", 1 * MB, True),                # non-video junk
         ("cover.jpg", 200, True),
-        ("SNIS-494.iso", 23 * GB, False),              # rescued DVD original
+        ("SNIS-494.iso", 23 * GB, False),              # rescued disc image
         ("AP-619.zip", 2 * GB, False),                 # archived work
     ],
 )
@@ -38,12 +38,20 @@ def test_in_flight_file_is_never_junk():
     assert is_series_junk("MFC-261.mp4", 5 * MB, "PHASE_TYPE_RUNNING") is False
 
 
-def test_container_becomes_junk_once_its_video_lands():
-    # The tail of the swap: the disc image is kept only while it is the
-    # sole copy of the work. A real video for the code beside it makes it
-    # redundant — trashed, not purged, so a bad rip is still undoable.
-    assert is_series_junk("SNIS-494.iso", 23 * GB, code_has_video=False) is False
-    assert is_series_junk("SNIS-494.iso", 23 * GB, code_has_video=True) is True
+def test_container_becomes_junk_once_a_credible_video_lands():
+    # The tail of the swap: the disc image is kept while it is the sole
+    # copy of the work, and retires — trashed, not purged — once a real
+    # video for the code exists. An .iso holds the film uncompressed, so
+    # a same-quality mp4 is legitimately a fraction of its size.
+    assert is_series_junk("EKDV-434.iso", 4 * GB) is False
+    assert is_series_junk("EKDV-434.iso", 4 * GB, video_bytes=1400 * MB) is True
+
+
+def test_container_survives_a_downgrade_replacement():
+    # SNIS-494: a 23.85GB Blu-ray image against the 2.0GB avi the swap
+    # found — 8%. That is not a re-encode, it is a worse rip, and the only
+    # high-quality copy must not be retired for it.
+    assert is_series_junk("SNIS-494.iso", 23 * GB, video_bytes=2 * GB) is False
 
 
 class FakeSvc:
@@ -70,7 +78,7 @@ def _tree():
             _f("MFC-260.mp4", 3 * GB, fid="keep1"),
             _f("社 区 最 新 情 报.mp4", 17 * MB, fid="junk1"),
             _f("ZB-555.mp4", 5 * MB, fid="junk2"),
-            _f("SNIS-494.iso", 23 * GB, fid="keep2"),
+            _f("SNIS-494.iso", 5 * GB, fid="keep2"),
             _f("MFC-261.mp4", 5 * MB, fid="inflight",
                phase="PHASE_TYPE_RUNNING"),
             _f("aavv38.xyz@435MFC-261", None, "drive#folder", "wrapper"),

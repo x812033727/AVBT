@@ -27,6 +27,7 @@ from ..schemas import (
 from ..services import archiver, episode_finder
 from ..services import container_swap as container_swap_svc
 from ..services import dup_copies as dup_copies_svc
+from ..services import folder_twins as folder_twins_svc
 from ..services import series_junk as series_junk_svc
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
@@ -554,6 +555,28 @@ async def archiver_status():
 async def archiver_run_now():
     moved = await archiver.archive_once()
     return {"moved": moved, **archiver.state.to_dict()}
+
+
+@router.post("/folder-twins/merge")
+async def merge_folder_twins_now(dry_run: bool = True):
+    """Merge series folders that are the same series twice — from name
+    drift, or from two archives racing to create the same missing path
+    (PikPak allows duplicate folder names). A path resolves to exactly one
+    of them, so the other's files are invisible to every path-based read:
+    MAS-096.iso sat in a 1-file duplicate and was reported as not
+    archived. Biggest folder wins; emptied shells wait out the 30-minute
+    move-settle gate before they go."""
+    async def gen():
+        try:
+            async for event in folder_twins_svc.merge_folder_twins_stream(
+                pikpak_service, dry_run=dry_run
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except Exception as exc:  # noqa: BLE001
+            yield json.dumps({"type": "error", "message": str(exc)},
+                             ensure_ascii=False) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @router.post("/dup-copies/sweep")

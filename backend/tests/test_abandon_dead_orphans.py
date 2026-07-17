@@ -1,10 +1,12 @@
 """Dead-letter genuinely-dead orphan rows so the finalize retry pass
 stops re-listing them every ~10 min for the 7-day reap window.
 
-A row is abandoned only when the download never produced a file
-(file_id empty), the task is gone from PikPak, the code is NOT at the
-destination (not flattened — the safety gate against abandoning a
-landed-but-unstamped row), and it is older than the 24h grace.
+A row is abandoned only when the code has nothing on PikPak
+(_orphan_has_nothing_landed), the task is gone from PikPak, the row is
+not yet archived, and it is older than the 24h grace. This covers both
+the file_id-empty Collecting orphan AND the file_id-nonempty stuck-
+"Saving" orphan (PikPak assigned a file_id but the download died) — the
+per-row nothing-landed check, not the file_id, decides dead-vs-live.
 """
 
 from datetime import datetime, timedelta
@@ -110,16 +112,40 @@ async def test_fresh_row_within_grace_is_left(maker):
         assert row.finalized is False
 
 
-async def test_row_with_file_id_not_abandoned(maker):
+async def test_stuck_saving_orphan_with_file_id_is_abandoned(maker):
+    # A stuck-"Saving" orphan keeps a stale file_id but the task is gone
+    # and nothing landed — the file_id is not evidence of a real file, so
+    # it is dead-lettered just like the file_id-empty Collecting orphan.
+    # (Was previously left to churn the finalize retry pass forever; live
+    # 2026-07-18 PA0-010/SNOS-257/GDTM-203.)
     async with maker() as s:
-        s.add(_row(code="HASFILE-001", file_id="f-123"))
+        s.add(_row(code="SAVING-001", file_id="f-123", message="Saving"))
         await s.commit()
     await archiver._reap_orphan_rows()
     async with maker() as s:
         row = (await s.execute(
-            select(OfflineTaskLog).where(OfflineTaskLog.code == "HASFILE-001")
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "SAVING-001")
         )).scalar_one()
-        assert row.abandoned is False          # out of scope (has a file)
+        assert row.abandoned is True           # file_id no longer a shield
+        assert row.finalized is False
+
+
+async def test_stuck_saving_orphan_kept_when_something_landed(maker, monkeypatch):
+    # file_id-nonempty, but a per-code folder / wrapper still exists → the
+    # nothing-landed gate (not the file_id) keeps it out of abandon.
+    async def _something(code, **kw):
+        return False
+
+    monkeypatch.setattr(archiver, "_orphan_has_nothing_landed", _something)
+    async with maker() as s:
+        s.add(_row(code="SAVING-002", file_id="f-456", message="Saving"))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with maker() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "SAVING-002")
+        )).scalar_one()
+        assert row.abandoned is False          # needs finalize, keep it
 
 
 async def test_abandoned_row_excluded_from_retry_and_reap(maker):

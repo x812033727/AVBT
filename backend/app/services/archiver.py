@@ -1707,8 +1707,11 @@ async def archive_once() -> int:
 
         # Phase B: finalize each distinct moved code concurrently (bounded).
         # Serial moves above guarantee every file has been asked to land
-        # before any finalize starts; distinct codes target distinct 系列
-        # folders, so their finalizes are independent and order-free.
+        # before any finalize starts. Concurrent finalizes are safe even
+        # when codes share a 系列 parent folder: finalize only WRITES
+        # (moves keepers) into the parent, while every delete/trash and
+        # every move-settle stamp is confined to the per-code subtree, so
+        # no finalize ever mutates the shared parent destructively.
         finalized_codes = await _run_finalize_batch(
             finalize_targets, settings.archive_finalize_concurrency
         )

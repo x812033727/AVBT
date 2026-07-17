@@ -402,10 +402,18 @@ export default function TrackedPage() {
     }
   }
 
+  // 第一次點=讀 presence 索引;已查過再點=先請後端向 PikPak 重讀該番號
+  // 的資料夾(更新索引),再取最新位置——改名/搬移後索引殘留舊 leaf 時用。
   async function lookupCode(code: string) {
-    if (lookupBusy.has(code) || lookups.has(code)) return;
+    if (lookupBusy.has(code)) return;
+    const live = lookups.has(code);
     setLookupBusy((s) => new Set(s).add(code));
     try {
+      if (live) {
+        await api.post(`/api/pikpak/presence/refresh-codes`, {
+          codes: [code],
+        });
+      }
       const res = await api.get<PresenceCodeLookup>(
         `/api/pikpak/presence/codes/${encodeURIComponent(code)}`
       );

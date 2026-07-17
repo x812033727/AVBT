@@ -353,7 +353,7 @@ class PikPakPresenceIndex:
         code: str,
         *,
         exclude_ids: frozenset[str] = frozenset(),
-        memo: "_ListingMemo | None" = None,
+        memo: _ListingMemo | None = None,
     ) -> list[str]:
         """Current archive paths for one code, read live from PikPak.
 
@@ -413,7 +413,7 @@ class PikPakPresenceIndex:
         return datetime.utcnow() - self._built_at < timedelta(seconds=ttl)
 
     async def _list(
-        self, parent_id: str, *, memo: "_ListingMemo | None" = None
+        self, parent_id: str, *, memo: _ListingMemo | None = None
     ) -> list:
         if memo is not None:
             return await memo.get(parent_id)

@@ -80,7 +80,7 @@ async def test_refresh_codes_updates_and_drops(tmp_path, monkeypatch):
         "GONE-002": [],                                   # deleted
     }
 
-    async def fake_live(code, *, exclude_ids=frozenset()):
+    async def fake_live(code, *, exclude_ids=frozenset(), memo=None):
         return live[code]
 
     idx._live_paths_for = fake_live  # type: ignore[method-assign]

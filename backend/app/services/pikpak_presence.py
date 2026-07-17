@@ -42,6 +42,49 @@ from .pikpak import PikPakError, pikpak_service
 logger = logging.getLogger(__name__)
 
 
+class _ListingMemo:
+    """Per-call, concurrency-coalescing memo for PikPak folder listings.
+
+    Lives only for the duration of one refresh_codes() call. Within that
+    call each ``parent_id`` is listed at most once — even when several
+    codes run concurrently and want the same folder, they serialise on a
+    per-key lock so only the first triggers the load and the rest read
+    the stored result. This is NOT a TTL cache: it is discarded when the
+    call returns, so it can never serve a stale listing to a later call
+    or to a change-polling caller such as confirm_arrivals. Neither failed
+    loads nor empty results are stored, so a later caller re-lists (an
+    empty [] may be a swallowed transient failure, not a genuinely empty
+    folder)."""
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._results: dict[str, list] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    async def get(self, parent_id: str) -> list:
+        # The returned list is shared across callers for this key — callers
+        # must treat it as read-only (they only iterate it).
+        if parent_id in self._results:
+            return self._results[parent_id]
+        # setdefault is atomic (no await between get and set), so racing
+        # callers for the same key share one lock.
+        lock = self._locks.setdefault(parent_id, asyncio.Lock())
+        async with lock:
+            if parent_id in self._results:
+                return self._results[parent_id]
+            result = await self._loader(parent_id)
+            # Only memoize a NON-EMPTY listing. An empty result may be a
+            # genuine empty folder OR a transient listing failure the
+            # loader swallowed to []; caching the latter would broadcast a
+            # one-off failure to every code in this batch (dropping them
+            # from the presence index). Not caching [] makes that code
+            # re-list, exactly as before this memo existed — the dedup win
+            # is kept for the common non-empty case.
+            if result:
+                self._results[parent_id] = result
+            return result
+
+
 _LIST_CONCURRENCY = 4
 # Max folder levels to descend under a kind root when looking for code
 # leaves. The flat layout keeps codes at depth 1 (``<name>/<code>``); the
@@ -272,12 +315,13 @@ class PikPakPresenceIndex:
             await self._load_from_db()
         sem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
         gone = frozenset(exclude_ids or ())
+        memo = _ListingMemo(self._list_uncached)
 
         async def one(code: str) -> tuple[str, list[str]] | None:
             async with sem:
                 try:
                     return code, await self._live_paths_for(
-                        code, exclude_ids=gone
+                        code, exclude_ids=gone, memo=memo
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("presence refresh %s failed: %s", code, exc)
@@ -307,7 +351,11 @@ class PikPakPresenceIndex:
         return changed
 
     async def _live_paths_for(
-        self, code: str, *, exclude_ids: frozenset[str] = frozenset()
+        self,
+        code: str,
+        *,
+        exclude_ids: frozenset[str] = frozenset(),
+        memo: _ListingMemo | None = None,
     ) -> list[str]:
         """Current archive paths for one code, read live from PikPak.
 
@@ -346,7 +394,7 @@ class PikPakPresenceIndex:
                 continue
             if not folder_id:
                 continue
-            for child in await self._list(folder_id):
+            for child in await self._list(folder_id, memo=memo):
                 if child.id in exclude_ids:
                     continue
                 if normalize_code(child.name) == code:
@@ -366,7 +414,14 @@ class PikPakPresenceIndex:
         ttl = max(30, settings.presence_ttl_seconds)
         return datetime.utcnow() - self._built_at < timedelta(seconds=ttl)
 
-    async def _list(self, parent_id: str) -> list:
+    async def _list(
+        self, parent_id: str, *, memo: _ListingMemo | None = None
+    ) -> list:
+        if memo is not None:
+            return await memo.get(parent_id)
+        return await self._list_uncached(parent_id)
+
+    async def _list_uncached(self, parent_id: str) -> list:
         async with self._sem:
             try:
                 files, partial = await pikpak_service.list_all_files(

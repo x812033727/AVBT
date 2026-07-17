@@ -195,6 +195,31 @@ async def _phase1_migrate_from(
             yield {**base, "action": "skip", "target": None, "reason": "no_code"}
             continue
 
+        if is_folder:
+            # An ad shell (files, zero video/container) must be trashed,
+            # not migrated — moving it mints a canonical-looking 番號
+            # folder every layer reads as success (live: EDD-138,
+            # OYC-205). wrapper_is_ad_shell answers False on any
+            # can't-tell (truncated/empty/still-transferring listing),
+            # so an in-flight download keeps migrating as usual.
+            try:
+                from .finalize import wrapper_is_ad_shell  # avoid cycle
+
+                shell = await wrapper_is_ad_shell(pikpak_service, child.id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ad-shell check %s failed: %s", child.name, exc)
+                shell = False
+            if shell:
+                try:
+                    if not dry_run:
+                        await pikpak_service.trash_files([child.id])
+                    yield {**base, "action": "trash", "target": None,
+                           "reason": "ad_shell"}
+                except Exception as exc:  # noqa: BLE001
+                    yield {**base, "action": "error", "target": None,
+                           "reason": f"trash_failed: {exc}"}
+                continue
+
         try:
             target_path = await _resolve_archive_path_by_code(code)
         except Exception as exc:  # noqa: BLE001

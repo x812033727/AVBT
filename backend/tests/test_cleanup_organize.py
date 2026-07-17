@@ -39,7 +39,7 @@ class FakeSvc(pk.PikPakService):
         self.trashed = []  # id
         # Fake moves are instantaneous — open the settle gate so the
         # single-run assertions keep exercising the full flatten.
-        self._proc_start -= pk.MOVE_SETTLE_SECONDS * 2
+        self._boot_guard_until = 0.0
 
     def record_move_source(self, source_id):
         # keep the real bookkeeping but immediately backdate it: fake

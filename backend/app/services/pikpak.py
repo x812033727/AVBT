@@ -100,6 +100,16 @@ _LOGIN_COOLDOWN_GENERIC = 300  # wrong password / network / unknown
 # be deleted. PikPak moves are async and their listings optimistic — see
 # PikPakService.move_settled for the incident history.
 MOVE_SETTLE_SECONDS = 1800
+
+# Move-source stamps persist here so a backend restart doesn't have to
+# assume the worst. Without history, every restart re-imposed a blanket
+# 30-min gate — and deploys (the rota ships its own fixes) reset it so
+# often that shell cleanups took 5 attempts to land. Env override is a
+# test hook: an empty value disables persistence entirely.
+_MOVE_LOG_ENV = os.environ.get("PIKPAK_MOVE_LOG")
+MOVE_SOURCES_FILE = Path(
+    _MOVE_LOG_ENV if _MOVE_LOG_ENV is not None else "data/move_sources.json"
+)
 _LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
 _LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
 
@@ -183,19 +193,65 @@ class PikPakService:
         self._login_blocked_until: float = 0.0
         self._login_block_reason: str = ""
         self._too_frequent_streak: int = 0
-        # Move-settle tracking (see move_settled). Process start counts
-        # as "unknown history": a restart must not unlock deletions that
-        # a pre-restart move would have gated.
-        self._move_sources: dict[str, float] = {}
-        self._proc_start: float = time.monotonic()
+        # Move-settle tracking (see move_settled). Stamps are wall-clock
+        # and persisted across restarts; only when there is NO usable
+        # history file does boot count as "unknown history" — a restart
+        # must not unlock deletions that a pre-restart move would have
+        # gated, but a persisted log IS that pre-restart knowledge.
+        loaded = self._load_move_sources()
+        self._move_sources: dict[str, float] = loaded or {}
+        self._boot_guard_until: float = (
+            0.0 if loaded is not None else time.time() + MOVE_SETTLE_SECONDS
+        )
 
     # ---------- move settle gate ----------
+
+    def _load_move_sources(self) -> dict[str, float] | None:
+        """Persisted move stamps, or None when there is no usable history
+        (first boot, unreadable file, persistence disabled). An existing
+        file with every entry already settled is real knowledge — it
+        returns ``{}``, not None, and lifts the boot guard."""
+        if not MOVE_SOURCES_FILE.name:
+            return None
+        try:
+            raw = json.loads(MOVE_SOURCES_FILE.read_text(encoding="utf-8"))
+            cutoff = time.time() - MOVE_SETTLE_SECONDS
+            return {
+                str(k): float(v) for k, v in raw.items() if float(v) >= cutoff
+            }
+        except FileNotFoundError:
+            return None
+        except Exception:  # noqa: BLE001 — corrupt file = no history
+            logger.warning("move-source log unreadable; assuming no history")
+            return None
+
+    def _save_move_sources(self) -> None:
+        if not MOVE_SOURCES_FILE.name:
+            return
+        try:
+            MOVE_SOURCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = MOVE_SOURCES_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._move_sources), encoding="utf-8")
+            os.replace(tmp, MOVE_SOURCES_FILE)
+        except OSError as exc:
+            # Persistence is an optimisation; the in-memory gate still
+            # holds for this process. Next boot falls back to the guard.
+            logger.warning("move-source log write failed: %s", exc)
 
     def record_move_source(self, source_id: str) -> None:
         """Remember that a file was just moved OUT of ``source_id`` (or
         one of its ancestors — callers record the whole chain)."""
-        if source_id:
-            self._move_sources[source_id] = time.monotonic()
+        if not source_id:
+            return
+        now = time.time()
+        self._move_sources[source_id] = now
+        # Settled entries read the same as absent ones — prune so the
+        # persisted file tracks recent moves, not the drive's history.
+        cutoff = now - 2 * MOVE_SETTLE_SECONDS
+        self._move_sources = {
+            k: v for k, v in self._move_sources.items() if v >= cutoff
+        }
+        self._save_move_sources()
 
     def move_settled(self, source_id: str) -> bool:
         """True when it has been ≥ ``MOVE_SETTLE_SECONDS`` since the last
@@ -208,9 +264,13 @@ class PikPakService:
         losses: DVDMS-129_3 with a blind delete; HRV-012_3/_4 and
         MTM-010_2/_3 even after a destination-sighting check). No
         listing proves completion; only elapsed time does. Deleting a
-        recently-moved-from folder must wait out this gate."""
-        now = time.monotonic()
-        if now - self._proc_start < MOVE_SETTLE_SECONDS:
+        recently-moved-from folder must wait out this gate.
+
+        Stamps are wall clock: a backward clock jump keeps gates closed
+        longer (safe); the unrecorded window of a hard crash between a
+        move call and its stamp is milliseconds and accepted."""
+        now = time.time()
+        if now < self._boot_guard_until:
             return False
         ts = self._move_sources.get(source_id)
         return ts is None or now - ts >= MOVE_SETTLE_SECONDS

@@ -49,6 +49,8 @@ from .rename_plan import (
     _build_video_rename_plan,
     _split_size_outliers,
     _uniquify_target,
+    low_bitrate_copies,
+    quality_tagged_copies,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +143,28 @@ def build_finalize_plan(
     ad_purge: list[Any] = []
     for canon, members in groups.items():
         if len(members) >= 2 and all((m.size or 0) >= part_min for m in members):
+            # Same canonical + all substantial usually means discs, but a
+            # member whose name declares an encode (SD/4K tag beside a
+            # bare sibling) or whose runtime proves it means encodes of
+            # ONE film. A copy never takes a part slot: with ≥2 members
+            # left the copies are stray rips beside real discs; otherwise
+            # the whole group is one film and only the biggest survives
+            # (the 4K upgrade may be the tagged one — SQTE-656 landed as
+            # bare-SD + ``-4k``, and dropping by tag alone kept the SD).
+            copies = low_bitrate_copies(members)
+            copies += [m for m in quality_tagged_copies(members, canon)
+                       if m not in copies]
+            if copies:
+                rest = [m for m in members if m not in copies]
+                if len(rest) >= 2:
+                    dup_trash.extend(copies)
+                    members = rest
+                else:
+                    members = sorted(members, key=lambda m: (m.size or 0),
+                                     reverse=True)
+                    keepers.append(members[0])
+                    dup_trash.extend(members[1:])
+                    continue
             parts, outliers = _split_size_outliers(members, canon)
             keepers.extend(parts)  # genuine multi-part set
             dup_trash.extend(outliers)  # stray whole-film rip → recoverable
@@ -182,6 +206,22 @@ def build_finalize_plan(
             target = _uniquify_target(f"{base}{ext_of(k.name)}", taken)
             taken.add(target)
             targets.append((k, target))
+    elif len(targets) == 1:
+        # A lone keeper whose stem is title/BT noise AROUND the code
+        # keeps that noise: the canonical pass deliberately leaves a
+        # mid-name code untouched, and its rename_map target still
+        # parses to our code, so neither path above cleans it (live:
+        # 【…】【SEX8.CC】…EKDV-014 スク水H….avi archived verbatim).
+        # Inside the code's own folder the code IS the name — mirror
+        # _resolve_folder_winner's single-keeper rule. A code-anchored
+        # stem (``CODE``/``CODE_2``/``CODEA`` variants) stays as
+        # planned, so parts and variant letters are never clobbered.
+        k, target = targets[0]
+        canon_t = _canonical_video_name(target)
+        if (extract_jav_code(target) == code and canon_t != code.upper()
+                and not canon_t.startswith(code.upper())):
+            targets[0] = (k, _uniquify_target(f"{code}{ext_of(k.name)}",
+                                              taken - {target}))
 
     plan.keep = targets
     plan.move_to_root = [k for k, _t in targets if parent_of.get(k.id) != root_id]

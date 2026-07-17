@@ -120,3 +120,23 @@ async def test_no_catalog_walks(tmp_path, monkeypatch):
     await _drive_stream(force=True)
 
     assert calls == [True], "no persisted catalog → walk"
+
+
+async def test_deep_forces_walk_despite_fresh_catalog(tmp_path, monkeypatch):
+    """``deep=True`` is the serve-stale escape hatch: even when the
+    persisted catalog is fresh and covers page-1's newest code, the
+    user-requested deep rescan must re-walk the JavBus catalog."""
+    maker = await _bind_tmp_db(tmp_path, monkeypatch)
+    await _seed_row(maker)
+    await listing_catalog.put(
+        "star", "abc", uncensored=False, with_magnets_only=True,
+        items=[_item("ABC-001"), _item("ABC-002")], pages_scanned=1,
+    )
+    _stub_page1(monkeypatch, top_code="ABC-002")
+    calls = _record_scans(monkeypatch)
+
+    events = await _drive_stream(force=True, deep=True)
+
+    assert calls == [True], "deep=True → walk even with a fresh catalog"
+    msgs = [e.get("message", "") for e in events if e["type"] == "progress"]
+    assert any("深度重掃" in m for m in msgs)

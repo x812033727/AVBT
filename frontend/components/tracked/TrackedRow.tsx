@@ -212,17 +212,24 @@ export default function TrackedRow({
                     全收齊
                   </span>
                 );
-              const extrasBadge =
-                m.extras_count > 0 ? (
-                  <button
-                    key="extras"
-                    onClick={onToggleExpand}
-                    className="inline-flex items-center gap-1 rounded bg-purple-500/20 px-2 py-0.5 text-xs text-purple-300 hover:bg-purple-500/30"
-                    title="此資料夾裡有 JavBus 列表沒有的番號 · 點擊看明細"
-                  >
-                    {m.extras_count} 多餘 {expandChevron}
-                  </button>
-                ) : null;
+              const extrasBadge = m.catalog_truncated ? (
+                <span
+                  key="extras-na"
+                  className="cursor-help rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                  title={`JavBus 目錄超過掃描上限(掃了 ${m.pages_scanned} 頁),完整目錄未知,無法判定多餘`}
+                >
+                  多餘無法判定
+                </span>
+              ) : m.extras_count > 0 ? (
+                <button
+                  key="extras"
+                  onClick={onToggleExpand}
+                  className="inline-flex items-center gap-1 rounded bg-purple-500/20 px-2 py-0.5 text-xs text-purple-300 hover:bg-purple-500/30"
+                  title="此資料夾裡有 JavBus 列表沒有的番號 · 點擊看明細"
+                >
+                  {m.extras_count} 多餘 {expandChevron}
+                </button>
+              ) : null;
               return (
                 <>
                   {missingBadge}

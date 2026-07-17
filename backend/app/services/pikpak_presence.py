@@ -51,8 +51,10 @@ class _ListingMemo:
     per-key lock so only the first triggers the load and the rest read
     the stored result. This is NOT a TTL cache: it is discarded when the
     call returns, so it can never serve a stale listing to a later call
-    or to a change-polling caller such as confirm_arrivals. Failed loads
-    are not stored, so a later caller retries."""
+    or to a change-polling caller such as confirm_arrivals. Neither failed
+    loads nor empty results are stored, so a later caller re-lists (an
+    empty [] may be a swallowed transient failure, not a genuinely empty
+    folder)."""
 
     def __init__(self, loader):
         self._loader = loader
@@ -69,7 +71,15 @@ class _ListingMemo:
             if parent_id in self._results:
                 return self._results[parent_id]
             result = await self._loader(parent_id)
-            self._results[parent_id] = result
+            # Only memoize a NON-EMPTY listing. An empty result may be a
+            # genuine empty folder OR a transient listing failure the
+            # loader swallowed to []; caching the latter would broadcast a
+            # one-off failure to every code in this batch (dropping them
+            # from the presence index). Not caching [] makes that code
+            # re-list, exactly as before this memo existed — the dedup win
+            # is kept for the common non-empty case.
+            if result:
+                self._results[parent_id] = result
             return result
 
 

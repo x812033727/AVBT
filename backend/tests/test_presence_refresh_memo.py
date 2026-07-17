@@ -49,6 +49,19 @@ async def test_listing_memo_does_not_cache_failure():
     assert calls["n"] == 2
 
 
+async def test_listing_memo_does_not_cache_empty():
+    calls = {"n": 0}
+
+    async def loader(parent_id):
+        calls["n"] += 1
+        return []  # genuine-empty OR a swallowed transient failure
+
+    memo = _ListingMemo(loader)
+    assert await memo.get("F") == []
+    assert await memo.get("F") == []
+    assert calls["n"] == 2   # empty not cached → re-listed each time
+
+
 async def test_refresh_codes_lists_shared_folder_once(monkeypatch):
     index = pp.PikPakPresenceIndex()
     index._codes = set()

@@ -147,10 +147,26 @@ async def delete_tasks(
     task_ids: list[str] = Body(..., embed=True),
     delete_files: bool = Body(False, embed=True),
 ):
+    """Delete offline tasks and say what actually happened.
+
+    PikPak's delete API answers null whether the ids existed or not, so
+    a truncated/wrong id used to read as success (live 2026-07-17 r40:
+    a display-layer 14-char id "deleted" a task that stayed put). The
+    task list before/after is the evidence the null isn't: ``deleted``
+    ids were listed and are gone, ``not_found`` ids were never listed
+    (bad id — or an already-finished task PikPak no longer lists),
+    ``still_listed`` ids survived the call."""
     try:
-        return await pikpak_service.delete_tasks(task_ids, delete_files=delete_files)
+        before = {t.id for t in await pikpak_service.list_tasks(size=500) if t.id}
+        await pikpak_service.delete_tasks(task_ids, delete_files=delete_files)
+        after = {t.id for t in await pikpak_service.list_tasks(size=500) if t.id}
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+    return {
+        "deleted": [i for i in task_ids if i in before and i not in after],
+        "not_found": [i for i in task_ids if i not in before],
+        "still_listed": [i for i in task_ids if i in after],
+    }
 
 
 _DEFAULT_FAILED_PHASES = ("PHASE_TYPE_ERROR", "ERROR")

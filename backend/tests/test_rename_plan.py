@@ -56,6 +56,41 @@ def test_canonical_mid_name_code_still_untouched():
             != _canonical_video_name("ABC-123.mp4"))
 
 
+def test_canonical_bracket_quality_tag():
+    # ``_[4K]`` — bracketed quality tail; ``_DUP_SUFFIX_RE`` only knew
+    # the bare and parenthesised spellings, so the tail survived and
+    # blocked the code anchor (live: RCTD 4K batch archived as
+    # ``RCTD-697_[4K].mkv``, 2026-07-17).
+    assert _canonical_video_name("RCTD-697_[4K].mkv") == "RCTD-697"
+    assert _canonical_video_name("RCTD-688_[4K].mkv") == "RCTD-688"
+    assert _canonical_video_name("ABC-123[1080P].mp4") == "ABC-123"
+    # The bracket tail is an encode name, never a part marker.
+    assert _part_marker_index("RCTD-697_[4K].mkv", "RCTD-697") == 0
+
+
+def test_canonical_dotted_scene_tail():
+    # Old-scene dotted release tail glued after the code (live:
+    # ``RCT-208.DL.XN-FP.wmv`` archived verbatim, 2026-07-17). Every
+    # token is dot-separated, short and carries a letter — site/release
+    # noise, never title text.
+    assert _canonical_video_name("RCT-208.DL.XN-FP.wmv") == "RCT-208"
+    # A dotted numeric tail could be a part slot — stays untouched.
+    assert _canonical_video_name("ABC-123.2.mp4") != "ABC-123"
+    # A dotted lone letter could be a variant/disc — stays untouched.
+    assert _canonical_video_name("ABC-123.A.mp4") != "ABC-123"
+    # Space-separated title text keeps its distinct canonical.
+    assert _canonical_video_name("MIDV-001 making-of.mp4") != "MIDV-001"
+
+
+def test_bracket_quality_tagged_copy_dropped_from_group():
+    # ``CODE_[4K]`` beside the old bare rip must not claim a fake part
+    # slot — the tagged member drops to the keep-the-biggest dedup.
+    files = [_f("RCTD-697.mp4", size=2 * GB),
+             _f("RCTD-697_[4K].mkv", size=8 * GB)]
+    copies = quality_tagged_copies(files, "RCTD-697")
+    assert [f.name for f in copies] == ["RCTD-697_[4K].mkv"]
+
+
 def test_part_marker_hyphenless_letter():
     assert _part_marker_index("HUNTA578AMP4.mp4", "HUNTA-578") == 1
     assert _part_marker_index("HUNTA578Bmp4.mp4", "HUNTA-578") == 2

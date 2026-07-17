@@ -49,7 +49,7 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 # Quality is same-content-worse; a cut is different content.
 _DUP_SUFFIX_RE = re.compile(
     r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
-    r"|\((?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)\)"
+    r"|[-_. ]?[(\[](?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)[)\]]"
     r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
     r"|高清|超清|[-_]?CH)[-_ ]*$",
     re.IGNORECASE,
@@ -211,6 +211,19 @@ def _canonical_video_name(name: str) -> str:
                 if extract_jav_code(inner_p or inner_b) == code:
                     stem = code
                     break
+        if stem != code and re.fullmatch(
+            rf"\d{{0,4}}{_flex_code_re(code)}"
+            r"(?:\.(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{2,12})+",
+            stem,
+            flags=re.IGNORECASE,
+        ):
+            # Old-scene dotted release tail glued straight after the
+            # code (``RCT-208.DL.XN-FP``): dot-separated short tokens
+            # that each carry a letter are release/site noise — title
+            # text is space-separated, a numeric ``.2`` part slot has no
+            # letter, and a lone ``.A`` variant letter is too short to
+            # match. Live case 2026-07-17.
+            stem = code
     return stem.upper()
 
 
@@ -339,6 +352,7 @@ def low_bitrate_copies(files: list) -> list:
 # about the encode.
 _QUALITY_TAG_RE = re.compile(
     r"(?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"|[-_. ]?[(\[](?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)[)\]]"
     r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
     r"|高清|超清)[-_ ]*$",
     re.IGNORECASE,
@@ -374,7 +388,7 @@ def quality_tagged_copies(files: list, code: str) -> list:
         # encode — look through it so both halves of a pair agree.
         stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)
         m = _QUALITY_TAG_RE.search(stem)
-        tags[f.name] = m.group(0).strip(" -_.").upper() if m else None
+        tags[f.name] = m.group(0).strip(" -_.()[]").upper() if m else None
     if len(set(tags.values())) < 2:
         return []  # all bare, or all one encode — nothing to judge
     return [

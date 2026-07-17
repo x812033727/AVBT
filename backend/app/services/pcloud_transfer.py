@@ -419,13 +419,19 @@ class PCloudTransferQueue:
                         rid, "pCloud 找不到此上傳任務(可能已逾時或被取消)"
                     )
 
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(
                 _poll_one(rid, upload_id, delete_source, pikpak_fid, pikpak_name)
                 for rid, upload_id, delete_source, pikpak_fid, pikpak_name in rows
             ),
             return_exceptions=True,
         )
+        # return_exceptions isolates one row's failure from the pass, but
+        # must not silence it: before this became concurrent, an uncaught
+        # row exception surfaced via _poll_loop's logger. Keep that signal.
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("pCloud poll row raised: %s", r)
 
     async def _mark(self, transfer_id: int, status: str, message: str) -> None:
         async with SessionLocal() as session:

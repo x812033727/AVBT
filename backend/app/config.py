@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
 
+    # Round-2 parallelization. Distinct-code finalize concurrency inside
+    # archive_once. 1 = serial (current behaviour); raise gradually only
+    # after the round-1 PikPak throttle backoff is validated in prod.
+    archive_finalize_concurrency: int = 1
+
     # Auto-sweep: in addition to the OfflineTaskLog-driven archive pass,
     # periodically scan the AVBT root for orphans dropped there outside
     # the backend (PikPak App / web manual adds, magnets handed straight

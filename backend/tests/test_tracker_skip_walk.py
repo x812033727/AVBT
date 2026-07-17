@@ -13,9 +13,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.database as db
 from app.models import TrackedListing
 from app.schemas import MovieListItem
-from app.services import listing_catalog
+from app.services import listing_catalog, tracker
 from app.services import missing as missing_svc
-from app.services import tracker
 
 
 async def _bind_tmp_db(tmp_path, monkeypatch, name="t.db"):

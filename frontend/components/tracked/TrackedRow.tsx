@@ -243,6 +243,11 @@ export default function TrackedRow({
           </div>
           <div className="text-xs text-muted-foreground">
             最後檢查 {fmtDateTime(item.last_checked_at, "從未檢查")}
+            {" · 缺漏掃描 "}
+            {fmtDateTime(
+              missing?.catalog_fetched_at ?? item.last_full_scan_at,
+              "尚未掃描"
+            )}
           </div>
           {item.last_error && (
             <div className="line-clamp-2 text-xs text-amber-300/80">

@@ -4,8 +4,11 @@ A listing on JavBus (e.g. all works in series MIDV) gives us the full
 expected catalog. The PikPak presence index gives us which codes are
 already on disk. Missing = catalog − presence.
 
-Listings change slowly, so JavBus pagination results are cached for an
-hour (per slug/uncensored) to keep ``missing_summary`` cheap.
+Catalog walks are persisted to the ``listing_catalog`` table (with the
+in-memory ``_listing_cache`` as L1 parse cache), so summary rebuilds and
+restarts re-derive from the DB instead of re-crawling JavBus. Freshness
+is owned by the tracker + 立即檢查 via ``catalog_is_current`` — reads
+here serve the persisted catalog at any age.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from ..schemas import (
     MovieListItem,
 )
 from ..scrapers import javbus as scraper
+from . import listing_catalog
 from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
 from .listing_walker import walk_listing
 from .pikpak_presence import presence_index
@@ -300,6 +304,11 @@ def _cache_fresh(built_at: datetime) -> bool:
     return datetime.utcnow() - built_at < timedelta(seconds=ttl)
 
 
+# One lock per cache key so a cold-start burst (summary rebuild racing a
+# per-listing check) walks each listing once instead of N times.
+_walk_locks: dict[tuple[str, str, bool, bool], asyncio.Lock] = {}
+
+
 async def fetch_all_listing_codes(
     kind: str,
     slug: str,
@@ -309,11 +318,15 @@ async def fetch_all_listing_codes(
     max_pages: int | None = None,
     with_magnets_only: bool = True,
 ) -> tuple[list[MovieListItem], int]:
-    """Walk JavBus pages until ``has_next == False`` (or hit the cap).
+    """Return the listing's catalog: L1 in-memory cache → persisted
+    ``listing_catalog`` row (served at any age — freshness is the
+    tracker's job, see ``catalog_is_current``) → JavBus walk.
 
-    Returns (items, pages_scanned). De-duplicates by code so the same
-    work appearing on two pages (rare but possible at page boundaries)
-    only counts once.
+    A walk (``refresh=True`` or full miss) crawls pages until
+    ``has_next == False`` or the cap, de-duplicated by code, then writes
+    through to the DB so the result survives restarts. ``walk_listing``
+    raises on any page failure, so a partial crawl can never overwrite
+    a good persisted catalog.
 
     ``with_magnets_only`` mirrors ``scraper.fetch_listing``: default
     ``True`` keeps the historical magnet-filtered view; pass ``False``
@@ -324,15 +337,76 @@ async def fetch_all_listing_codes(
         cached = _listing_cache.get(key)
         if cached and _cache_fresh(cached[0]):
             return list(cached[1]), cached[2]
+        persisted = await listing_catalog.get(
+            kind, slug, uncensored=uncensored,
+            with_magnets_only=with_magnets_only,
+        )
+        if persisted is not None:
+            items, pages, _fetched_at = persisted
+            # L1 timestamp = load time, not fetch time: L1 is just a
+            # parse cache over the DB row; the row's own fetched_at is
+            # what freshness decisions read.
+            _listing_cache[key] = (datetime.utcnow(), list(items), pages)
+            return list(items), pages
 
-    cap = max_pages or max(1, settings.missing_max_pages)
-    items, pages = await walk_listing(
-        kind, slug, uncensored=uncensored, max_pages=cap,
-        with_magnets_only=with_magnets_only,
+    lock = _walk_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if not refresh:
+            # A concurrent caller may have walked while we waited.
+            cached = _listing_cache.get(key)
+            if cached and _cache_fresh(cached[0]):
+                return list(cached[1]), cached[2]
+
+        cap = max_pages or max(1, settings.missing_max_pages)
+        items, pages = await walk_listing(
+            kind, slug, uncensored=uncensored, max_pages=cap,
+            with_magnets_only=with_magnets_only,
+        )
+
+        _listing_cache[key] = (datetime.utcnow(), list(items), pages)
+        if max_pages is None:
+            # Persist only uncapped walks — a caller-capped walk is a
+            # deliberately shallow view that must not overwrite the
+            # full catalog on disk.
+            await listing_catalog.put(
+                kind, slug, uncensored=uncensored,
+                with_magnets_only=with_magnets_only,
+                items=items, pages_scanned=pages,
+            )
+        return items, pages
+
+
+async def catalog_is_current(
+    kind: str, slug: str, *, uncensored: bool, newest_code: str
+) -> bool:
+    """Decide whether a check can skip the JavBus catalog walk: the
+    persisted mag catalog exists, is younger than the skip-walk window,
+    and already contains page-1's newest code. Page-1 can't see mid-list
+    additions/removals — the window bounds that blind spot."""
+    if not newest_code:
+        return False
+    persisted = await listing_catalog.get(
+        kind, slug, uncensored=uncensored, with_magnets_only=True
     )
+    if persisted is None:
+        return False
+    items, _pages, fetched_at = persisted
+    window = max(60, settings.missing_catalog_skip_walk_seconds)
+    if datetime.utcnow() - fetched_at >= timedelta(seconds=window):
+        return False
+    return any(it.code == newest_code for it in items)
 
-    _listing_cache[key] = (datetime.utcnow(), list(items), pages)
-    return items, pages
+
+def invalidate_listing(kind: str, slug: str) -> None:
+    """Targeted variant of ``invalidate_all_caches`` for a single-listing
+    check: drop only this listing's L1 entries (so the next read comes
+    from the DB row the check just refreshed) plus the aggregate result
+    caches (their rebuild is DB reads + set diffs now — cheap). Other
+    listings' persisted catalogs are untouched."""
+    for unc in (False, True):
+        for mag in (False, True):
+            _listing_cache.pop((kind, slug, unc, mag), None)
+    invalidate_result_caches()
 
 
 def _split_present_missing(
@@ -358,10 +432,23 @@ async def missing_for_listing(
     kind: str,
     slug: str,
     *,
-    uncensored: bool = False,
+    uncensored: bool | None = None,
     refresh: bool = False,
     dedup: bool = False,
 ) -> MissingCodesResult:
+    # Pull display name (and, unless the caller overrides it, the
+    # uncensored flag) from the DB row. Tracker-side callers used to
+    # hardcode uncensored=False, walking the censored listing URL for
+    # uncensored rows — reading the row makes every caller consistent.
+    name = ""
+    async with SessionLocal() as session:
+        row = await session.get(TrackedListing, (kind, slug))
+        if row:
+            name = row.name or ""
+            if uncensored is None:
+                uncensored = bool(row.uncensored)
+    uncensored = bool(uncensored)
+
     items, pages = await fetch_all_listing_codes(
         kind, slug, uncensored=uncensored, refresh=refresh
     )
@@ -371,14 +458,6 @@ async def missing_for_listing(
     # data that is already current. Full walks stay on the explicit
     # /presence/refresh path.
     presence = await presence_index.get()
-
-    # Pull display name from DB if available — needed to resolve the
-    # listing's archive folder before reconciling held works.
-    name = ""
-    async with SessionLocal() as session:
-        row = await session.get(TrackedListing, (kind, slug))
-        if row:
-            name = row.name or ""
 
     # Fold in owned works the magnet-only walk missed but that belong here
     # (aged-off magnets / listing-index gaps). They then count toward the
@@ -430,6 +509,7 @@ async def missing_for_listing(
         pages_scanned=pages,
         expected_root=_expected_root(kind, slug, name),
         built_at=datetime.utcnow(),
+        catalog_fetched_at=await listing_catalog.fetched_at(kind, slug),
     )
 
 
@@ -451,12 +531,16 @@ async def _summary_item(
     row: TrackedListing,
     presence: set[str],
     owned: set[str] | None = None,
+    fetched: dict[tuple[str, str], datetime] | None = None,
 ) -> MissingSummaryItem:
     """``owned`` (when not None) restricts missing_count to codes this
     listing owns under the global first-seen ownership rule. Missing
     counts then sum to the deduped total — same numbers the /missing
-    page shows after dedup."""
+    page shows after dedup. ``fetched`` is the pre-fetched
+    ``listing_catalog.fetched_map()`` so 78 items don't need 78 point
+    queries for their catalog_fetched_at stamp."""
     expected_root = _expected_root(row.kind, row.id, row.name or "")
+    fetched_at = (fetched or {}).get((row.kind, row.id))
     try:
         items, pages = await fetch_all_listing_codes(
             row.kind, row.id, uncensored=bool(row.uncensored)
@@ -466,6 +550,7 @@ async def _summary_item(
             kind=row.kind, id=row.id, name=row.name or "",
             total=0, missing_count=0, extras_count=0, pages_scanned=0,
             expected_root=expected_root, error=str(exc),
+            catalog_fetched_at=fetched_at,
         )
     # Fold in owned works the magnet-only walk missed but that belong here
     # (see _owned_listing_members) so the total and extras match the
@@ -493,6 +578,7 @@ async def _summary_item(
         extras_count=len(extras),
         pages_scanned=pages,
         expected_root=expected_root,
+        catalog_fetched_at=fetched_at,
     )
 
 
@@ -540,10 +626,16 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     for code, key in owner.items():
         owned_by_row.setdefault(key, set()).add(code)
 
+    # Fetched AFTER the ownership map, which is what walks cold listings
+    # and writes their catalog rows — so the stamps cover them too.
+    fetched = await listing_catalog.fetched_map()
+
     items: list[MissingSummaryItem] = await _parallel_map(
         rows,
         lambda row: _summary_item(
-            row, presence, owned=owned_by_row.get((row.kind, row.id), set())
+            row, presence,
+            owned=owned_by_row.get((row.kind, row.id), set()),
+            fetched=fetched,
         ),
         settings.missing_rebuild_concurrency,
     )
@@ -594,6 +686,8 @@ async def missing_summary_stream(
         for code, key in owner.items():
             owned_by_row.setdefault(key, set()).add(code)
 
+        fetched = await listing_catalog.fetched_map()
+
         yield {"type": "start", "total": len(rows)}
 
         # Bounded-parallel, progress streamed as listings complete (so
@@ -607,6 +701,7 @@ async def missing_summary_stream(
                     row,
                     presence,
                     owned=owned_by_row.get((row.kind, row.id), set()),
+                    fetched=fetched,
                 )
             return idx, row, item
 

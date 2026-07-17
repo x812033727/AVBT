@@ -388,6 +388,8 @@ export type TrackedListing = {
   last_checked_at: string | null;
   last_error: string;
   new_count: number;
+  last_full_scan_at: string | null;
+  last_missing_count: number;
   created_at: string;
 };
 
@@ -450,6 +452,7 @@ export type MissingCodesResult = {
   pages_scanned: number;
   expected_root: string;
   built_at: string;
+  catalog_fetched_at: string | null;
 };
 
 export type MissingSummaryItem = {
@@ -462,6 +465,7 @@ export type MissingSummaryItem = {
   pages_scanned: number;
   expected_root: string;
   error: string;
+  catalog_fetched_at: string | null;
 };
 
 export type MissingSummary = {

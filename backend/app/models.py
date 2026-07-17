@@ -206,3 +206,34 @@ class PresenceEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class ListingCatalog(Base):
+    """Persisted JavBus catalog walk for one tracked listing.
+
+    The walk results used to live only in missing.py's in-memory
+    ``_listing_cache`` (1h TTL), so every restart — and every hourly
+    tracker tick that invalidated the aggregate caches — forced a full
+    multi-page JavBus re-crawl of all tracked listings just to answer
+    "what does this listing contain?". Same story as the presence index
+    before it moved to ``presence_entry``: persist the expensive input,
+    derive missing/extras cheaply on demand.
+
+    One row per (kind, id, filter); ``filter`` mirrors the
+    ``with_magnets_only`` axis of the in-memory cache key — "mag" is the
+    magnet-filtered walk used for missing detection, "all" the full
+    catalog used for extras reconciliation. ``uncensored`` is a plain
+    column, not part of the key: on mismatch the row is treated as a
+    cache miss and re-walked, so flag flips self-heal."""
+
+    __tablename__ = "listing_catalog"
+
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    filter: Mapped[str] = mapped_column(String(8), primary_key=True)  # "mag" | "all"
+    uncensored: Mapped[bool] = mapped_column(Boolean, default=False)
+    items: Mapped[str] = mapped_column(Text, default="[]")  # JSON list[MovieListItem]
+    pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )

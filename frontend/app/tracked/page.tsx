@@ -38,6 +38,9 @@ export default function TrackedPage() {
     null
   );
   const [missingLoading, setMissingLoading] = useState(false);
+  // Non-fatal summary refresh failure: keep showing the last good map
+  // and surface a small notice instead of blanking every badge.
+  const [missingError, setMissingError] = useState<string | null>(null);
   // Batch-scan modal: either "check-all" or "missing-summary".
   const [batchModalMode, setBatchModalMode] = useState<
     "check-all" | "missing-summary" | null
@@ -92,8 +95,11 @@ export default function TrackedPage() {
       const m = new Map<string, MissingSummaryItem>();
       for (const it of res.items) m.set(`${it.kind}:${it.id}`, it);
       setMissing(m);
-    } catch {
-      setMissing(null);
+      setMissingError(null);
+    } catch (e: any) {
+      // Keep the previous badges — one failed refresh must not blank
+      // the whole board. Only rows that never had data stay empty.
+      setMissingError(e?.message || "缺漏摘要更新失敗");
     } finally {
       setMissingLoading(false);
     }
@@ -122,6 +128,8 @@ export default function TrackedPage() {
           next.new_count = event.new_count;
         if (event.last_error !== undefined)
           next.last_error = event.last_error;
+        if (event.last_full_scan_at !== undefined)
+          next.last_full_scan_at = event.last_full_scan_at;
         return next;
       }),
     );
@@ -130,9 +138,23 @@ export default function TrackedPage() {
       setMissing((prev) => {
         const next = new Map(prev ?? []);
         const existing = next.get(key);
-        if (existing) {
-          next.set(key, { ...existing, missing_count: event.missing_count });
-        }
+        // Create the entry when absent (row added after the last summary
+        // build, or the summary never loaded) instead of dropping the
+        // fresh count on the floor — total stays 0 until the cheap
+        // follow-up summary reload reconciles it.
+        next.set(key, {
+          kind: event.kind,
+          id: event.id,
+          name: event.name ?? "",
+          total: 0,
+          extras_count: 0,
+          pages_scanned: 0,
+          expected_root: "",
+          error: "",
+          catalog_fetched_at: null,
+          ...(existing ?? {}),
+          missing_count: event.missing_count,
+        });
         return next;
       });
     }
@@ -164,6 +186,7 @@ export default function TrackedPage() {
           pages_scanned: res.pages_scanned,
           expected_root: res.expected_root,
           error: "",
+          catalog_fetched_at: res.catalog_fetched_at ?? null,
         });
         return next;
       });
@@ -442,7 +465,9 @@ export default function TrackedPage() {
   function onBatchModalDone() {
     // Streamed work just finished — pull fresh aggregate data + rows so
     // the badges and last_seen / last_checked_at reflect the new state.
-    setDetails(new Map());
+    // Expanded detail panels are kept: wiping them here threw away every
+    // cached /missing-codes payload the user had opened, for no gain —
+    // stale panels reconcile on the next expand.
     loadMissing(false);
     load();
   }
@@ -466,6 +491,12 @@ export default function TrackedPage() {
       />
 
       {error && <ErrorBox message={error} />}
+
+      {missingError && (
+        <div className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-300">
+          缺漏摘要更新失敗（顯示上次結果）：{missingError}
+        </div>
+      )}
 
       {trackerStatus?.scan_in_progress && (
         <TrackerStatusBar status={trackerStatus} />

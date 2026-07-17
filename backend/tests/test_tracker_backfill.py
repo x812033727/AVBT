@@ -31,7 +31,7 @@ def wired(monkeypatch):
     missing = [SimpleNamespace(code=f"ABC-{i:03d}") for i in range(150)]
     result = SimpleNamespace(missing=missing, total=len(missing))
 
-    async def fake_missing(kind, slug):
+    async def fake_missing(kind, slug, **kw):
         return result
 
     monkeypatch.setattr(tracker.missing_svc, "missing_for_listing", fake_missing)

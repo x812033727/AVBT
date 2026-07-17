@@ -32,7 +32,17 @@ async def test_init_db_sets_flags_and_indexes(tmp_path, monkeypatch):
                 )
             ).all()
         }
+        tables = {
+            r[0]
+            for r in (
+                await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            ).all()
+        }
     await engine.dispose()
+
+    assert "listing_catalog" in tables
 
     assert {
         "migrated:tracked_actresses_backfill",

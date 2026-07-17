@@ -1324,13 +1324,20 @@ async def _reap_orphan_rows() -> int:
                             )
                         ):
                             row.abandoned = True
+                            # "no archived copy found" not "nothing exists":
+                            # for a file_id-empty collecting orphan whose
+                            # video still sits in an un-moved download
+                            # wrapper (no file_id to resolve it), the checks
+                            # can't see it — the sweep still archives it
+                            # independently; only this row's tracking is
+                            # closed. Don't assert the stronger "nothing".
                             row.message = (
-                                "abandoned: task gone, nothing on PikPak"
+                                "abandoned: task gone, no archived copy found"
                             )
                             abandoned += 1
                             logger.info(
                                 "orphan reap abandoned %s (task %s gone, "
-                                "nothing on PikPak, >%dh old)",
+                                "no archived copy found, >%dh old)",
                                 row.code, row.task_id or "?",
                                 int(_ABANDON_GRACE.total_seconds() // 3600),
                             )

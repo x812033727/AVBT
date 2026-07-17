@@ -206,3 +206,58 @@ async def test_orphan_has_nothing_landed_real_paths(monkeypatch):
     assert await archiver._orphan_has_nothing_landed("ERR-002") is False
     with pytest.raises(RuntimeError):
         await archiver._orphan_has_nothing_landed("ERR-002", strict=True)
+
+
+async def test_reaper_abandons_via_real_predicate(tmp_path, monkeypatch):
+    # End-to-end: drive the REAL _already_flattened AND
+    # _orphan_has_nothing_landed (both consult the same stubbed lookups)
+    # through the reaper — no per-code folder, nothing anywhere → abandoned.
+    # Closes the gap where only the mocked wiring / the predicate's False
+    # paths were covered, never the real abandon-triggering True path.
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", future=True)
+    monkeypatch.setattr(db, "engine", engine)
+    await db.init_db()
+    m = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    monkeypatch.setattr(archiver, "SessionLocal", m)
+    monkeypatch.setattr(archiver, "_reap_attempts", {})
+
+    async def no_active():
+        return set()
+
+    async def _noop_refresh(codes, **kw):
+        return 0
+
+    async def resolve(code):
+        return "AVBT/製作商/S/Ser/" + code
+
+    async def no_folder(path):
+        return None
+
+    async def no_bt_folders(svc, code):
+        return []
+
+    async def no_files(code):
+        return {"ok": False}
+
+    monkeypatch.setattr(archiver, "_active_task_ids", no_active)
+    monkeypatch.setattr(pp.presence_index, "refresh_codes", _noop_refresh)
+    monkeypatch.setattr(archiver, "_resolve_archive_path_by_code", resolve)
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", no_folder)
+    # presence_code_folders / files_for_code are imported inside the checks
+    # from their source modules — patch them there.
+    monkeypatch.setattr(
+        "app.services.finalize.presence_code_folders", no_bt_folders
+    )
+    monkeypatch.setattr("app.services.video_count.files_for_code", no_files)
+
+    async with m() as s:
+        s.add(_row(code="REALDEAD-001"))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with m() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "REALDEAD-001")
+        )).scalar_one()
+        assert row.abandoned is True     # real predicate → real abandon
+        assert row.finalized is False
+    await engine.dispose()

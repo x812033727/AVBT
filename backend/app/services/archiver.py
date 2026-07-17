@@ -1247,13 +1247,27 @@ async def _reap_orphan_rows() -> int:
                     OfflineTaskLog.finalized.is_(False),
                     OfflineTaskLog.abandoned.is_(False),
                     or_(
-                        # Collecting orphan: file_id was never tracked, so
-                        # the sweep's stamp path can't own this row.
-                        (OfflineTaskLog.archived.is_(False))
-                        & or_(
-                            OfflineTaskLog.file_id == "",
-                            OfflineTaskLog.file_id.is_(None),
-                        ),
+                        # Not-yet-archived orphan: the sweep's file_id
+                        # stamp never owned this row. This spans BOTH the
+                        # file_id-empty Collecting orphan (task vanished
+                        # before a file_id was tracked) AND the
+                        # file_id-nonempty stuck-"Saving" orphan (PikPak
+                        # assigned a file_id but the download died and the
+                        # task dropped off the list, so the stamp path,
+                        # which matches on file_id, still never fired —
+                        # archived stays 0). The finalize retry pass
+                        # selects this whole population regardless of
+                        # file_id, so the reaper must too: a file_id here
+                        # is not evidence of a landed file, and requiring
+                        # file_id=='' left ~96 dead "Saving" rows invisible
+                        # to the reaper while the retry pass re-listed them
+                        # every cooldown for the full reap window (live
+                        # 2026-07-18: PA0-010/SNOS-257/GDTM-203, task gone
+                        # 6-7d, presence empty, still churning 找不到).
+                        # The per-row _orphan_has_nothing_landed gate below
+                        # is what actually decides dead-vs-live, so this
+                        # wider net is safe.
+                        (OfflineTaskLog.archived.is_(False)),
                         # Archived but never finalized, and now past the
                         # retry pass's own lookback — that pass keys off
                         # archived_at > cutoff, so once a row ages out
@@ -1316,7 +1330,6 @@ async def _reap_orphan_rows() -> int:
                         # the except below (skip + cooldown), never abandons.
                         if (
                             not row.archived
-                            and not (row.file_id or "")
                             and row.created_at
                             < datetime.utcnow() - _ABANDON_GRACE
                             and await _orphan_has_nothing_landed(
@@ -1324,6 +1337,10 @@ async def _reap_orphan_rows() -> int:
                             )
                         ):
                             row.abandoned = True
+                            # No file_id gate here: a stuck-"Saving" orphan
+                            # keeps its stale file_id but the file it named
+                            # is long gone (task vanished, nothing landed —
+                            # _orphan_has_nothing_landed just confirmed it).
                             # "no archived copy found" not "nothing exists":
                             # for a file_id-empty collecting orphan whose
                             # video still sits in an un-moved download

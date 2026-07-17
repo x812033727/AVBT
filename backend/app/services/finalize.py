@@ -236,6 +236,37 @@ async def _list_subtree(
     return out, folder_depth, partial_any
 
 
+async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
+    """True when a wrapper folder verifiably holds files but not one
+    video or container — an ad shell.
+
+    Some magnets deliver a wrapper of pure ads/screenshots with no film
+    at all. Archiving one anyway mints a canonical-looking 番號 folder
+    that every layer reads as success, and nothing ever re-sends the
+    code (live: EDD-138, then OYC-205). Containers count as content:
+    a lone ``CODE.iso`` is the container-swap loop's job, not junk.
+
+    Every "can't tell" answer is False — only a complete, settled
+    listing may condemn a folder:
+    - truncated listing → a video may sit in the unseen tail;
+    - empty listing → PikPak's optimistic listings show freshly moved
+      folders as empty while files are still in flight (#140);
+    - any file still transferring → judge again once it lands.
+    A file id (non-folder) yields an empty listing and lands on the
+    empty case, so callers need not pre-check the kind."""
+    entries, _folders, partial = await _list_subtree(svc, folder_id)
+    if partial:
+        return False
+    files = [e for e, _pid in entries if not _is_folder(e)]
+    if not files:
+        return False
+    if any(_is_transferring(f) for f in files):
+        return False
+    return not any(
+        is_video(f.name) or ext_of(f.name) in CONTAINER_EXTS for f in files
+    )
+
+
 async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
     """``(folder_id, leaf_name, path)`` for every *per-code folder* the
     presence index knows about — a path whose leaf is a folder that

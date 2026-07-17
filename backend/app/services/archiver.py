@@ -648,6 +648,8 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
     sweep_error = ""
     # All source_ids we moved — used to mark OfflineTaskLog archived.
     moved_ids: list[str] = []
+    # Wrappers trashed as ad shells — their rows get orphaned instead.
+    shell_ids: list[str] = []
     # (folder_id, parent_id, code, leaf) tuples — used to phase-2
     # flatten each just-moved wrapper at its new location.
     moved_wrappers: list[tuple[str, str, str, str]] = []
@@ -675,6 +677,11 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
                 sweep_error = sweep_error or ev.get("message", "")
                 continue
             if ev_type != "progress":
+                continue
+            if ev.get("action") == "trash":
+                sid = ev.get("source_id")
+                if sid:
+                    shell_ids.append(sid)
                 continue
             if ev.get("action") != "move":
                 continue
@@ -800,6 +807,16 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("offline log sync failed: %s", exc)
 
+    if shell_ids:
+        try:
+            await _mark_offline_log_shell_trashed(shell_ids)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("offline log shell sync failed: %s", exc)
+        webhook_queue.enqueue_nowait(
+            f"🗑️ 掃描發現 {len(shell_ids)} 包廣告殼(整包無影片),已丟垃圾桶待換磁力",
+            event="archive_done",
+        )
+
     if moved:
         logger.info("root sweep moved %d orphan(s) to kind/name", moved)
         try:
@@ -918,6 +935,31 @@ async def _mark_offline_log_archived(file_ids: list[str]) -> None:
                 OfflineTaskLog.archived.is_(False),
             )
             .values(archived=True, archived_at=datetime.utcnow())
+        )
+        await session.commit()
+
+
+async def _mark_offline_log_shell_trashed(file_ids: list[str]) -> None:
+    """Orphan OfflineTaskLog rows whose wrapper the sweep trashed as an
+    ad shell. Clearing ``file_id`` stops the DB-driven pass from trying
+    to move a trashed id every minute, while ``archived`` stays False so
+    the dead-code scan still sees an open row and the code gets re-sent
+    with a different magnet instead of reading as archived success."""
+    if not file_ids:
+        return
+    from sqlalchemy import update
+
+    async with SessionLocal() as session:
+        await session.execute(
+            update(OfflineTaskLog)
+            .where(
+                OfflineTaskLog.file_id.in_(file_ids),
+                OfflineTaskLog.archived.is_(False),
+            )
+            .values(
+                file_id="",
+                message="ad-shell wrapper trashed: no video/container inside",
+            )
         )
         await session.commit()
 
@@ -1444,11 +1486,31 @@ async def archive_once() -> int:
         ).scalars().all()
 
         notifications: list[str] = []
+        shell_trashed = 0
         moved_codes: list[str] = []
         for row in rows:
             if not _safe_code(row.code):
                 continue
             try:
+                # An ad shell (files, zero video/container) must not be
+                # archived — that mints a canonical-looking 番號 folder
+                # nothing ever questions (live: EDD-138, OYC-205). Trash
+                # it and orphan the row (file_id="") so this pass stops
+                # matching it while the dead-code scan still sees an
+                # unfinalized row and re-sends a different magnet.
+                from .finalize import wrapper_is_ad_shell  # avoid cycle
+
+                if await wrapper_is_ad_shell(pikpak_service, row.file_id):
+                    await pikpak_service.trash_files([row.file_id])
+                    row.file_id = ""
+                    row.message = "ad-shell wrapper trashed: no video/container inside"
+                    shell_trashed += 1
+                    notifications.append(
+                        f"🗑️ `{row.code}` 抓回整包無影片(廣告殼),已丟垃圾桶待換磁力"
+                    )
+                    logger.warning("ad shell trashed for %s (task %s)",
+                                   row.code, row.task_id or "?")
+                    continue
                 target_path = await _resolve_archive_path(row)
                 target_id = await pikpak_service.folder_id(target_path)
                 if not target_id:
@@ -1490,7 +1552,7 @@ async def archive_once() -> int:
                         event="archive_failed",
                     )
 
-        if moved:
+        if moved or shell_trashed:
             await session.commit()
             # Newly-archived codes change which codes count as "present".
             # Update just those entries (one listing each) — the index is

@@ -62,6 +62,8 @@ class _ListingMemo:
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def get(self, parent_id: str) -> list:
+        # The returned list is shared across callers for this key — callers
+        # must treat it as read-only (they only iterate it).
         if parent_id in self._results:
             return self._results[parent_id]
         # setdefault is atomic (no await between get and set), so racing

@@ -476,17 +476,21 @@ class PikPakService:
            before.
         2. Operation throttled ("operation is too frequent",
            ``_is_too_frequent_error``) → exponential backoff and retry, up
-           to ``settings.pikpak_throttle_max_retries`` times. A "too
-           frequent" is a PRE-EXECUTION rejection (the server hasn't
-           touched any file), so retrying even a move/rename/trash is
-           side-effect-safe. When retries are exhausted the error is
-           raised so the caller's loop-level backoff (archiver/tracker)
-           takes over.
+           to ``settings.pikpak_throttle_max_retries`` times. Retrying is
+           safe because each retry re-issues the IDENTICAL call (same file
+           ids → same destination / same new name): it is idempotent by
+           construction. A throttle is normally a pre-execution rejection,
+           but even if the server had already applied the op, the re-issue
+           is a benign no-op or surfaces a different, non-throttle error
+           that propagates — never a double-move-to-wrong-place or an
+           errant delete. When retries are exhausted the error is raised so
+           the caller's loop-level backoff (archiver/tracker) takes over.
 
         Login itself is NOT wrapped by the throttle backoff: ``_ensure``
-        is called at the top of each loop iteration, outside the try, so a
-        throttled login surfaces through ``_ensure``'s own exponential
-        login cooldown instead of this loop.
+        is called at the top of each loop iteration, outside the try (and
+        again inside the invalid-token branch), so a throttled login
+        surfaces through ``_ensure``'s own exponential login cooldown
+        instead of this loop.
 
         Each round-trip is wrapped in ``asyncio.wait_for`` with
         ``settings.pikpak_api_timeout_seconds`` so a hung connection
@@ -522,9 +526,7 @@ class PikPakService:
                     client = await self._ensure()
                     return await _run(client)
                 if _is_too_frequent_error(exc) and attempt < max_retries:
-                    delay = min(base * (2 ** attempt), cap) + random.uniform(
-                        0, base
-                    )
+                    delay = min(base * (2**attempt), cap) + random.uniform(0, base)
                     logger.warning(
                         "PikPak throttled (%s); backoff %.1fs "
                         "(retry %d/%d)",

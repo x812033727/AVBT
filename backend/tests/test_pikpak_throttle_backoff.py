@@ -93,3 +93,27 @@ async def test_invalid_token_relogins_once(service, no_sleep, monkeypatch):
     assert await service._call(op) == "ok"
     assert calls["n"] == 2          # one relogin retry
     assert no_sleep == []           # relogin path does not throttle-backoff
+
+
+async def test_ensure_throttle_is_not_retried(service, no_sleep, monkeypatch):
+    # A throttled login raised by _ensure() (called at the top of the loop,
+    # OUTSIDE the try) must propagate immediately through _ensure's own login
+    # cooldown — it must NOT be caught and retried by the operation backoff,
+    # and the operation must never run. Pins the safety property against a
+    # future refactor that moves _ensure inside the try.
+    calls = {"ensure": 0, "op": 0}
+
+    async def throttled_ensure(*a, **k):
+        calls["ensure"] += 1
+        raise PikPakError(TOO_FREQUENT)
+
+    async def op(client):
+        calls["op"] += 1
+        return "ok"
+
+    monkeypatch.setattr(service, "_ensure", throttled_ensure)
+    with pytest.raises(PikPakError):
+        await service._call(op)
+    assert calls["ensure"] == 1     # not retried by the throttle backoff
+    assert calls["op"] == 0         # operation never reached
+    assert no_sleep == []           # no backoff sleep

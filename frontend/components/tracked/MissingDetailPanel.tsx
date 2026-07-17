@@ -185,13 +185,18 @@ export default function MissingDetailPanel({
                   </span>
                   <button
                     onClick={() => onLookup(m.code)}
-                    disabled={busy || lookup !== undefined}
+                    disabled={busy}
                     className="text-blue-300 hover:underline disabled:opacity-40"
+                    title={
+                      lookup !== undefined
+                        ? "向 PikPak 重讀此番號的資料夾並更新索引(改名/搬移後索引殘留舊檔名時用)"
+                        : undefined
+                    }
                   >
                     {busy
                       ? "查詢中…"
                       : lookup !== undefined
-                      ? "已查詢"
+                      ? "重查(live)"
                       : "查實際位置"}
                   </button>
                 </span>

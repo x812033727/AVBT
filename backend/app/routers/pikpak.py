@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -205,6 +206,26 @@ async def trash_files(ids: list[str] = Body(..., embed=True)):
         raise _wrap(exc) from exc
 
 
+# PikPak listings are eventually consistent — refreshing a code right
+# after its rename can still see the old leaf, reproduce the cached
+# paths, and (via the no-change check) strand the stale entry for good.
+# A short settle before the re-read makes the self-heal actually land.
+_RENAME_PRESENCE_REFRESH_DELAY = 15.0
+
+
+async def _refresh_presence_after_rename(code: str) -> None:
+    try:
+        await asyncio.sleep(_RENAME_PRESENCE_REFRESH_DELAY)
+        changed = await presence_index.refresh_codes([code])
+        if changed:
+            from ..services import missing as missing_svc
+            await missing_svc.invalidate_all_caches_async()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).debug(
+            "presence refresh after rename %s failed: %s", code, exc
+        )
+
+
 @router.post("/files/rename")
 async def rename_file(
     file_id: str = Body(..., embed=True),
@@ -212,13 +233,22 @@ async def rename_file(
 ):
     """Rename a single file or folder in place (admin/maintenance use —
     keeps manual reorganisation on the server's persistent PikPak login
-    instead of one-off client logins that trip the login throttle)."""
+    instead of one-off client logins that trip the login throttle).
+
+    Self-heals the presence index for the NEW name's code after a short
+    settle (a rename otherwise leaves that code's rows stale until it
+    lands again). A rename that CHANGES the code only refreshes the new
+    one — clear the old code via POST /presence/refresh-codes."""
     if not file_id or not new_name.strip():
         raise HTTPException(status_code=400, detail="缺少 file_id 或 new_name")
     try:
-        return await pikpak_service.rename_file(file_id, new_name.strip())
+        result = await pikpak_service.rename_file(file_id, new_name.strip())
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+    code = extract_jav_code(new_name)
+    if code:
+        asyncio.create_task(_refresh_presence_after_rename(code))
+    return result
 
 
 @router.post("/files/move")

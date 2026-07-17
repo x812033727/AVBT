@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # 缺漏摘要重建時同時處理幾個 tracked listing。JavBus 端已有全域
     # 限流,平行主要是重疊 IO 等待;調太高只會增加無效等待。
     missing_rebuild_concurrency: int = 4
+    # Persisted listing-catalog freshness (listing_catalog table). A
+    # check skips the JavBus walk when the persisted catalog is younger
+    # than this AND page-1's newest code is already in it — page-1 can't
+    # see mid-list additions/removals, so the window bounds that
+    # blind spot. Serving (summary/badges) reads the catalog at any age;
+    # this only gates when a *check* decides to re-walk.
+    missing_catalog_skip_walk_seconds: int = 43200  # 12h
 
     # Per-kind hierarchy paths. When empty, derived as
     # ``<pikpak_download_folder>/<kind>``. Set explicitly when your

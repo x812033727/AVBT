@@ -91,17 +91,25 @@ def _tracker_options() -> SendAllOptions:
 
 
 async def _enqueue_auto_send(
-    kind: str, slug: str, new_codes: list[str], *, do_full_scan: bool = True
+    kind: str,
+    slug: str,
+    new_codes: list[str],
+    *,
+    do_full_scan: bool = True,
+    refresh_catalog: bool = True,
 ) -> int:
     """Combine ``new_codes`` (just-detected on page 1) with the listing's
     missing-from-PikPak codes (when the presence index is ready and
     ``do_full_scan`` is True), dedupe, and push everything into the
     global download queue.
 
-    ``do_full_scan=False`` skips the JavBus catalog walk — caller uses
-    this when the listing has been quiet long enough that re-walking
-    every page is wasted work; only the freshly-detected ``new_codes``
-    get enqueued.
+    ``do_full_scan=False`` skips the missing scan entirely — caller uses
+    this when the listing has been quiet long enough that re-scanning
+    is wasted work; only the freshly-detected ``new_codes`` get
+    enqueued. ``refresh_catalog`` controls whether the scan re-walks
+    the JavBus catalog or re-derives from the persisted one — pass
+    False when ``catalog_is_current`` said the stored catalog already
+    covers page-1's newest code.
 
     On a successful full scan, writes the resulting missing count to
     ``TrackedListing.last_missing_count`` + ``last_full_scan_at`` so the
@@ -122,7 +130,9 @@ async def _enqueue_auto_send(
         # catalog.
         if status.get("ready") and not status.get("last_error"):
             try:
-                result = await missing_svc.missing_for_listing(kind, slug)
+                result = await missing_svc.missing_for_listing(
+                    kind, slug, refresh=refresh_catalog
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "auto-send-missing %s/%s failed: %s", kind, slug, exc
@@ -272,27 +282,32 @@ async def _record_scan_result(kind: str, slug: str, missing_count: int) -> None:
             await session.commit()
 
 
-async def _record_missing_count(kind: str, slug: str) -> None:
-    """Standalone missing-scan used by the manual ``force=True`` path on
-    listings without ``auto_send``: walks the JavBus catalog, writes
-    ``last_missing_count``, but does NOT enqueue anything to PikPak.
-    Lets the user trigger a fresh count without flipping auto-send on.
+async def _record_missing_count(
+    kind: str, slug: str, *, refresh: bool = True
+) -> None:
+    """Standalone missing-scan used on listings without ``auto_send``:
+    recomputes the missing set, writes ``last_missing_count``, but does
+    NOT enqueue anything to PikPak. ``refresh`` mirrors
+    ``_enqueue_auto_send``'s ``refresh_catalog``: True re-walks the
+    JavBus catalog, False re-derives from the persisted one.
 
     Raises on a failed catalog walk (JavBus 429/5xx/network) so the
     streaming "立即檢查" caller can report 失敗 instead of a silent 完成
     with a stale count. The fire-and-forget background path uses
     ``_record_missing_count_quiet`` to swallow + log instead."""
-    result = await missing_svc.missing_for_listing(kind, slug, refresh=True)
+    result = await missing_svc.missing_for_listing(kind, slug, refresh=refresh)
     await _record_scan_result(kind, slug, len(result.missing))
 
 
-async def _record_missing_count_quiet(kind: str, slug: str) -> None:
+async def _record_missing_count_quiet(
+    kind: str, slug: str, *, refresh: bool = True
+) -> None:
     """Fire-and-forget wrapper for the background path: logs and drops a
     failed missing-scan rather than surfacing an unretrieved task
     exception. The user-facing streaming path calls
     ``_record_missing_count`` directly so the failure can reach the UI."""
     try:
-        await _record_missing_count(kind, slug)
+        await _record_missing_count(kind, slug, refresh=refresh)
     except Exception as exc:  # noqa: BLE001
         logger.warning("missing-count record %s/%s failed: %s", kind, slug, exc)
 
@@ -319,7 +334,9 @@ class _Phase1Result(NamedTuple):
     """Outcome of the page-1 detection phase: enough state for both the
     fire-and-forget background path (``check_listing``) and the inline
     streaming path (``check_listing_stream``) to decide what comes next
-    (webhook, auto-send, missing-scan)."""
+    (webhook, auto-send, missing-scan). ``top_code`` is page-1's newest
+    code — ``_needs_catalog_walk`` compares it against the persisted
+    catalog to decide walk vs re-derive."""
     name: str
     auto_send: bool
     had_baseline: bool
@@ -327,6 +344,8 @@ class _Phase1Result(NamedTuple):
     do_full_scan: bool
     error: str | None
     not_found: bool
+    top_code: str = ""
+    uncensored: bool = False
 
 
 async def _check_listing_phase1(
@@ -368,6 +387,7 @@ async def _check_listing_phase1(
                 name=name, auto_send=auto_send, had_baseline=had_baseline,
                 new_codes=[], do_full_scan=False,
                 error=row.last_error, not_found=False,
+                uncensored=uncensored,
             )
 
         row.last_seen_code = new_last_seen
@@ -387,6 +407,18 @@ async def _check_listing_phase1(
         name=name, auto_send=auto_send, had_baseline=had_baseline,
         new_codes=new_codes, do_full_scan=do_full_scan,
         error=None, not_found=False,
+        top_code=new_last_seen, uncensored=uncensored,
+    )
+
+
+async def _needs_catalog_walk(kind: str, slug: str, p: _Phase1Result) -> bool:
+    """Walk vs re-derive: skip the JavBus catalog walk when the
+    persisted catalog is fresh enough and already contains page-1's
+    newest code (see ``missing_svc.catalog_is_current``)."""
+    if not p.top_code:
+        return True
+    return not await missing_svc.catalog_is_current(
+        kind, slug, uncensored=p.uncensored, newest_code=p.top_code
     )
 
 
@@ -425,6 +457,10 @@ async def _read_row_snapshot(kind: str, slug: str) -> dict:
             "new_count": int(row.new_count or 0),
             "last_error": row.last_error or "",
             "missing_count": int(row.last_missing_count or 0),
+            "last_full_scan_at": (
+                row.last_full_scan_at.isoformat() + "Z"
+                if row.last_full_scan_at else None
+            ),
         }
 
 
@@ -455,12 +491,16 @@ async def check_listing(
     if p.had_baseline and p.new_codes:
         _maybe_fire_new_codes_webhook(kind, p.name, p.new_codes)
 
+    walk = await _needs_catalog_walk(kind, listing_id, p)
+
     if p.auto_send:
         # One-pass enqueue:
         #   freshly-seen new_codes (cheap — just page 1)
-        #   ∪ JavBus catalog codes still missing from PikPak (walks all
-        #     listing pages, cached for 1h; only when presence index is
-        #     ready AND adaptive policy says to scan this tick)
+        #   ∪ catalog codes still missing from PikPak (re-derived from
+        #     the persisted catalog; re-walks JavBus only when
+        #     _needs_catalog_walk says the catalog is stale — and only
+        #     when the presence index is ready AND adaptive policy says
+        #     to scan this tick)
         # Both sets go to the global download queue, which dedupes
         # in-flight, so the worker pool serialises submissions across
         # every listing rather than each listing firing its own burst.
@@ -468,13 +508,29 @@ async def check_listing(
         # listing's backlog is hundreds of codes.
         fresh = p.new_codes if p.had_baseline else []
         asyncio.create_task(
-            _enqueue_auto_send(kind, listing_id, fresh, do_full_scan=p.do_full_scan)
+            _enqueue_auto_send(
+                kind, listing_id, fresh,
+                do_full_scan=p.do_full_scan, refresh_catalog=walk,
+            )
         )
     elif force:
         # Non-auto_send + manual force: still refresh the missing count
         # so the next _scan_due decision sees an accurate baseline,
-        # without sending anything to PikPak.
-        asyncio.create_task(_record_missing_count_quiet(kind, listing_id))
+        # without sending anything to PikPak. Skips the JavBus walk when
+        # the persisted catalog already covers page-1's newest code.
+        asyncio.create_task(
+            _record_missing_count_quiet(kind, listing_id, refresh=walk)
+        )
+    elif walk:
+        # Non-auto_send background tick with a stale/absent persisted
+        # catalog: refresh it quietly so badges and summary rebuilds
+        # keep re-deriving from current data. Replaces the old implicit
+        # hourly refresh (summary rebuilds used to re-walk everything
+        # once the 1h in-memory TTL lapsed) with an explicit, per-
+        # listing cadence bounded by missing_catalog_skip_walk_seconds.
+        asyncio.create_task(
+            _record_missing_count_quiet(kind, listing_id, refresh=True)
+        )
 
     return {
         "kind": kind,
@@ -519,14 +575,20 @@ async def check_listing_stream(
     if p.had_baseline and p.new_codes:
         _maybe_fire_new_codes_webhook(kind, p.name, p.new_codes)
 
+    walk = await _needs_catalog_walk(kind, listing_id, p)
+    scan_msg = (
+        "走 JavBus catalog…" if walk else "以既有目錄重算缺漏…"
+    )
+
     if p.auto_send:
         fresh = p.new_codes if p.had_baseline else []
         if p.do_full_scan:
             yield {"type": "progress", "phase": "missing_scan",
-                   "message": "走 JavBus catalog…"}
+                   "message": scan_msg}
         try:
             queued = await _enqueue_auto_send(
-                kind, listing_id, fresh, do_full_scan=p.do_full_scan
+                kind, listing_id, fresh,
+                do_full_scan=p.do_full_scan, refresh_catalog=walk,
             )
         except Exception as exc:  # noqa: BLE001
             snapshot = await _read_row_snapshot(kind, listing_id)
@@ -538,9 +600,9 @@ async def check_listing_stream(
                "message": f"已送 {queued} 個進下載佇列"}
     elif force:
         yield {"type": "progress", "phase": "missing_scan",
-               "message": "重算缺漏…"}
+               "message": scan_msg}
         try:
-            await _record_missing_count(kind, listing_id)
+            await _record_missing_count(kind, listing_id, refresh=walk)
         except Exception as exc:  # noqa: BLE001
             # JavBus 429/5xx/network during the catalog walk. Report 失敗
             # instead of yielding a clean done with a stale count — the

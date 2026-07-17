@@ -17,6 +17,7 @@ from ..schemas import (
     TrackedListingOut,
 )
 from ..scrapers import javbus as scraper
+from ..services import listing_catalog
 from ..services import missing as missing_svc
 from ..services import tracker, tracking_migration
 
@@ -77,6 +78,8 @@ def _to_out(r: TrackedListing) -> TrackedListingOut:
         last_checked_at=r.last_checked_at,
         last_error=r.last_error,
         new_count=int(r.new_count or 0),
+        last_full_scan_at=r.last_full_scan_at,
+        last_missing_count=int(r.last_missing_count or 0),
         created_at=r.created_at,
     )
 
@@ -224,10 +227,12 @@ async def upsert_tracked(
 
     row = await session.get(TrackedListing, (kind, slug))
     auto_send_just_enabled = False
+    uncensored_flipped = False
     if row:
         auto_send_just_enabled = (
             bool(payload.auto_send) and not bool(row.auto_send)
         )
+        uncensored_flipped = bool(row.uncensored) != bool(payload.uncensored)
         row.name = payload.name or row.name
         row.avatar = payload.avatar or row.avatar
         row.uncensored = payload.uncensored
@@ -269,6 +274,11 @@ async def upsert_tracked(
 
         from ..services.tracker import _enqueue_auto_send  # local: avoid cycles
         asyncio.create_task(_enqueue_auto_send(kind, slug, []))
+
+    # An uncensored flip means the persisted catalog describes the wrong
+    # listing variant — drop it so the next check re-walks.
+    if uncensored_flipped:
+        await listing_catalog.delete_listing(kind, slug)
 
     # The tracked-listing set changed (or its display name did); drop
     # the cached aggregate so the next /missing-summary rebuilds.
@@ -328,6 +338,7 @@ async def untrack(
         raise HTTPException(status_code=404, detail="not tracked")
     await session.delete(row)
     await session.commit()
+    await listing_catalog.delete_listing(kind, slug)
     missing_svc.invalidate_all_caches()
     return {"ok": True}
 
@@ -338,7 +349,12 @@ async def check_now_stream(kind: str, slug: str):
     / ``done`` events around the page-1 and missing-scan phases so the
     UI button can show "page 1…" / "掃描缺漏…" instead of a silent spinner
     while the catalog walk runs."""
-    missing_svc.invalidate_all_caches(presence=True)
+    # Targeted: drop only THIS listing's L1 cache (+ the cheap aggregate
+    # result caches) and flag presence stale. Other listings' state is
+    # untouched — a single-row check must not force everyone else's
+    # badges into a rebuild-from-nothing.
+    missing_svc.invalidate_listing(kind, slug)
+    missing_svc.presence_index.invalidate()
 
     async def gen():
         try:
@@ -352,15 +368,14 @@ async def check_now_stream(kind: str, slug: str):
 
 @router.post("/{kind}/{slug:path}/check", response_model=CheckListingResult)
 async def check_now(kind: str, slug: str):
-    # User explicitly asked for a fresh check. Drop any cached PikPak
-    # presence so the auto_send-missing path (and the missing-codes
-    # badge re-fetch the UI does afterwards) sees the current state
-    # of the cloud, not a stale snapshot from before the user deleted
-    # files / moved things around. ``force=True`` so a manual check
-    # always walks the JavBus catalog (refreshing the missing-count) and
-    # is never silently skipped by the daily-cadence rule for complete
-    # listings.
-    missing_svc.invalidate_all_caches(presence=True)
+    # User explicitly asked for a fresh check. Targeted invalidation
+    # (this listing's L1 + aggregate results) plus a presence stale
+    # flag so the missing scan sees the current state of the cloud.
+    # ``force=True`` so a manual check always refreshes the missing
+    # count (re-walking JavBus only when the persisted catalog is
+    # stale) and is never silently skipped by the daily-cadence rule.
+    missing_svc.invalidate_listing(kind, slug)
+    missing_svc.presence_index.invalidate()
     return CheckListingResult(
         **await tracker.check_listing(kind, slug, force=True)
     )

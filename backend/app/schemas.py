@@ -145,6 +145,8 @@ class TrackedListingOut(TrackedListingIn):
     last_checked_at: datetime | None = None
     last_error: str = ""
     new_count: int = 0
+    last_full_scan_at: datetime | None = None
+    last_missing_count: int = 0
     created_at: datetime
 
 
@@ -279,6 +281,9 @@ class MissingCodesResult(BaseModel):
     # Lets the UI display the exact path it's looking for.
     expected_root: str = ""
     built_at: datetime
+    # When the persisted JavBus catalog backing this result was walked
+    # (listing_catalog.fetched_at) — None before the first walk.
+    catalog_fetched_at: datetime | None = None
 
 
 class MissingSummaryItem(BaseModel):
@@ -291,6 +296,7 @@ class MissingSummaryItem(BaseModel):
     pages_scanned: int = 0
     expected_root: str = ""
     error: str = ""
+    catalog_fetched_at: datetime | None = None
 
 
 class MissingSummary(BaseModel):

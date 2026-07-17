@@ -1070,7 +1070,7 @@ async def test_reap_closes_vanished_task_with_flattened_files(tmp_path, monkeypa
     async def no_active():
         return set()
 
-    async def flattened(code):
+    async def flattened(code, **kw):
         return True
 
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
@@ -1119,15 +1119,20 @@ async def test_reap_skips_unflattened_code(tmp_path, monkeypatch):
     async def no_active():
         return set()
 
-    async def not_flattened(code):
+    calls: list[bool] = []
+
+    async def not_flattened(code, **kw):
+        calls.append(kw.get("strict", False))
         return False
 
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
     monkeypatch.setattr(arch, "_already_flattened", not_flattened)
     assert await arch._reap_orphan_rows() == 0
+    assert calls == [True]  # reaper must call the strict check, not swallow
     async with maker() as s:
         row = (await s.execute(select(OfflineTaskLog))).scalars().one()
     assert row.archived is False and row.finalized is False
+    assert row.abandoned is False  # still inside the 24h abandon grace
     await engine.dispose()
 
 
@@ -1181,7 +1186,7 @@ async def test_reap_closes_archived_row_past_retry_window(tmp_path, monkeypatch)
     async def no_active():
         return set()
 
-    async def flattened(code):
+    async def flattened(code, **kw):
         return True
 
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
@@ -1241,7 +1246,7 @@ async def test_reap_not_starved_by_fresh_active_rows(tmp_path, monkeypatch):
     async def active():
         return {f"t-live-{i}" for i in range(10)}
 
-    async def flattened(code):
+    async def flattened(code, **kw):
         return True
 
     monkeypatch.setattr(arch, "_active_task_ids", active)
@@ -1300,7 +1305,7 @@ async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypat
     async def no_active():
         return set()
 
-    async def flattened(code):
+    async def flattened(code, **kw):
         return code == "MTM-013"
 
     monkeypatch.setattr(arch, "_active_task_ids", no_active)

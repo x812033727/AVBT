@@ -1296,7 +1296,17 @@ async def _reap_orphan_rows() -> int:
             _reap_attempts[row.id] = datetime.utcnow()
             try:
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
-                    if not await _already_flattened(row.code):
+                    # Abandon is TERMINAL, so the flattened check must be a
+                    # fresh, reliable negative — not a stale-snapshot or a
+                    # swallowed-error False. Refresh this code's presence
+                    # first (a pre-sweep snapshot only knows the old
+                    # loose-file path — DVDMS-306; mirrors
+                    # _finalize_retry_pass) and use strict=True so a
+                    # transient check error raises into the except below
+                    # (skip + cooldown) instead of abandoning a real row.
+                    from .pikpak_presence import presence_index  # avoid cycle
+                    await presence_index.refresh_codes([row.code])
+                    if not await _already_flattened(row.code, strict=True):
                         # Genuinely-dead orphan: task gone (checked above),
                         # the download never produced a file (file_id
                         # empty), it isn't at the destination, and it's
@@ -1354,7 +1364,7 @@ async def _reap_orphan_rows() -> int:
     return done
 
 
-async def _already_flattened(code: str) -> bool:
+async def _already_flattened(code: str, *, strict: bool = False) -> bool:
     """True when ``code``'s video exists on PikPak even though it has no
     per-code archive folder — the sweep's flatten put ``CODE.ext``
     straight into the 製作商/<studio>/<系列> folder. Nothing per-code is
@@ -1378,6 +1388,8 @@ async def _already_flattened(code: str) -> bool:
         result = await files_for_code(code)
     except Exception as exc:  # noqa: BLE001
         logger.debug("flattened check %s failed: %s", code, exc)
+        if strict:
+            raise
         return False
     if not (result.get("ok") and result.get("files")):
         return False

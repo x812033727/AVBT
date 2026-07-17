@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 
 import app.database as db
 import app.services.archiver as archiver
+import app.services.pikpak_presence as pp
 from app.models import OfflineTaskLog
 
 
@@ -37,11 +38,15 @@ async def maker(tmp_path, monkeypatch):
     async def no_active():
         return set()
 
-    async def not_flat(code):
+    async def not_flat(code, **kw):
         return False
+
+    async def _noop_refresh(codes, **kw):
+        return 0
 
     monkeypatch.setattr(archiver, "_active_task_ids", no_active)
     monkeypatch.setattr(archiver, "_already_flattened", not_flat)
+    monkeypatch.setattr(pp.presence_index, "refresh_codes", _noop_refresh)
     yield m
     await engine.dispose()
 
@@ -71,7 +76,7 @@ async def test_dead_orphan_is_abandoned(maker):
 
 
 async def test_flattened_row_is_finalized_not_abandoned(maker, monkeypatch):
-    async def yes_flat(code):
+    async def yes_flat(code, **kw):
         return True
 
     monkeypatch.setattr(archiver, "_already_flattened", yes_flat)
@@ -122,3 +127,38 @@ async def test_abandoned_row_excluded_from_retry_and_reap(maker):
     n_retry = await archiver._finalize_retry_pass()
     assert n_reap == 0
     assert n_retry == 0
+
+
+async def test_already_flattened_strict_raises_on_error(monkeypatch):
+    # strict=True must surface a check error; default must swallow to False.
+    # Stub _resolve_archive_path_by_code (established pattern, see
+    # test_finalize.py::test_flattened_check_requires_missing_folder) so
+    # the check reaches lookup_folder_id without a real DB/network hop.
+    async def fake_resolve(code):
+        return "AVBT/製作商/S/系/ERR-001"
+
+    async def boom(path):
+        raise RuntimeError("pikpak throttled")
+
+    monkeypatch.setattr(archiver, "_resolve_archive_path_by_code", fake_resolve)
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", boom)
+    assert await archiver._already_flattened("ERR-001") is False
+    with pytest.raises(RuntimeError):
+        await archiver._already_flattened("ERR-001", strict=True)
+
+
+async def test_reaper_does_not_abandon_when_check_errors(maker, monkeypatch):
+    # A transient flattened-check error must skip the row, never abandon it.
+    async def boom(code, **kw):
+        raise RuntimeError("pikpak throttled")
+
+    monkeypatch.setattr(archiver, "_already_flattened", boom)
+    async with maker() as s:
+        s.add(_row(code="ERRDEAD-001"))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with maker() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "ERRDEAD-001")
+        )).scalar_one()
+        assert row.abandoned is False   # errored check → skipped, not abandoned

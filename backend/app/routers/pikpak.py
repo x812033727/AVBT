@@ -507,6 +507,27 @@ async def presence_refresh():
     return PresenceStatus(**presence_index.status())
 
 
+@router.post("/presence/refresh-codes")
+async def presence_refresh_codes(codes: list[str] = Body(..., embed=True)):
+    """Re-read just these codes' archive folders (1-2 listings each).
+    The escape hatch for hand-fixed files: renaming or trashing outside
+    the pipeline leaves those codes' rows stale forever, because
+    ``refresh_codes`` otherwise only runs when a code lands again. A
+    full rebuild stays on /presence/refresh."""
+    if not codes:
+        raise HTTPException(status_code=400, detail="codes must not be empty")
+    if len(codes) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="at most 50 codes per call; use /presence/refresh for a full walk",
+        )
+    changed = await presence_index.refresh_codes(codes)
+    if changed:
+        from ..services import missing as missing_svc
+        missing_svc.invalidate_all_caches()
+    return {"requested": len(codes), "changed": changed}
+
+
 @router.get("/presence/detail", response_model=PresenceDetail)
 async def presence_detail(refresh: bool = False):
     """Status + which roots were scanned + which leaf folder names didn't

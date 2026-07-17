@@ -276,6 +276,9 @@ class MissingCodesResult(BaseModel):
     missing: list[MovieListItem] = Field(default_factory=list)
     extras: list[ExtraCode] = Field(default_factory=list)
     pages_scanned: int = 0
+    # Walk stopped at the safety page cap — the catalog is incomplete,
+    # so extras are unjudgeable and intentionally empty.
+    catalog_truncated: bool = False
     # The folder the archiver would put a newly-completed code under
     # for this tracked listing, e.g. "AVBT/系列/回胴錄".
     # Lets the UI display the exact path it's looking for.
@@ -294,6 +297,7 @@ class MissingSummaryItem(BaseModel):
     missing_count: int = 0
     extras_count: int = 0
     pages_scanned: int = 0
+    catalog_truncated: bool = False
     expected_root: str = ""
     error: str = ""
     catalog_fetched_at: datetime | None = None

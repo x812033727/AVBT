@@ -154,10 +154,18 @@ export default function MissingDetailPanel({
           </span>
         </div>
       </div>
+      {detail.catalog_truncated && (
+        <div className="mb-2 text-muted-foreground/70">
+          JavBus 目錄超過掃描上限(掃了 {detail.pages_scanned}{" "}
+          頁),完整目錄未知——多餘番號無法判定,故不顯示
+        </div>
+      )}
       {!detail.missing.length && !detail.extras.length && (
         <div className="mb-2 flex items-center gap-1 text-emerald-300/80">
           <Check className="h-3.5 w-3.5" aria-hidden />
-          已無缺漏、也沒有多餘番號
+          {detail.catalog_truncated
+            ? "已無缺漏"
+            : "已無缺漏、也沒有多餘番號"}
         </div>
       )}
       <ul className="divide-y divide-border/60">

@@ -60,6 +60,16 @@ def _expected_root(kind: str, slug: str, name: str) -> str:
     return _expected_roots(kind, slug, name)[0]
 
 
+def _catalog_truncated(pages: int) -> bool:
+    """Whether a listing walk stopped at the safety page cap. A capped
+    catalog is incomplete, so "in the folder but not in the catalog"
+    stops meaning 多餘 — big studios (プレステージ ~2000+ works vs the
+    ~1500-work cap) otherwise flag every owned work older than the cap
+    window as an extra (live: 2,060 false extras across 8 studios,
+    2026-07-17). Callers skip extras entirely and surface the flag."""
+    return pages >= max(1, settings.missing_max_pages)
+
+
 def _compute_extras(
     kind: str, slug: str, name: str, expected_codes: set[str]
 ) -> list[ExtraCode]:
@@ -493,7 +503,10 @@ async def missing_for_listing(
     # invalid slug…) every file in the folder would otherwise look like
     # an extra. ``expected`` already includes the reconciled held works
     # (see ``_owned_listing_members``) so they aren't false-flagged.
-    if items:
+    # A page-cap-truncated catalog is equally unjudgeable — see
+    # ``_catalog_truncated``.
+    truncated = _catalog_truncated(pages)
+    if items and not truncated:
         extras = _compute_extras(kind, slug, name, expected)
     else:
         extras = []
@@ -507,6 +520,7 @@ async def missing_for_listing(
         missing=missing,
         extras=extras,
         pages_scanned=pages,
+        catalog_truncated=truncated,
         expected_root=_expected_root(kind, slug, name),
         built_at=datetime.utcnow(),
         catalog_fetched_at=await listing_catalog.fetched_at(kind, slug),
@@ -564,8 +578,10 @@ async def _summary_item(
     if owned is not None:
         missing = [m for m in missing if m.code in owned]
     # See note in missing_for_listing: skip extras when we got no
-    # listing data, otherwise every file in the folder appears extra.
-    if items:
+    # listing data — or a page-cap-truncated catalog — otherwise owned
+    # works outside the window appear extra.
+    truncated = _catalog_truncated(pages)
+    if items and not truncated:
         extras = _compute_extras(row.kind, row.id, row.name or "", expected)
     else:
         extras = []
@@ -577,6 +593,7 @@ async def _summary_item(
         missing_count=len(missing),
         extras_count=len(extras),
         pages_scanned=pages,
+        catalog_truncated=truncated,
         expected_root=expected_root,
         catalog_fetched_at=fetched_at,
     )

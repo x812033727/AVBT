@@ -450,6 +450,7 @@ export type MissingCodesResult = {
   missing: MovieListItem[];
   extras: ExtraCode[];
   pages_scanned: number;
+  catalog_truncated: boolean;
   expected_root: string;
   built_at: string;
   catalog_fetched_at: string | null;
@@ -463,6 +464,7 @@ export type MissingSummaryItem = {
   missing_count: number;
   extras_count: number;
   pages_scanned: number;
+  catalog_truncated: boolean;
   expected_root: string;
   error: string;
   catalog_fetched_at: string | null;

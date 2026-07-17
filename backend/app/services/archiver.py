@@ -1024,6 +1024,11 @@ _REAP_RETRY_COOLDOWN = timedelta(hours=6)
 _REAP_CHECK_LIMIT = 5
 _reap_attempts: dict[int, datetime] = {}
 
+# A genuinely-dead orphan (no file ever landed) is dead-lettered instead
+# of re-tried for the whole reap window, but only after this grace so a
+# late-arriving download still gets its chance.
+_ABANDON_GRACE = timedelta(hours=24)
+
 
 async def _active_task_ids() -> set[str]:
     """Task ids that are still downloading (or otherwise not COMPLETE).
@@ -1065,6 +1070,7 @@ async def _finalize_retry_pass() -> int:
                 select(OfflineTaskLog)
                 .where(
                     OfflineTaskLog.finalized.is_(False),
+                    OfflineTaskLog.abandoned.is_(False),
                     or_(
                         # Normal path: sweep/archiver stamped the move.
                         (OfflineTaskLog.archived.is_(True))
@@ -1239,6 +1245,7 @@ async def _reap_orphan_rows() -> int:
                 select(OfflineTaskLog)
                 .where(
                     OfflineTaskLog.finalized.is_(False),
+                    OfflineTaskLog.abandoned.is_(False),
                     or_(
                         # Collecting orphan: file_id was never tracked, so
                         # the sweep's stamp path can't own this row.
@@ -1277,6 +1284,7 @@ async def _reap_orphan_rows() -> int:
         for rid in [k for k, v in _reap_attempts.items() if v < attempt_floor]:
             del _reap_attempts[rid]
         checked = 0
+        abandoned = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — not an orphan
@@ -1289,6 +1297,30 @@ async def _reap_orphan_rows() -> int:
             try:
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
                     if not await _already_flattened(row.code):
+                        # Genuinely-dead orphan: task gone (checked above),
+                        # the download never produced a file (file_id
+                        # empty), it isn't at the destination, and it's
+                        # older than the grace — a late arrival is
+                        # implausible. Dead-letter it so the finalize retry
+                        # pass stops re-listing it every ~10 min for the
+                        # rest of the reap window. Pure DB flag.
+                        if (
+                            not row.archived
+                            and not (row.file_id or "")
+                            and row.created_at
+                            < datetime.utcnow() - _ABANDON_GRACE
+                        ):
+                            row.abandoned = True
+                            row.message = (
+                                "abandoned: task gone, no file landed"
+                            )
+                            abandoned += 1
+                            logger.info(
+                                "orphan reap abandoned %s (task %s gone, "
+                                "no file landed, >%dh old)",
+                                row.code, row.task_id or "?",
+                                int(_ABANDON_GRACE.total_seconds() // 3600),
+                            )
                         continue  # nothing landed (or needs real finalize)
             except TimeoutError:
                 logger.warning(
@@ -1317,7 +1349,7 @@ async def _reap_orphan_rows() -> int:
                 "archived but finalize never landed within the retry window"
                 if was_archived else "vanished before file_id was tracked",
             )
-        if done:
+        if done or abandoned:
             await session.commit()
     return done
 

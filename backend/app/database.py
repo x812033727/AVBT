@@ -145,6 +145,7 @@ _MIGRATION_DDL = (
     # 24h retry window, so deploying doesn't trigger a mass purge.
     "ALTER TABLE offline_task_log ADD COLUMN finalized BOOLEAN DEFAULT 0",
     "ALTER TABLE offline_task_log ADD COLUMN finalized_at DATETIME",
+    "ALTER TABLE offline_task_log ADD COLUMN abandoned BOOLEAN DEFAULT 0",
 )
 
 

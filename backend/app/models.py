@@ -180,6 +180,15 @@ class OfflineTaskLog(Base):
         Boolean, default=False, server_default="0"
     )
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Dead-letter: a genuinely-dead orphan (download never produced a
+    # file, task gone, not at the destination, past the 24h grace). Set
+    # by _reap_orphan_rows so the finalize retry pass stops re-listing it
+    # for the rest of the 7-day reap window. Distinct from finalized so
+    # archive/completion stats stay clean. server_default keeps fresh
+    # create_all in lockstep with the ALTER TABLE DEFAULT 0.
+    abandoned: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     # Snapshot of the tracked listing this code belonged to at enqueue
     # time. Lets the archiver pick the right kind/name folder without
     # re-fetching JavBus. Empty for manual submits — those fall back to

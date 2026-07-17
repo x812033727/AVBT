@@ -89,6 +89,19 @@ _BT_PREFIX_DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Quality tag glued between the separator and a trailing part index
+# (``SQTE-645_4KS1`` = SQTE-645, 4K-subbed encode, disc 1). The
+# end-anchored _DUP_SUFFIX_RE can't see the tag (a digit follows it) and
+# the part regexes can't see the digit (a tag precedes it), so the name
+# canonicalised to itself and archived verbatim (live 2026-07-17).
+# Normalising to ``_<n>`` lets both the canonical strip and the part
+# marker read it. Two digits max, separator required — a resolution tail
+# (``-1080P``) has no trailing index and never matches.
+_QUALITY_PART_GLUE_RE = re.compile(
+    r"[-_](?:4KS|4K|2K|8K|FHD|UHD|HD|SD|720P|1080P|2160P|4320P)(\d{1,2})$",
+    re.IGNORECASE,
+)
+
 # Some releases glue a literal extension token onto the stem without a
 # dot (``HUNTA578AMP4.mp4`` = HUNTA-578 disc A + "MP4"). Only a token
 # fused directly onto an alphanumeric survives the real-extension strip
@@ -158,6 +171,7 @@ def _canonical_video_name(name: str) -> str:
             if len(label) >= 2:
                 stem = re.sub(rf"[-_ ]{re.escape(label)}$", "", stem,
                               flags=re.IGNORECASE)
+        stem = _QUALITY_PART_GLUE_RE.sub(r"_\1", stem)
         # ``DVDMS-445A..mp4``-style doubled dots leave a trailing ``.``
         # after the extension strip; it hides the code from the
         # end-anchored match below and never carries meaning by itself.
@@ -244,6 +258,7 @@ def _part_marker_index(name: str, code: str) -> int:
     if m:
         stem = stem[: m.start()]
     stem = _GLUED_EXT_RE.sub("", stem)
+    stem = _QUALITY_PART_GLUE_RE.sub(r"_\1", stem)
     pattern = re.compile(
         rf"{_flex_code_re(code)}"
         r"(?:[. _-]?PART(?P<part>\d+)_?"
@@ -503,9 +518,31 @@ def _build_video_rename_plan(
         copies += [f for f in quality_tagged_copies(files, canon)
                    if f not in copies]
         if copies:
-            files = [f for f in files if f not in copies]
-            if len(files) < 2:
-                continue  # nothing left to number — the dedup owns it
+            survivors = [f for f in files if f not in copies]
+            if len(survivors) < 2:
+                # Nothing left to number — the dedup owns the copies.
+                # The lone survivor still deserves its canonical
+                # singleton name, but only when it is also the group's
+                # biggest file: renaming a smaller survivor while a
+                # bigger tagged copy sits beside it would crown the
+                # loser (live: bare-SD sqte-656 beside its ``-4k``
+                # upgrade — the 4K file is the one to keep).
+                biggest = max(files, key=lambda f: (f.size or 0))
+                if survivors and survivors[0] is biggest:
+                    c = survivors[0]
+                    ext = ext_of(c.name)
+                    stem = c.name[: -len(ext)] if ext else c.name
+                    m = _PART_INDEX_RE.match(stem)
+                    part_named = bool(m and m.group(1).upper() == canon)
+                    target = f"{canon}{ext}"
+                    # An existing ``<canon>_N`` name keeps its slot — the
+                    # index may be the only record of a part set whose
+                    # siblings haven't landed (GDHH-167_1 beside its fake
+                    # _5). Only BT-noise names get the canonical.
+                    if not part_named and target != c.name:
+                        plan[c.name] = target
+                continue
+            files = survivors
         # A stray low-res whole-film rip must not claim a part slot.
         files, _outliers = _split_size_outliers(files, canon)
         # Members get protected from the single-file default-name path.

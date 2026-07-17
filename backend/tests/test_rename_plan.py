@@ -400,3 +400,57 @@ def test_quality_tag_collision_pair_still_discs():
         _f("SKMJ-480-SD (2).mp4", 3 * GB),
     ]
     assert quality_tagged_copies(kids, "SKMJ-480") == []
+
+
+def test_canonical_glued_quality_part_tail():
+    # ``SQTE-645_4KS1`` — quality tag glued between separator and part
+    # index. The tag hid the digit from _DUP_SUFFIX_RE and the digit hid
+    # the tag from the part regexes, so the name canonicalised to itself
+    # and archived verbatim (live 2026-07-17).
+    assert _canonical_video_name("SQTE-645_4KS1.mp4") == "SQTE-645"
+    assert _canonical_video_name("SQTE-645_4KS2.mp4") == "SQTE-645"
+    assert _part_marker_index("SQTE-645_4KS1.mp4", "SQTE-645") == 1
+    assert _part_marker_index("SQTE-645_4KS2.mp4", "SQTE-645") == 2
+    # A bare tag with no trailing index is untouched by the glue rule.
+    assert _canonical_video_name("4k2.me@sqte-656-4k.mp4") == "SQTE-656"
+    assert _part_marker_index("4k2.me@sqte-656-4k.mp4", "SQTE-656") == 0
+
+
+def test_plan_glued_quality_part_group():
+    kids = [
+        _f("SQTE-645_4KS1.mp4", int(11.7 * GB)),
+        _f("SQTE-645_4KS2.mp4", int(10.4 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {
+        "SQTE-645_4KS1.mp4": "SQTE-645_1.mp4",
+        "SQTE-645_4KS2.mp4": "SQTE-645_2.mp4",
+    }
+    assert members == {"SQTE-645_4KS1.mp4", "SQTE-645_4KS2.mp4"}
+
+
+def test_plan_collapsed_group_survivor_still_renamed():
+    # Bare HD beside its declared SD rip (KBTK-012 shape): the SD copy
+    # goes to the dedup, but the surviving biggest file must still get
+    # its canonical singleton name instead of keeping BT noise.
+    kids = [
+        _f("[88K.ME]KBTK-012.mp4", int(4.56 * GB)),
+        _f("[88K.ME]KBTK-012-SD.mp4", int(2.85 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {"[88K.ME]KBTK-012.mp4": "KBTK-012.mp4"}
+    assert members == set()
+
+
+def test_plan_collapsed_group_smaller_survivor_left_alone():
+    # The tagged file is the BIGGER one (bare-SD beside its ``-4k``
+    # upgrade, SQTE-656 shape): crowning the smaller survivor with the
+    # canonical name would hand the identity to the loser — leave the
+    # group to the caller's keep-the-biggest dedup.
+    kids = [
+        _f("4k2.me@sqte-656.mp4", int(4.61 * GB)),
+        _f("4k2.me@sqte-656-4k.mp4", int(7.13 * GB)),
+    ]
+    plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
+    assert plan == {}
+    assert members == set()

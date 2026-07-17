@@ -1408,3 +1408,66 @@ async def test_finalize_retry_refreshes_only_attempted_codes(tmp_path, monkeypat
     assert done == 1
     assert refreshed == ["MIDV-003"]
     await engine.dispose()
+
+
+def test_plan_encode_pair_keeps_biggest_even_when_tagged():
+    # SQTE-656 (live 2026-07-17): one torrent delivered a bare SD encode
+    # beside its ``-4k`` upgrade. Both ≥ part_min used to read as discs,
+    # then the rename plan dropped the tagged member and skipped the
+    # group — both archived verbatim under BT names. The pair is one
+    # film: keep the biggest (the 4K, tag or not), trash the other.
+    sd = _file("4k2.me@sqte-656.mp4", "sd", 4610)
+    uhd = _file("4k2.me@sqte-656-4k.mp4", "uhd", 7130)
+    plan = build_finalize_plan("SQTE-656", [(sd, "root"), (uhd, "root")], "root")
+    assert plan.keep == [(uhd, "SQTE-656.mp4")]
+    assert [e.id for e in plan.trash_files] == ["sd"]
+    assert not plan.purge_files
+
+
+def test_plan_encode_pair_keeps_biggest_bare():
+    # KBTK-012 shape: the tagged member is the smaller SD rip.
+    hd = _file("KBTK-012.mp4", "hd", 4560)
+    sd = _file("KBTK-012-SD.mp4", "sd", 2850)
+    plan = build_finalize_plan("KBTK-012", [(hd, "root"), (sd, "root")], "root")
+    assert plan.keep == [(hd, "KBTK-012.mp4")]
+    assert [e.id for e in plan.trash_files] == ["sd"]
+
+
+def test_plan_discs_keep_slots_beside_stray_sd_rip():
+    # Two real discs + a whole-film SD rip, all substantial: the rip is
+    # trashed, the discs still claim ``_1``/``_2``.
+    d1 = _file("MMGO-005-1.mp4", "d1", 4000)
+    d2 = _file("MMGO-005-2.mp4", "d2", 4200)
+    rip = _file("MMGO-005-SD.mp4", "rip", 2000)
+    plan = build_finalize_plan(
+        "MMGO-005", [(d1, "root"), (d2, "root"), (rip, "root")], "root"
+    )
+    assert sorted(t for _k, t in plan.keep) == ["MMGO-005_1.mp4", "MMGO-005_2.mp4"]
+    assert [e.id for e in plan.trash_files] == ["rip"]
+
+
+def test_plan_glued_quality_part_tail_names_parts():
+    # ``SQTE-645_4KS1``/``_4KS2`` — tag glued onto the part index.
+    p1 = _file("SQTE-645_4KS1.mp4", "p1", 11789)
+    p2 = _file("SQTE-645_4KS2.mp4", "p2", 10434)
+    plan = build_finalize_plan("SQTE-645", [(p1, "root"), (p2, "root")], "root")
+    assert sorted(t for _k, t in plan.keep) == ["SQTE-645_1.mp4", "SQTE-645_2.mp4"]
+    assert not plan.trash_files
+
+
+def test_plan_lone_keeper_midname_noise_renamed_to_code():
+    # Code buried mid-name in CJK/BT noise: the canonical pass leaves it
+    # (mid-name codes stay untouched) and the name still parses to our
+    # code, so no fallback fired — it archived verbatim (live EKDV-014).
+    # Inside the code's own folder the lone keeper takes the code name.
+    v = _file("【娼井空】【SEX8.CC】透明泳衣诱惑 EKDV-014 スク水H 1 濱崎.avi", "v", 1447)
+    plan = build_finalize_plan("EKDV-014", [(v, "root")], "root")
+    assert plan.keep == [(v, "EKDV-014.avi")]
+
+
+def test_plan_lone_keeper_code_anchored_tail_not_clobbered():
+    # A code-anchored stem (making-of style suffix AFTER the code) keeps
+    # its distinct name — only mid-name noise collapses to the code.
+    v = _file("MIDV-001 making-of.mp4", "v", 2048)
+    plan = build_finalize_plan("MIDV-001", [(v, "root")], "root")
+    assert plan.keep[0][1].startswith("MIDV-001 MAKING-OF")

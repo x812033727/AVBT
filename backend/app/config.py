@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # can log and move past. 60s is generous — normal calls finish in <2s.
     pikpak_api_timeout_seconds: float = 60.0
 
+    # Operation-level throttle backoff. When PikPak rejects a call with
+    # "operation is too frequent", `_call` retries with exponential
+    # backoff instead of failing straight through. 0 retries disables it.
+    pikpak_throttle_max_retries: int = 4
+    pikpak_throttle_base_seconds: float = 3.0
+    pikpak_throttle_max_seconds: float = 30.0
+
     # Where the backend tells PikPak to drop newly-submitted offline
     # tasks. Defaults to ``<pikpak_download_folder>/TASK`` so finished
     # BT noise (kfa55.com@..., 第一會所新片@... wrappers) is corralled

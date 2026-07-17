@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import random
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -467,17 +468,29 @@ class PikPakService:
                 self._folder_cache.clear()
 
     async def _call(self, op):
-        """Run ``await op(client)`` with one auto-retry when PikPak's
-        server says our refresh token has been invalidated by another
-        session. Concurrent callers all converge on a single re-login
-        through ``_ensure``'s lock, so the retry doesn't fan out into
-        N parallel logins.
+        """Run ``await op(client)`` with two independent recovery paths:
+
+        1. Refresh token invalidated by another session
+           (``_is_invalid_token_error``) → drop the cached client, re-login
+           once through ``_ensure``'s lock, and re-run. Unchanged from
+           before.
+        2. Operation throttled ("operation is too frequent",
+           ``_is_too_frequent_error``) → exponential backoff and retry, up
+           to ``settings.pikpak_throttle_max_retries`` times. A "too
+           frequent" is a PRE-EXECUTION rejection (the server hasn't
+           touched any file), so retrying even a move/rename/trash is
+           side-effect-safe. When retries are exhausted the error is
+           raised so the caller's loop-level backoff (archiver/tracker)
+           takes over.
+
+        Login itself is NOT wrapped by the throttle backoff: ``_ensure``
+        is called at the top of each loop iteration, outside the try, so a
+        throttled login surfaces through ``_ensure``'s own exponential
+        login cooldown instead of this loop.
 
         Each round-trip is wrapped in ``asyncio.wait_for`` with
         ``settings.pikpak_api_timeout_seconds`` so a hung connection
-        surfaces as a ``PikPakError`` instead of stalling the whole
-        sweep / archive loop. A timeout of 0 disables the cap (legacy
-        behaviour)."""
+        surfaces as a ``PikPakError``. A timeout of 0 disables the cap."""
         timeout = float(settings.pikpak_api_timeout_seconds or 0)
 
         async def _run(c):
@@ -490,19 +503,37 @@ class PikPakService:
                     ) from exc
             return await op(c)
 
-        client = await self._ensure()
-        try:
-            return await _run(client)
-        except Exception as exc:  # noqa: BLE001
-            if not _is_invalid_token_error(exc):
-                raise
-            logger.warning(
-                "PikPak refresh token invalidated by another session "
-                "(%s); re-logging in", exc,
-            )
-            await self._drop_for_relogin(client)
+        max_retries = max(0, int(settings.pikpak_throttle_max_retries))
+        base = max(0.0, float(settings.pikpak_throttle_base_seconds))
+        cap = max(0.0, float(settings.pikpak_throttle_max_seconds))
+
+        attempt = 0
+        while True:
             client = await self._ensure()
-            return await _run(client)
+            try:
+                return await _run(client)
+            except Exception as exc:  # noqa: BLE001
+                if _is_invalid_token_error(exc):
+                    logger.warning(
+                        "PikPak refresh token invalidated by another "
+                        "session (%s); re-logging in", exc,
+                    )
+                    await self._drop_for_relogin(client)
+                    client = await self._ensure()
+                    return await _run(client)
+                if _is_too_frequent_error(exc) and attempt < max_retries:
+                    delay = min(base * (2 ** attempt), cap) + random.uniform(
+                        0, base
+                    )
+                    logger.warning(
+                        "PikPak throttled (%s); backoff %.1fs "
+                        "(retry %d/%d)",
+                        exc, delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                raise
 
     async def login(
         self, username: str | None = None, password: str | None = None

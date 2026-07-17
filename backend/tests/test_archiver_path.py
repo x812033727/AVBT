@@ -133,3 +133,28 @@ async def test_resolve_by_code_no_studio_falls_back_to_archive_folder(tmp_path, 
     await engine.dispose()
     from app.config import settings
     assert path == f"{settings.pikpak_archive_folder}/NOS-001"
+
+
+async def test_studio_id_alias_merges_duplicate_maker_pages(tmp_path, monkeypatch):
+    # JavBus runs two maker pages for the same studio (ROCKET id=ce and
+    # its katakana twin ロケット id=3p9), assigning each movie to one of
+    # them arbitrarily. The id alias must land 3p9 details in the
+    # tracked ce folder instead of forking a ロケット sibling.
+    from app.models import TrackedListing
+    await _seed(tmp_path, monkeypatch, [
+        TrackedListing(kind="studio", id="ce", name="ROCKET"),
+    ])
+    arch._tracked_name_cache.clear()
+    d = _detail("RCTD-725", studio=("ロケット", "3p9"), series=None)
+    p = await arch._studio_series_path(d, "RCTD-725")
+    assert p == "AVBT/製作商/ROCKET/未分類/RCTD-725"
+
+
+async def test_studio_name_alias_covers_untracked_twin(tmp_path, monkeypatch):
+    # Same twin pages but the canonical listing isn't tracked — the name
+    # alias is the fallback that keeps both spellings in one folder.
+    await _seed(tmp_path, monkeypatch, [])
+    arch._tracked_name_cache.clear()
+    d = _detail("RCTD-726", studio=("ロケット", "3p9"), series=None)
+    p = await arch._studio_series_path(d, "RCTD-726")
+    assert p == "AVBT/製作商/ROCKET/未分類/RCTD-726"

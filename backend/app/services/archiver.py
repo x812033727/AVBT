@@ -1515,6 +1515,42 @@ async def _cleanup_loose_parents_if_dirty(files: list[dict]) -> None:
         logger.warning("flattened canonical cleanup failed: %s", exc)
 
 
+async def _run_finalize_batch(
+    targets: dict[str, str], concurrency: int
+) -> set[str]:
+    """Finalize each DISTINCT code concurrently, bounded by ``concurrency``.
+
+    ``targets`` maps code → its archive folder_id. Returns the set of codes
+    whose finalize returned truthy. A per-code failure/timeout is isolated
+    (returns that code as not-finalized) and never aborts the batch —
+    mirroring the old inline per-row try/except. Workers take only
+    primitives (code, folder_id); ``run_finalize`` touches no DB session,
+    so this composes safely with a single-threaded caller session."""
+    if not targets:
+        return set()
+    from .finalize import run_finalize  # avoid cycle
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(code: str, target_id: str) -> tuple[str, bool]:
+        async with sem:
+            try:
+                async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
+                    ok = await run_finalize(
+                        pikpak_service, code, folder_id=target_id
+                    )
+                return code, bool(ok)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("finalize %s failed: %s", code, exc)
+                return code, False
+
+    results = await asyncio.gather(
+        *(_one(c, t) for c, t in targets.items()),
+        return_exceptions=True,
+    )
+    return {r[0] for r in results if isinstance(r, tuple) and r[1]}
+
+
 async def archive_once() -> int:
     """Run one archive pass. Returns the number of files moved."""
     state.last_error = ""
@@ -1611,6 +1647,8 @@ async def archive_once() -> int:
         notifications: list[str] = []
         shell_trashed = 0
         moved_codes: list[str] = []
+        finalize_targets: dict[str, str] = {}
+        moved_rows_by_code: dict[str, list] = {}
         for row in rows:
             if not _safe_code(row.code):
                 continue
@@ -1643,22 +1681,14 @@ async def archive_once() -> int:
                 row.archived_at = datetime.utcnow()
                 moved += 1
                 moved_codes.append(row.code)
-                # Best-effort finalize: keep only canonical videos in the
-                # 番號 folder, purge junk. The PikPak move above is async
-                # server-side, so the wrapper may not have landed yet —
-                # failure just leaves finalized=False and the bounded
-                # retry pass (or the manual button) picks it up.
-                try:
-                    from .finalize import run_finalize  # avoid cycle
-
-                    async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
-                        if await run_finalize(
-                            pikpak_service, row.code, folder_id=target_id
-                        ):
-                            row.finalized = True
-                            row.finalized_at = datetime.utcnow()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("finalize %s failed: %s", row.code, exc)
+                # Defer finalize to a bounded-concurrent batch after all
+                # moves (Phase B). Record the target per DISTINCT code and
+                # which successfully-moved rows share it, so Phase C flags
+                # ONLY moved rows (a re-download's failed-move sibling must
+                # not be marked finalized). run_finalize is best-effort;
+                # the bounded retry pass / manual button cover misses.
+                finalize_targets[row.code] = target_id
+                moved_rows_by_code.setdefault(row.code, []).append(row)
                 notifications.append(
                     f"📦 已歸檔 `{row.code}` ({row.name or row.file_id}) → `{target_path}`"
                 )
@@ -1674,6 +1704,24 @@ async def archive_once() -> int:
                         f"⚠️ 歸檔失敗 `{row.code}` ({row.name or row.file_id}): {exc}",
                         event="archive_failed",
                     )
+
+        # Phase B: finalize each distinct moved code concurrently (bounded).
+        # Serial moves above guarantee every file has been asked to land
+        # before any finalize starts. Concurrent finalizes are safe even
+        # when codes share a 系列 parent folder: finalize only WRITES
+        # (moves keepers) into the parent, while every delete/trash and
+        # every move-settle stamp is confined to the per-code subtree, so
+        # no finalize ever mutates the shared parent destructively.
+        finalized_codes = await _run_finalize_batch(
+            finalize_targets, settings.archive_finalize_concurrency
+        )
+        # Phase C: back on the single caller session, flag finalized ONLY on
+        # rows that actually moved (archived=True) for a finalized code.
+        _now = datetime.utcnow()
+        for code in finalized_codes:
+            for row in moved_rows_by_code.get(code, []):
+                row.finalized = True
+                row.finalized_at = _now
 
         if moved or shell_trashed:
             await session.commit()

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     pikpak_archive_folder: str = "AVBT/已完成"
     archive_interval_seconds: int = 60
 
+    # Round-2 parallelization. Distinct-code finalize concurrency inside
+    # archive_once. 1 = serial (current behaviour); raise gradually only
+    # after the round-1 PikPak throttle backoff is validated in prod.
+    archive_finalize_concurrency: int = 1
+
     # Auto-sweep: in addition to the OfflineTaskLog-driven archive pass,
     # periodically scan the AVBT root for orphans dropped there outside
     # the backend (PikPak App / web manual adds, magnets handed straight
@@ -283,6 +288,9 @@ class Settings(BaseSettings):
     pcloud_transfer_concurrency: int = 3
     # 輪詢一個 pCloud 上傳任務狀態的間隔(秒)
     pcloud_poll_interval_seconds: int = 15
+    # Round-2 parallelization. Concurrent pCloud status polling per pass.
+    # 1 = serial (current). Raise gradually; pCloud has no per-call backoff.
+    pcloud_poll_concurrency: int = 1
     # 暫時性失敗(PikPak 連結逾時、pCloud 限流/下載失敗)自動重試:
     # 總嘗試次數上限(含首次)。1 = 關閉自動重試。
     pcloud_transfer_max_attempts: int = 3

@@ -355,65 +355,83 @@ class PCloudTransferQueue:
             ).all()
         if not rows:
             return
-        for rid, upload_id, delete_source, pikpak_fid, pikpak_name in rows:
-            try:
-                p = await pcloud_service.upload_progress(int(upload_id))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("pCloud progress poll failed for %s: %s", rid, exc)
-                continue
-            status = p.get("status")
-            if status == "downloading":
-                async with SessionLocal() as session:
-                    await session.execute(
-                        update(PCloudTransfer)
-                        .where(PCloudTransfer.id == rid)
-                        .values(
-                            bytes_downloaded=int(p.get("downloaded") or 0),
-                            message=f"pCloud 下載中 ({p.get('downloaded',0)}/{p.get('size',0)})",
+        conc = max(1, int(settings.pcloud_poll_concurrency or 1))
+        sem = asyncio.Semaphore(conc)
+
+        async def _poll_one(rid, upload_id, delete_source, pikpak_fid, pikpak_name):
+            async with sem:
+                try:
+                    p = await pcloud_service.upload_progress(int(upload_id))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("pCloud progress poll failed for %s: %s", rid, exc)
+                    return
+                status = p.get("status")
+                if status == "downloading":
+                    async with SessionLocal() as session:
+                        await session.execute(
+                            update(PCloudTransfer)
+                            .where(PCloudTransfer.id == rid)
+                            .values(
+                                bytes_downloaded=int(p.get("downloaded") or 0),
+                                message=f"pCloud 下載中 ({p.get('downloaded',0)}/{p.get('size',0)})",
+                            )
                         )
+                        await session.commit()
+                elif status == "done":
+                    async with SessionLocal() as session:
+                        await session.execute(
+                            update(PCloudTransfer)
+                            .where(PCloudTransfer.id == rid)
+                            .values(
+                                pcloud_file_id=int(p.get("file_id") or 0),
+                                status="done",
+                                message="完成",
+                                finished_at=datetime.utcnow(),
+                                bytes_downloaded=int(
+                                    (p.get("metadata") or {}).get("size") or 0
+                                ),
+                            )
+                        )
+                        await session.commit()
+                    if delete_source and pikpak_fid:
+                        try:
+                            await pikpak_service.trash_files([pikpak_fid])
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "post-transfer PikPak trash failed for %s: %s",
+                                pikpak_fid, exc,
+                            )
+                    # Per-file — noisy for big folder batches, so the event
+                    # defaults OFF (notify_transfer_done).
+                    webhook_queue.enqueue_nowait(
+                        f"✅ pCloud 傳輸完成:{pikpak_name or rid}",
+                        event="transfer_done",
                     )
-                    await session.commit()
-            elif status == "done":
-                async with SessionLocal() as session:
-                    await session.execute(
-                        update(PCloudTransfer)
-                        .where(PCloudTransfer.id == rid)
-                        .values(
-                            pcloud_file_id=int(p.get("file_id") or 0),
-                            status="done",
-                            message="完成",
-                            finished_at=datetime.utcnow(),
-                            bytes_downloaded=int(
-                                (p.get("metadata") or {}).get("size") or 0
-                            ),
-                        )
+                elif status == "failed":
+                    # Often a CDN-side fetch hiccup — resubmitting from
+                    # scratch (fresh PikPak link) frequently succeeds.
+                    await self._fail_or_retry(
+                        rid, f"pCloud 下載失敗: {p.get('error') or 'unknown'}"
                     )
-                    await session.commit()
-                if delete_source and pikpak_fid:
-                    try:
-                        await pikpak_service.trash_files([pikpak_fid])
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "post-transfer PikPak trash failed for %s: %s",
-                            pikpak_fid, exc,
-                        )
-                # Per-file — noisy for big folder batches, so the event
-                # defaults OFF (notify_transfer_done).
-                webhook_queue.enqueue_nowait(
-                    f"✅ pCloud 傳輸完成:{pikpak_name or rid}",
-                    event="transfer_done",
-                )
-            elif status == "failed":
-                # Often a CDN-side fetch hiccup — resubmitting from
-                # scratch (fresh PikPak link) frequently succeeds.
-                await self._fail_or_retry(
-                    rid, f"pCloud 下載失敗: {p.get('error') or 'unknown'}"
-                )
-            elif status == "unknown":
-                # pCloud has no record — assume lost and resubmit.
-                await self._fail_or_retry(
-                    rid, "pCloud 找不到此上傳任務(可能已逾時或被取消)"
-                )
+                elif status == "unknown":
+                    # pCloud has no record — assume lost and resubmit.
+                    await self._fail_or_retry(
+                        rid, "pCloud 找不到此上傳任務(可能已逾時或被取消)"
+                    )
+
+        results = await asyncio.gather(
+            *(
+                _poll_one(rid, upload_id, delete_source, pikpak_fid, pikpak_name)
+                for rid, upload_id, delete_source, pikpak_fid, pikpak_name in rows
+            ),
+            return_exceptions=True,
+        )
+        # return_exceptions isolates one row's failure from the pass, but
+        # must not silence it: before this became concurrent, an uncaught
+        # row exception surfaced via _poll_loop's logger. Keep that signal.
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("pCloud poll row raised: %s", r)
 
     async def _mark(self, transfer_id: int, status: str, message: str) -> None:
         async with SessionLocal() as session:

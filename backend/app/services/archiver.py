@@ -237,6 +237,20 @@ async def _detail_for_archive(
 _tracked_name_cache: dict[tuple[str, str], tuple[str, float]] = {}
 _TRACKED_NAME_TTL = 600.0
 
+# JavBus also runs OUTRIGHT DUPLICATE maker pages for the same studio —
+# different listing ids, so the tracked-name-by-id defence above can't
+# see them (e.g. ROCKET id=ce vs its katakana twin ロケット id=3p9, each
+# movie assigned to one page arbitrarily; live fork merged 2026-07-17).
+# Alias the duplicate page id to the canonical one BEFORE the tracked
+# lookup so both pages resolve to the same folder. The name map covers
+# the untracked fallback for the same twins.
+_STUDIO_ID_ALIASES: dict[str, str] = {
+    "3p9": "ce",  # ロケット → ROCKET
+}
+_STUDIO_NAME_ALIASES: dict[str, str] = {
+    "ロケット": "ROCKET",
+}
+
 
 async def _tracked_listing_name(kind: str, listing_id: str) -> str:
     """Current TrackedListing name for ``(kind, listing_id)``, '' when the
@@ -273,13 +287,15 @@ async def _studio_series_dir(detail: MovieDetail) -> str | None:
     studio = getattr(detail, "studio", None)
     if not (studio and (getattr(studio, "name", "") or getattr(studio, "id", ""))):
         return None
+    studio_id = getattr(studio, "id", "") or ""
+    studio_id = _STUDIO_ID_ALIASES.get(studio_id, studio_id)
+    raw_name = studio.name or ""
     studio_name = (
-        await _tracked_listing_name("studio", getattr(studio, "id", "") or "")
-        or studio.name
-        or ""
+        await _tracked_listing_name("studio", studio_id)
+        or _STUDIO_NAME_ALIASES.get(raw_name, raw_name)
     )
     studio_safe = _safe_name(
-        studio_name, fallback=_safe_name(studio.id or "", fallback="unknown")
+        studio_name, fallback=_safe_name(studio_id, fallback="unknown")
     )
     series = getattr(detail, "series", None)
     if series and (getattr(series, "name", "") or getattr(series, "id", "")):

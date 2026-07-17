@@ -44,8 +44,12 @@ async def maker(tmp_path, monkeypatch):
     async def _noop_refresh(codes, **kw):
         return 0
 
+    async def _nothing(code, **kw):
+        return True
+
     monkeypatch.setattr(archiver, "_active_task_ids", no_active)
     monkeypatch.setattr(archiver, "_already_flattened", not_flat)
+    monkeypatch.setattr(archiver, "_orphan_has_nothing_landed", _nothing)
     monkeypatch.setattr(pp.presence_index, "refresh_codes", _noop_refresh)
     yield m
     await engine.dispose()
@@ -162,3 +166,43 @@ async def test_reaper_does_not_abandon_when_check_errors(maker, monkeypatch):
             select(OfflineTaskLog).where(OfflineTaskLog.code == "ERRDEAD-001")
         )).scalar_one()
         assert row.abandoned is False   # errored check → skipped, not abandoned
+
+
+async def test_reaper_does_not_abandon_when_something_landed(maker, monkeypatch):
+    # not flattened, but a per-code folder / task-wrapper exists → NOT dead.
+    async def _something(code, **kw):
+        return False
+
+    monkeypatch.setattr(archiver, "_orphan_has_nothing_landed", _something)
+    async with maker() as s:
+        s.add(_row(code="LANDED-001"))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with maker() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "LANDED-001")
+        )).scalar_one()
+        assert row.abandoned is False   # needs finalize, must keep retrying
+
+
+async def test_orphan_has_nothing_landed_real_paths(monkeypatch):
+    # Drive the real function: a per-code folder → not nothing (False);
+    # a check error → False by default, raises under strict.
+    async def resolve(code):
+        return "AVBT/製作商/S/Ser/" + code
+
+    monkeypatch.setattr(archiver, "_resolve_archive_path_by_code", resolve)
+
+    async def has_folder(path):
+        return "fid-123"
+
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", has_folder)
+    assert await archiver._orphan_has_nothing_landed("PERCODE-001") is False
+
+    async def boom(path):
+        raise RuntimeError("pikpak throttled")
+
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", boom)
+    assert await archiver._orphan_has_nothing_landed("ERR-002") is False
+    with pytest.raises(RuntimeError):
+        await archiver._orphan_has_nothing_landed("ERR-002", strict=True)

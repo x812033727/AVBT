@@ -1308,8 +1308,16 @@ async def test_reap_failed_checks_cool_down_and_free_the_cap(tmp_path, monkeypat
     async def flattened(code, **kw):
         return code == "MTM-013"
 
+    # The zombies are 3 days old with empty file_id, so they reach the
+    # abandon predicate; keep them "not nothing" (something still needs
+    # finalize) so this test stays about the cooldown/cap mechanic rather
+    # than dead-lettering them — and never hits the real PikPak check.
+    async def not_nothing(code, **kw):
+        return False
+
     monkeypatch.setattr(arch, "_active_task_ids", no_active)
     monkeypatch.setattr(arch, "_already_flattened", flattened)
+    monkeypatch.setattr(arch, "_orphan_has_nothing_landed", not_nothing)
     # Pass 1: the cap is spent on the older zombies.
     assert await arch._reap_orphan_rows() == 0
     # Pass 2: zombies are cooling down — the genuine orphan gets a slot.

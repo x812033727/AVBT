@@ -80,7 +80,7 @@ if not await _already_flattened(row.code):
 
 - 純 DB flag,零檔案操作。
 - 只放棄「task 已結束 + 無檔 landed(file_id 空)+ 不在歸檔目的地 + 超過 24h」的列——四重條件。
-- `_already_flattened` 閘門 + abandon 前的 `refresh_codes`(fresh 快照)+ strict(出錯不放棄)三者，把「誤放棄已 landed 列」的風險壓到極低(僅剩 PikPak 列表最終一致性的極端邊角)；且誤判可回復(手動重送建新列，檔案本身零損失)。
+- `not _already_flattened` 本身**不是**放棄訊號——它對「有 per-code 資料夾(canonical 或 BT 命名)」「檔案還卡在下載 wrapper 裡」這兩種仍待 finalize 的狀態也回傳 True。真正放棄前還需通過額外的正向檢查 `_orphan_has_nothing_landed`(確認 per-code 資料夾 canonical/BT 命名皆不存在、且任何地方都沒有檔案，包含 wrapper)；一列「已 landed 但未 finalize 完成」的 orphan(per-code 垃圾資料夾 MUDR-349/358、或 wrapper 內檔案 OYCVR-058)因此會被歸類為「待 finalize」而持續重試，不會被放棄。加上 abandon 前的 `refresh_codes`(fresh 快照)+ strict(出錯不放棄)，殘餘的誤放棄風險僅剩 PikPak 列表最終一致性的極端邊角，由 24h 寬限 + strict 出錯即跳過吸收；且誤判可回復(手動重送建新列，檔案本身零損失)。
 - 若之後重送磁力,`offline_download` 會建**新的** OfflineTaskLog 列照常處理,不受舊列 abandoned 影響。
 - abandoned 純粹是「停止重試」,不刪不動任何雲端資料;誤判最壞後果=一個死 code 不再自動重試(可重送)。
 

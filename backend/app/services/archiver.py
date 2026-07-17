@@ -1307,31 +1307,34 @@ async def _reap_orphan_rows() -> int:
                     from .pikpak_presence import presence_index  # avoid cycle
                     await presence_index.refresh_codes([row.code])
                     if not await _already_flattened(row.code, strict=True):
-                        # Genuinely-dead orphan: task gone (checked above),
-                        # the download never produced a file (file_id
-                        # empty), it isn't at the destination, and it's
-                        # older than the grace — a late arrival is
-                        # implausible. Dead-letter it so the finalize retry
-                        # pass stops re-listing it every ~10 min for the
-                        # rest of the reap window. Pure DB flag.
+                        # Not flattened, but that alone is NOT "dead": a
+                        # per-code folder or task-wrapper files are also
+                        # "not flattened" and still need finalize
+                        # (MUDR-349/358, OYCVR-058). Only abandon when a
+                        # positive check confirms the code has NOTHING on
+                        # PikPak. strict=True → a check error raises into
+                        # the except below (skip + cooldown), never abandons.
                         if (
                             not row.archived
                             and not (row.file_id or "")
                             and row.created_at
                             < datetime.utcnow() - _ABANDON_GRACE
+                            and await _orphan_has_nothing_landed(
+                                row.code, strict=True
+                            )
                         ):
                             row.abandoned = True
                             row.message = (
-                                "abandoned: task gone, no file landed"
+                                "abandoned: task gone, nothing on PikPak"
                             )
                             abandoned += 1
                             logger.info(
                                 "orphan reap abandoned %s (task %s gone, "
-                                "no file landed, >%dh old)",
+                                "nothing on PikPak, >%dh old)",
                                 row.code, row.task_id or "?",
                                 int(_ABANDON_GRACE.total_seconds() // 3600),
                             )
-                        continue  # nothing landed (or needs real finalize)
+                        continue  # not flattened → abandoned or needs finalize
             except TimeoutError:
                 logger.warning(
                     "orphan reap %s timed out after %ss",
@@ -1414,6 +1417,42 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
     # the cleanup is idempotent.
     await _cleanup_loose_parents_if_dirty(result["files"])
     return True
+
+
+async def _orphan_has_nothing_landed(code: str, *, strict: bool = False) -> bool:
+    """True only when ``code`` has NOTHING on PikPak: no per-code archive
+    folder (canonical path or BT-named) and no video files anywhere (not
+    flattened in the 系列 folder, not sitting in the download wrapper).
+
+    This is the ONLY orphan state that is safe to dead-letter. A per-code
+    folder (junk run_finalize cannot clean — MUDR-349/358) or files still
+    in the task wrapper (OYCVR-058) mean real finalize work remains and the
+    finalize retry pass must keep retrying them — abandoning would strand
+    them terminally. Deliberately narrower than ``not _already_flattened``,
+    which is also True for those needs-finalize states. (It re-does the
+    same folder/file lookups as _already_flattened; kept separate for
+    clarity — the duplicate listing only runs for an abandon candidate
+    that already passed the cheap DB gates, at most _REAP_CHECK_LIMIT/pass.)
+
+    ``strict`` re-raises a check error so the caller skips the row rather
+    than making a terminal abandon decision on unreliable data."""
+    from .finalize import presence_code_folders  # avoid cycle
+    from .video_count import files_for_code  # avoid cycle
+
+    try:
+        path = await _resolve_archive_path_by_code(code)
+        if await pikpak_service.lookup_folder_id(path):
+            return False  # per-code folder exists → needs finalize
+        if await presence_code_folders(pikpak_service, code):
+            return False  # BT-named per-code folder → needs finalize
+        result = await files_for_code(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("nothing-landed check %s failed: %s", code, exc)
+        if strict:
+            raise
+        return False  # unknown → not confirmed-empty → don't abandon
+    # Files anywhere (flattened OR in the task wrapper) → not nothing.
+    return not (result.get("ok") and result.get("files"))
 
 
 async def _cleanup_loose_parents_if_dirty(files: list[dict]) -> None:

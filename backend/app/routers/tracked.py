@@ -343,11 +343,15 @@ async def untrack(
 
 
 @router.post("/{kind}/{slug:path}/check/stream")
-async def check_now_stream(kind: str, slug: str):
+async def check_now_stream(kind: str, slug: str, deep: bool = False):
     """Streaming variant of ``/check`` — yields ``start`` / ``progress``
     / ``done`` events around the page-1 and missing-scan phases so the
     UI button can show "page 1…" / "掃描缺漏…" instead of a silent spinner
-    while the catalog walk runs."""
+    while the catalog walk runs.
+
+    ``deep=true`` forces a full JavBus catalog re-walk even when the
+    persisted catalog looks current — the user-triggered escape hatch
+    for mid-list changes the page-1 freshness probe can't see."""
     # Targeted: drop only THIS listing's L1 cache (+ the cheap aggregate
     # result caches) and flag presence stale. Other listings' state is
     # untouched — a single-row check must not force everyone else's
@@ -357,7 +361,9 @@ async def check_now_stream(kind: str, slug: str):
 
     async def gen():
         try:
-            async for event in tracker.check_listing_stream(kind, slug, force=True):
+            async for event in tracker.check_listing_stream(
+                kind, slug, force=True, deep=deep
+            ):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
@@ -366,17 +372,18 @@ async def check_now_stream(kind: str, slug: str):
 
 
 @router.post("/{kind}/{slug:path}/check", response_model=CheckListingResult)
-async def check_now(kind: str, slug: str):
+async def check_now(kind: str, slug: str, deep: bool = False):
     # User explicitly asked for a fresh check. Targeted invalidation
     # (this listing's L1 + aggregate results) plus a presence stale
     # flag so the missing scan sees the current state of the cloud.
     # ``force=True`` so a manual check always refreshes the missing
     # count (re-walking JavBus only when the persisted catalog is
     # stale) and is never silently skipped by the daily-cadence rule.
+    # ``deep=true`` forces the catalog re-walk regardless of freshness.
     missing_svc.invalidate_listing(kind, slug)
     missing_svc.presence_index.invalidate()
     return CheckListingResult(
-        **await tracker.check_listing(kind, slug, force=True)
+        **await tracker.check_listing(kind, slug, force=True, deep=deep)
     )
 
 

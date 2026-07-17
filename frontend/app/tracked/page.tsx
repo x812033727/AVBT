@@ -285,7 +285,7 @@ export default function TrackedPage() {
     }
   }
 
-  async function checkNow(it: TrackedListing) {
+  async function checkNow(it: TrackedListing, deep = false) {
     const key = keyOf(it);
     setCheckingKey(key);
     setCheckingPhase("page 1…");
@@ -300,7 +300,9 @@ export default function TrackedPage() {
       // "page 1…" → "掃描缺漏…" → "完成" instead of just showing a static
       // "檢查中" while the catalog walk runs in the background.
       await streamNdjson(
-        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/check/stream`,
+        `/api/tracked/${it.kind}/${encodeURIComponent(it.id)}/check/stream${
+          deep ? "?deep=true" : ""
+        }`,
         {},
         (event) => {
           if (event.type === "progress") {

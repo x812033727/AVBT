@@ -52,7 +52,7 @@ export default function TrackedList({
   lookupBusy: Set<string>;
   codeFiles: Map<string, PresenceCodeFiles>;
   codeFilesBusy: Set<string>;
-  onCheckNow: (it: TrackedListing) => void;
+  onCheckNow: (it: TrackedListing, deep?: boolean) => void;
   onToggleExpand: (it: TrackedListing) => void;
   onLookup: (code: string) => void;
   onLoadFiles: (code: string) => void;
@@ -107,7 +107,7 @@ export default function TrackedList({
             lookupBusy={lookupBusy}
             codeFiles={codeFiles}
             codeFilesBusy={codeFilesBusy}
-            onCheckNow={() => onCheckNow(it)}
+            onCheckNow={(deep?: boolean) => onCheckNow(it, deep)}
             onToggleExpand={() => onToggleExpand(it)}
             onLookup={onLookup}
             onLoadFiles={onLoadFiles}

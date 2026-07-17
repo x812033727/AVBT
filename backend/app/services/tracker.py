@@ -465,7 +465,7 @@ async def _read_row_snapshot(kind: str, slug: str) -> dict:
 
 
 async def check_listing(
-    kind: str, listing_id: str, *, force: bool = False
+    kind: str, listing_id: str, *, force: bool = False, deep: bool = False
 ) -> dict:
     """Check one tracked listing, update DB, notify and (optionally) auto-send.
 
@@ -474,6 +474,12 @@ async def check_listing(
     non-auto_send listings, that walk still happens (via
     ``_record_missing_count``) so the user gets a refreshed missing
     count even when the listing isn't auto-downloading.
+
+    ``deep=True`` bypasses ``catalog_is_current``'s skip-walk window and
+    forces a full JavBus catalog re-walk. This is the escape hatch for
+    the serve-stale blind spot: a mid-list change (a code added or
+    removed beyond page 1) is invisible to the page-1 freshness probe
+    and would otherwise reconcile only after the skip window lapses.
 
     Fire-and-forget on the missing scan: returns as soon as page-1 is
     done so the background tracker loop stays responsive even when a
@@ -491,7 +497,7 @@ async def check_listing(
     if p.had_baseline and p.new_codes:
         _maybe_fire_new_codes_webhook(kind, p.name, p.new_codes)
 
-    walk = await _needs_catalog_walk(kind, listing_id, p)
+    walk = True if deep else await _needs_catalog_walk(kind, listing_id, p)
 
     if p.auto_send:
         # One-pass enqueue:
@@ -541,7 +547,7 @@ async def check_listing(
 
 
 async def check_listing_stream(
-    kind: str, listing_id: str, *, force: bool = True
+    kind: str, listing_id: str, *, force: bool = True, deep: bool = False
 ) -> AsyncIterator[dict]:
     """Streaming variant of ``check_listing``: yields ``start`` /
     ``progress`` / ``done`` events around the same phases, and awaits
@@ -575,9 +581,11 @@ async def check_listing_stream(
     if p.had_baseline and p.new_codes:
         _maybe_fire_new_codes_webhook(kind, p.name, p.new_codes)
 
-    walk = await _needs_catalog_walk(kind, listing_id, p)
+    walk = True if deep else await _needs_catalog_walk(kind, listing_id, p)
     scan_msg = (
-        "走 JavBus catalog…" if walk else "以既有目錄重算缺漏…"
+        "深度重掃 JavBus catalog…" if deep
+        else "走 JavBus catalog…" if walk
+        else "以既有目錄重算缺漏…"
     )
 
     if p.auto_send:

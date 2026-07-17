@@ -79,7 +79,7 @@ export default function TrackedRow({
   lookupBusy: Set<string>;
   codeFiles: Map<string, PresenceCodeFiles>;
   codeFilesBusy: Set<string>;
-  onCheckNow: () => void;
+  onCheckNow: (deep?: boolean) => void;
   onToggleExpand: () => void;
   onLookup: (code: string) => void;
   onLoadFiles: (code: string) => void;
@@ -272,7 +272,7 @@ export default function TrackedRow({
           </label>
           <div className="flex gap-2">
             <button
-              onClick={onCheckNow}
+              onClick={() => onCheckNow()}
               disabled={checkDisabled}
               className="text-blue-300 hover:underline disabled:opacity-50"
               title={
@@ -284,6 +284,14 @@ export default function TrackedRow({
               }
             >
               {isChecking ? checkingPhase || "檢查中" : "立即檢查"}
+            </button>
+            <button
+              onClick={() => onCheckNow(true)}
+              disabled={checkDisabled}
+              className="text-blue-300/70 hover:underline disabled:opacity-50"
+              title="強制重爬整本 JavBus 目錄(忽略新鮮度快取)。列表中段有增刪、缺漏數看起來不對時用這個"
+            >
+              深掃
             </button>
             <button onClick={remove} className="text-red-300 hover:underline">
               取消追蹤

@@ -1024,6 +1024,11 @@ _REAP_RETRY_COOLDOWN = timedelta(hours=6)
 _REAP_CHECK_LIMIT = 5
 _reap_attempts: dict[int, datetime] = {}
 
+# A genuinely-dead orphan (no file ever landed) is dead-lettered instead
+# of re-tried for the whole reap window, but only after this grace so a
+# late-arriving download still gets its chance.
+_ABANDON_GRACE = timedelta(hours=24)
+
 
 async def _active_task_ids() -> set[str]:
     """Task ids that are still downloading (or otherwise not COMPLETE).
@@ -1065,6 +1070,7 @@ async def _finalize_retry_pass() -> int:
                 select(OfflineTaskLog)
                 .where(
                     OfflineTaskLog.finalized.is_(False),
+                    OfflineTaskLog.abandoned.is_(False),
                     or_(
                         # Normal path: sweep/archiver stamped the move.
                         (OfflineTaskLog.archived.is_(True))
@@ -1239,6 +1245,7 @@ async def _reap_orphan_rows() -> int:
                 select(OfflineTaskLog)
                 .where(
                     OfflineTaskLog.finalized.is_(False),
+                    OfflineTaskLog.abandoned.is_(False),
                     or_(
                         # Collecting orphan: file_id was never tracked, so
                         # the sweep's stamp path can't own this row.
@@ -1277,6 +1284,7 @@ async def _reap_orphan_rows() -> int:
         for rid in [k for k, v in _reap_attempts.items() if v < attempt_floor]:
             del _reap_attempts[rid]
         checked = 0
+        abandoned = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — not an orphan
@@ -1288,8 +1296,52 @@ async def _reap_orphan_rows() -> int:
             _reap_attempts[row.id] = datetime.utcnow()
             try:
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
-                    if not await _already_flattened(row.code):
-                        continue  # nothing landed (or needs real finalize)
+                    # Abandon is TERMINAL, so the flattened check must be a
+                    # fresh, reliable negative — not a stale-snapshot or a
+                    # swallowed-error False. Refresh this code's presence
+                    # first (a pre-sweep snapshot only knows the old
+                    # loose-file path — DVDMS-306; mirrors
+                    # _finalize_retry_pass) and use strict=True so a
+                    # transient check error raises into the except below
+                    # (skip + cooldown) instead of abandoning a real row.
+                    from .pikpak_presence import presence_index  # avoid cycle
+                    await presence_index.refresh_codes([row.code])
+                    if not await _already_flattened(row.code, strict=True):
+                        # Not flattened, but that alone is NOT "dead": a
+                        # per-code folder or task-wrapper files are also
+                        # "not flattened" and still need finalize
+                        # (MUDR-349/358, OYCVR-058). Only abandon when a
+                        # positive check confirms the code has NOTHING on
+                        # PikPak. strict=True → a check error raises into
+                        # the except below (skip + cooldown), never abandons.
+                        if (
+                            not row.archived
+                            and not (row.file_id or "")
+                            and row.created_at
+                            < datetime.utcnow() - _ABANDON_GRACE
+                            and await _orphan_has_nothing_landed(
+                                row.code, strict=True
+                            )
+                        ):
+                            row.abandoned = True
+                            # "no archived copy found" not "nothing exists":
+                            # for a file_id-empty collecting orphan whose
+                            # video still sits in an un-moved download
+                            # wrapper (no file_id to resolve it), the checks
+                            # can't see it — the sweep still archives it
+                            # independently; only this row's tracking is
+                            # closed. Don't assert the stronger "nothing".
+                            row.message = (
+                                "abandoned: task gone, no archived copy found"
+                            )
+                            abandoned += 1
+                            logger.info(
+                                "orphan reap abandoned %s (task %s gone, "
+                                "no archived copy found, >%dh old)",
+                                row.code, row.task_id or "?",
+                                int(_ABANDON_GRACE.total_seconds() // 3600),
+                            )
+                        continue  # not flattened → abandoned or needs finalize
             except TimeoutError:
                 logger.warning(
                     "orphan reap %s timed out after %ss",
@@ -1317,12 +1369,12 @@ async def _reap_orphan_rows() -> int:
                 "archived but finalize never landed within the retry window"
                 if was_archived else "vanished before file_id was tracked",
             )
-        if done:
+        if done or abandoned:
             await session.commit()
     return done
 
 
-async def _already_flattened(code: str) -> bool:
+async def _already_flattened(code: str, *, strict: bool = False) -> bool:
     """True when ``code``'s video exists on PikPak even though it has no
     per-code archive folder — the sweep's flatten put ``CODE.ext``
     straight into the 製作商/<studio>/<系列> folder. Nothing per-code is
@@ -1346,6 +1398,8 @@ async def _already_flattened(code: str) -> bool:
         result = await files_for_code(code)
     except Exception as exc:  # noqa: BLE001
         logger.debug("flattened check %s failed: %s", code, exc)
+        if strict:
+            raise
         return False
     if not (result.get("ok") and result.get("files")):
         return False
@@ -1370,6 +1424,42 @@ async def _already_flattened(code: str) -> bool:
     # the cleanup is idempotent.
     await _cleanup_loose_parents_if_dirty(result["files"])
     return True
+
+
+async def _orphan_has_nothing_landed(code: str, *, strict: bool = False) -> bool:
+    """True only when ``code`` has NOTHING on PikPak: no per-code archive
+    folder (canonical path or BT-named) and no video files anywhere (not
+    flattened in the 系列 folder, not sitting in the download wrapper).
+
+    This is the ONLY orphan state that is safe to dead-letter. A per-code
+    folder (junk run_finalize cannot clean — MUDR-349/358) or files still
+    in the task wrapper (OYCVR-058) mean real finalize work remains and the
+    finalize retry pass must keep retrying them — abandoning would strand
+    them terminally. Deliberately narrower than ``not _already_flattened``,
+    which is also True for those needs-finalize states. (It re-does the
+    same folder/file lookups as _already_flattened; kept separate for
+    clarity — the duplicate listing only runs for an abandon candidate
+    that already passed the cheap DB gates, at most _REAP_CHECK_LIMIT/pass.)
+
+    ``strict`` re-raises a check error so the caller skips the row rather
+    than making a terminal abandon decision on unreliable data."""
+    from .finalize import presence_code_folders  # avoid cycle
+    from .video_count import files_for_code  # avoid cycle
+
+    try:
+        path = await _resolve_archive_path_by_code(code)
+        if await pikpak_service.lookup_folder_id(path):
+            return False  # per-code folder exists → needs finalize
+        if await presence_code_folders(pikpak_service, code):
+            return False  # BT-named per-code folder → needs finalize
+        result = await files_for_code(code)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("nothing-landed check %s failed: %s", code, exc)
+        if strict:
+            raise
+        return False  # unknown → not confirmed-empty → don't abandon
+    # Files anywhere (flattened OR in the task wrapper) → not nothing.
+    return not (result.get("ok") and result.get("files"))
 
 
 async def _cleanup_loose_parents_if_dirty(files: list[dict]) -> None:

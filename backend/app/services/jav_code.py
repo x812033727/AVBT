@@ -230,7 +230,12 @@ def safe_folder_name(name: str, *, fallback: str = "") -> str:
     archiver's sanitisation so frontends and missing-code services see
     the same path the archiver writes to."""
     cleaned = _PATH_UNSAFE.sub("", (name or "").strip()).strip()
-    return cleaned[:64] or fallback
+    # PikPak (Windows-style) rejects folder names ending in an ASCII dot
+    # ("The name contains illegal characters"), which wedged a whole
+    # series (働くドMさん.) — nothing under it could ever be archived.
+    # Full-width 。 stays: PikPak accepts it (港区女子。 exists).
+    cleaned = cleaned[:64].rstrip(". ")
+    return cleaned or fallback
 
 
 def normalize_code(s: str) -> str:

@@ -107,6 +107,15 @@ def test_safe_folder_name():
     assert safe_folder_name("   ") == ""
     assert safe_folder_name("///", fallback="fb") == "fb"
     assert len(safe_folder_name("x" * 200)) == 64
+    # Trailing ASCII dots are illegal folder names on PikPak — strip them
+    # (the 働くドMさん. series could never be archived). Full-width 。 is
+    # accepted by PikPak and must survive (港区女子。).
+    assert safe_folder_name("働くドMさん.") == "働くドMさん"
+    assert safe_folder_name("name..") == "name"
+    assert safe_folder_name("港区女子。") == "港区女子。"
+    assert safe_folder_name("...", fallback="fb") == "fb"
+    # Truncation to 64 must not leave a trailing dot behind either.
+    assert safe_folder_name("x" * 63 + "..") == "x" * 63
 
 
 def test_ext_and_is_video():

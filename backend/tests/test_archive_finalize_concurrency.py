@@ -243,3 +243,39 @@ async def test_archive_once_end_to_end_at_finalize_concurrency_two(tmp_path, mon
         rows = (await s.execute(select(OfflineTaskLog))).scalars().all()
         assert all(r.archived and r.finalized for r in rows)
     await engine.dispose()
+
+
+async def test_archive_skips_list_tasks_when_only_abandoned_pending(
+    tmp_path, monkeypatch
+):
+    # A dead-lettered stuck-"Saving" row keeps a stale nonempty file_id
+    # (#203); it must not hold the pending peek open — that would burn a
+    # PikPak list_tasks round-trip every 60s pass forever for rows nothing
+    # will ever match.
+    engine, m = await _archive_db(
+        tmp_path, monkeypatch, [_mkrow("DEAD-9", "stale-fid")]
+    )
+    async with m() as s:
+        row = (await s.execute(select(OfflineTaskLog))).scalars().one()
+        row.abandoned = True
+        await s.commit()
+    arch.state.enabled = True
+    monkeypatch.setattr(arch.settings, "pikpak_username", "u")
+    monkeypatch.setattr(arch, "_sweep_due", lambda: False)
+    monkeypatch.setattr(arch, "_legacy_sweep_due", lambda: False)
+
+    async def _noop(*a, **k):
+        return 0
+
+    monkeypatch.setattr(arch, "_finalize_retry_pass", _noop)
+    monkeypatch.setattr(arch, "_reap_orphan_rows", _noop)
+    called = {"n": 0}
+
+    async def fake_list_tasks(size=200):
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(arch.pikpak_service, "list_tasks", fake_list_tasks)
+    assert await arch.archive_once() == 0
+    assert called["n"] == 0   # pending peek short-circuits before list_tasks
+    await engine.dispose()

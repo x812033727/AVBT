@@ -1607,6 +1607,11 @@ async def archive_once() -> int:
             await session.execute(
                 select(func.count(OfflineTaskLog.id)).where(
                     OfflineTaskLog.archived.is_(False),
+                    # Dead-lettered stuck-"Saving" rows keep a stale
+                    # file_id (#203) — without this filter they hold
+                    # pending > 0 forever and every pass burns a
+                    # list_tasks round-trip for rows nothing will match.
+                    OfflineTaskLog.abandoned.is_(False),
                     OfflineTaskLog.file_id != "",
                     OfflineTaskLog.code != "",
                 )

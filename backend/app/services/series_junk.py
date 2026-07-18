@@ -74,10 +74,17 @@ def is_series_junk(
     if not is_video(name):
         if ext_of(name) not in CONTAINER_EXTS:
             return True
+        if size is None:
+            # Unknown-size container — assume legit (#220 lesson: PikPak
+            # can list real files with size=None; collapsing to 0 made a
+            # replacement look credible against a zero threshold).
+            return False
         if not video_bytes:
             return False  # the only copy of the work
-        return video_bytes >= (size or 0) * MIN_REPLACEMENT_FRACTION
-    return (size or 0) < JUNK_BYTES
+        return video_bytes >= size * MIN_REPLACEMENT_FRACTION
+    if size is None:
+        return False  # unknown-size video — assume legit, never junk
+    return size < JUNK_BYTES
 
 
 def _codes_with_video(entries: list) -> dict[str, int]:

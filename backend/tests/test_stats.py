@@ -52,6 +52,28 @@ async def test_dashboard_aggregates(tmp_path, monkeypatch):
                     phase="PHASE_TYPE_ERROR",
                     archived=False,
                 ),
+                # Abandoned (dead-lettered) rows must not dilute any of
+                # downloads_total / sent_per_day / archive_rate's
+                # denominator — one with an empty file_id, one with a
+                # stale nonempty file_id (post-#203, abandoned rows can
+                # carry one), both must be excluded everywhere below.
+                OfflineTaskLog(
+                    code="DEAD-001",
+                    magnet="magnet:?xt=urn:btih:" + "D" * 40,
+                    file_id="",
+                    phase="PHASE_TYPE_ERROR",
+                    archived=False,
+                    abandoned=True,
+                ),
+                OfflineTaskLog(
+                    code="DEAD-002",
+                    magnet="magnet:?xt=urn:btih:" + "E" * 40,
+                    file_id="stale-fid",
+                    phase="",
+                    message="Saving",
+                    archived=False,
+                    abandoned=True,
+                ),
                 TrackedListing(kind="star", id="abc", name="葵つかさ", new_count=3),
                 TrackedListing(kind="series", id="11pb", name="回胴錄", new_count=0),
                 PCloudTransfer(pikpak_file_id="f1", pikpak_name="n", status="done"),

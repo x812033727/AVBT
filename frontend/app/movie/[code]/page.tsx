@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import {
   type LucideIcon,
   Building2,
+  ChevronDown,
+  ChevronRight,
   CalendarDays,
   Clapperboard,
   Clock,
@@ -32,6 +34,7 @@ import {
 export default function MoviePage({ params }: { params: { code: string } }) {
   const code = decodeURIComponent(params.code);
   const [data, setData] = useState<MovieDetail | null>(null);
+  const [magnetsOpen, setMagnetsOpen] = useState(false);
   const [sentHashes, setSentHashes] = useState<Set<string>>(new Set());
   const [cloudCount, setCloudCount] = useState<VideoCountResult | null>(null);
   const [pcloudCount, setPcloudCount] = useState<VideoCountResult | null>(null);
@@ -337,15 +340,6 @@ export default function MoviePage({ params }: { params: { code: string } }) {
         </div>
       </div>
 
-      <section>
-        <h2 className="mb-2 text-lg font-semibold">磁力連結</h2>
-        <MagnetTable
-          magnets={data.magnets}
-          code={data.code}
-          sentHashes={sentHashes}
-        />
-      </section>
-
       {!!data.samples.length && (
         <section>
           <h2 className="mb-2 text-lg font-semibold">樣品圖</h2>
@@ -364,6 +358,34 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           </div>
         </section>
       )}
+
+      <section className="rounded-lg border border-border">
+        <button
+          type="button"
+          onClick={() => setMagnetsOpen((o) => !o)}
+          aria-expanded={magnetsOpen}
+          className="flex w-full items-center gap-2 px-4 py-3 text-left text-lg font-semibold transition hover:bg-muted/40"
+        >
+          {magnetsOpen ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" aria-hidden />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden />
+          )}
+          磁力連結
+          <span className="text-sm font-normal text-muted-foreground">
+            ({data.magnets.length})
+          </span>
+        </button>
+        {magnetsOpen && (
+          <div className="border-t border-border p-4">
+            <MagnetTable
+              magnets={data.magnets}
+              code={data.code}
+              sentHashes={sentHashes}
+            />
+          </div>
+        )}
+      </section>
 
       <VideoPlayerModal
         open={playing !== null}

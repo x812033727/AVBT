@@ -33,7 +33,7 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from ..config import (
     all_kind_paths,
@@ -139,8 +139,8 @@ def _phase1_file_leaf(original_name: str, code_leaf: str, ext: str) -> str:
     return f"{code_leaf}{ext}"
 
 
-async def _task_log_codes(file_ids: list[str]) -> dict[str, str]:
-    """Map wrapper/file ids → the 番號 they were submitted for.
+async def _task_log_codes(children: list[Any]) -> dict[str, str]:
+    """Map wrapper/file children → the 番號 they were submitted for.
 
     The OfflineTaskLog row is the authoritative identity of a landed
     wrapper: BT release names routinely defeat ``extract_jav_code``
@@ -151,27 +151,53 @@ async def _task_log_codes(file_ids: list[str]) -> dict[str, str]:
     ``file_id`` regardless of finalized/abandoned state — a dead-lettered
     row still names the code correctly. Later rows win (re-downloads).
 
+    Rows whose task died before a ``file_id`` was stamped (abandoned
+    before landing — live case r73: gdtm148hd ad shells with
+    ``file_id=''``) can never match by id; for those the stored task
+    title is matched by exact equality against the wrapper name instead.
+    PikPak names the wrapper folder after the task title, so equality
+    identifies the same torrent. A ``file_id`` match always beats a name
+    match.
+
     Returns ``{}`` on any DB error so the sweep degrades to pure
     name-parsing instead of failing outright."""
-    ids = [fid for fid in file_ids if fid]
-    if not ids:
+    ids = [c.id for c in children if c.id]
+    names = [c.name for c in children if c.name]
+    if not ids and not names:
         return {}
     try:
         async with SessionLocal() as session:
             rows = (
                 await session.execute(
                     select(
-                        OfflineTaskLog.file_id, OfflineTaskLog.code
+                        OfflineTaskLog.file_id,
+                        OfflineTaskLog.name,
+                        OfflineTaskLog.code,
                     ).where(
-                        OfflineTaskLog.file_id.in_(ids),
                         OfflineTaskLog.code != "",
+                        or_(
+                            OfflineTaskLog.file_id.in_(ids),
+                            OfflineTaskLog.name.in_(names),
+                        ),
                     ).order_by(OfflineTaskLog.created_at)
                 )
             ).all()
     except Exception as exc:  # noqa: BLE001
         logger.warning("task-log code lookup failed: %s", exc)
         return {}
-    return {file_id: code for file_id, code in rows}
+    by_file_id: dict[str, str] = {}
+    by_name: dict[str, str] = {}
+    for file_id, name, code in rows:
+        if file_id:
+            by_file_id[file_id] = code
+        if name:
+            by_name[name] = code
+    out: dict[str, str] = {}
+    for child in children:
+        code = by_file_id.get(child.id) or by_name.get(child.name)
+        if code:
+            out[child.id] = code
+    return out
 
 
 async def _phase1_migrate_from(
@@ -205,7 +231,7 @@ async def _phase1_migrate_from(
 
     # DB-first identity: the submitted code from OfflineTaskLog beats
     # whatever the BT release name parses to (see _task_log_codes).
-    db_codes = await _task_log_codes([c.id for c in children])
+    db_codes = await _task_log_codes(children)
 
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
     target_parent_cache: dict[str, str] = {}

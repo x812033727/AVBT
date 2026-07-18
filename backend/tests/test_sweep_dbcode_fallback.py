@@ -29,15 +29,22 @@ async def _maker(tmp_path, monkeypatch):
     return maker
 
 
-def _row(file_id: str, code: str, btih: str) -> OfflineTaskLog:
+def _row(
+    file_id: str, code: str, btih: str, name: str = ""
+) -> OfflineTaskLog:
     return OfflineTaskLog(
         code=code,
         magnet="magnet:?xt=urn:btih:" + btih * 40,
-        task_id=f"task-{file_id}",
+        task_id=f"task-{file_id or name}",
         file_id=file_id,
+        name=name,
         phase="PHASE_TYPE_COMPLETE",
         archived=False,
     )
+
+
+def _child(fid: str, name: str = "") -> SimpleNamespace:
+    return SimpleNamespace(id=fid, name=name)
 
 
 async def test_task_log_codes_maps_by_file_id(tmp_path, monkeypatch):
@@ -58,8 +65,39 @@ async def test_task_log_codes_maps_by_file_id(tmp_path, monkeypatch):
         )
         await session.commit()
 
-    out = await reorg._task_log_codes(["fid-1", "fid-2", "fid-3", ""])
+    out = await reorg._task_log_codes(
+        [_child("fid-1"), _child("fid-2"), _child("fid-3"), _child("")]
+    )
     assert out == {"fid-1": "OAE-155", "fid-2": "RCT-116"}
+
+
+async def test_task_log_codes_name_fallback_for_dead_letter_rows(
+    tmp_path, monkeypatch
+):
+    # Live case r73: task died before landing → row has file_id='' and
+    # the wrapper name (task title) parses to nothing. Exact name
+    # equality must still route it; a file_id match must beat a name
+    # match when both exist.
+    maker = await _maker(tmp_path, monkeypatch)
+    async with maker() as session:
+        session.add_all(
+            [
+                _row("", "GDTM-148", "A", name="gdtm148hd"),
+                _row("fid-x", "OAE-155", "B", name="shared-title"),
+                _row("", "ZZZ-999", "C", name="shared-title"),
+            ]
+        )
+        await session.commit()
+
+    out = await reorg._task_log_codes(
+        [
+            _child("wrapper-1", "gdtm148hd"),
+            _child("fid-x", "shared-title"),
+            _child("wrapper-2", "no-row-for-this"),
+        ]
+    )
+    # file_id wins for fid-x even though its name also matches a row.
+    assert out == {"wrapper-1": "GDTM-148", "fid-x": "OAE-155"}
 
 
 async def test_task_log_codes_empty_on_db_error(monkeypatch):
@@ -68,7 +106,7 @@ async def test_task_log_codes_empty_on_db_error(monkeypatch):
             raise RuntimeError("db down")
 
     monkeypatch.setattr(reorg, "SessionLocal", Boom())
-    assert await reorg._task_log_codes(["fid-1"]) == {}
+    assert await reorg._task_log_codes([_child("fid-1")]) == {}
 
 
 class _FakePikPak:
@@ -149,6 +187,23 @@ async def test_db_code_beats_wrong_name_parse(tmp_path, monkeypatch):
     (ev,) = events
     assert ev["action"] == "move"
     assert ev["target"] == "AVBT/製作商/S/未分類/RCT-116.avi"
+
+
+async def test_name_fallback_routes_dead_letter_wrapper(
+    tmp_path, monkeypatch
+):
+    # Row abandoned before landing: file_id='' but the stored task title
+    # equals the wrapper name. Name parsing yields nothing (glued
+    # suffix); the name-keyed row must still route it.
+    fake, events = await _run_migrate(
+        tmp_path,
+        monkeypatch,
+        [_file("fid-new", "gdtm148hd.mp4")],
+        [_row("", "GDTM-148", "A", name="gdtm148hd.mp4")],
+    )
+    (ev,) = events
+    assert ev["action"] == "move"
+    assert ev["target"] == "AVBT/製作商/S/未分類/GDTM-148.mp4"
 
 
 async def test_no_row_keeps_existing_behaviour(tmp_path, monkeypatch):

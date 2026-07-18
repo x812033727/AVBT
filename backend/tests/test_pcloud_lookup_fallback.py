@@ -124,3 +124,45 @@ async def test_ensure_path_exact_match_preferred_over_twin(monkeypatch):
 
     result = await svc.ensure_path("ABC")
     assert result == 1
+
+
+async def test_concurrent_ensure_path_twins_do_not_fork():
+    """Two concurrent callers with folder_key-equal spellings must not
+    each create a folder (TOCTOU). The _ensure_lock serialises the walk
+    so the second re-lists, twin-matches the first's folder, and reuses
+    it — one folder, one create."""
+    import asyncio
+
+    svc = PCloudService()
+    children: list = []          # shared "server state" at parent 0
+    next_id = {"n": 100}
+
+    async def list_files(parent_id="0", size=0):
+        # Returns current state synchronously (no await) so both callers
+        # can observe it before either's slow create completes.
+        return list(children)
+
+    async def fake_call(method, params=None):
+        assert method == "createfolderifnotexists"
+        name = params["name"]
+        # Yield BEFORE appending so a lock-free second caller lists the
+        # still-empty parent and forks; the lock must prevent that.
+        await asyncio.sleep(0.01)
+        existing = next((c for c in children if c.name == name), None)
+        if existing is not None:          # pCloud dedups EXACT names only
+            return {"metadata": {"folderid": int(existing.id)}}
+        fid = next_id["n"]
+        next_id["n"] += 1
+        children.append(_folder(fid, name))
+        return {"metadata": {"folderid": fid}}
+
+    svc.list_files = list_files
+    svc._call = fake_call
+
+    a, b = await asyncio.gather(
+        svc.ensure_path("新人NO.1STYLE"),
+        svc.ensure_path("新人NO.1 STYLE"),   # folder_key-equal twin
+    )
+    assert a == b                            # both resolved to one folder
+    folders = [c for c in children if c.kind == "folder"]
+    assert len(folders) == 1                 # exactly one create happened

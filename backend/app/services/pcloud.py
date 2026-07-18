@@ -98,6 +98,10 @@ class PCloudService(PCloudOrganizeMixin):
         self._lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = None
         self._client_lock = asyncio.Lock()
+        # Serialises ensure_path's check-then-create walk. Must be its
+        # OWN lock, never self._lock — _call/list_files re-enter that one
+        # and asyncio.Lock is not reentrant (would deadlock).
+        self._ensure_lock = asyncio.Lock()
 
     # ---------- shared HTTP client ----------
     # One keep-alive pool per process (same pattern as the JavBus
@@ -882,35 +886,44 @@ class PCloudService(PCloudOrganizeMixin):
         before falling back to ``createfolderifnotexists``. pCloud's own
         dedup there only matches by exact name, same as the bug this
         guards against, so skipping the check would still fork a sibling
-        for a drifted/legacy name instead of reusing it."""
+        for a drifted/legacy name instead of reusing it.
+
+        The check and the create are separated by awaits, so two
+        concurrent callers with drifted spellings (organize jobs run as
+        fire-and-forget tasks, transfer endpoints call this too) both
+        miss the twin-match and both create — forking the twin this
+        method exists to prevent (TOCTOU). Serialise the whole walk so
+        the second caller re-lists after the first's create and reuses
+        it, mirroring PikPak's #181 _create_lock. Call volume is low."""
         path = (path or "").strip()
         if not path or path == "/":
             return 0
         segments = [s for s in path.split("/") if s]
-        parent_id = 0
-        for seg in segments:
-            try:
-                children = await self.list_files(str(parent_id))
-            except PCloudError:
-                children = []
-            match = self._find_folder(children, seg)
-            if match is not None:
+        async with self._ensure_lock:
+            parent_id = 0
+            for seg in segments:
                 try:
-                    parent_id = int(match.id)
-                    continue
-                except (TypeError, ValueError):
-                    pass  # fall through and create instead
-            data = await self._call(
-                "createfolderifnotexists",
-                {"folderid": parent_id, "name": seg},
-            )
-            meta = data.get("metadata") or {}
-            try:
-                parent_id = int(meta.get("folderid", 0))
-            except (TypeError, ValueError) as exc:
-                raise PCloudError(
-                    f"pCloud 無法建立或解析資料夾: {seg} (path={path})"
-                ) from exc
+                    children = await self.list_files(str(parent_id))
+                except PCloudError:
+                    children = []
+                match = self._find_folder(children, seg)
+                if match is not None:
+                    try:
+                        parent_id = int(match.id)
+                        continue
+                    except (TypeError, ValueError):
+                        pass  # fall through and create instead
+                data = await self._call(
+                    "createfolderifnotexists",
+                    {"folderid": parent_id, "name": seg},
+                )
+                meta = data.get("metadata") or {}
+                try:
+                    parent_id = int(meta.get("folderid", 0))
+                except (TypeError, ValueError) as exc:
+                    raise PCloudError(
+                        f"pCloud 無法建立或解析資料夾: {seg} (path={path})"
+                    ) from exc
         return parent_id
 
     async def lookup_path(self, path: str) -> int | None:

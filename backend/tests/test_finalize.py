@@ -204,9 +204,9 @@ class FakeSvc:
         return self.settled
 
 
-async def _collect(svc, code, folder_id, *, dry_run):
+async def _collect(svc, code, folder_id, *, dry_run, **kw):
     return [e async for e in finalize_code_folder_stream(
-        svc, code, folder_id=folder_id, dry_run=dry_run)]
+        svc, code, folder_id=folder_id, dry_run=dry_run, **kw)]
 
 
 def _wrapper_graph():
@@ -326,7 +326,8 @@ async def test_ad_shell_folder_is_trashed_and_row_left_for_reaper():
                  _folder("Sample", "smp")],
         "smp": [_file("screen1.jpg", "s1", 1)],
     })
-    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False,
+                            allow_shell_trash=True)
     assert svc.trashed == ["root"]
     assert not svc.purged
     done = events[-1]["result"]
@@ -334,13 +335,15 @@ async def test_ad_shell_folder_is_trashed_and_row_left_for_reaper():
     svc2 = FakeSvc({
         "root": [_file("screens.jpg", "s", 2)],
     })
-    assert await run_finalize(svc2, "MIDV-001", folder_id="root") is None
+    assert await run_finalize(svc2, "MIDV-001", folder_id="root",
+                              allow_shell_trash=True) is None
     assert svc2.trashed == ["root"]
 
 
 async def test_ad_shell_dry_run_touches_nothing():
     svc = FakeSvc({"root": [_file("screens.jpg", "s", 2)]})
-    events = await _collect(svc, "MIDV-001", "root", dry_run=True)
+    events = await _collect(svc, "MIDV-001", "root", dry_run=True,
+                            allow_shell_trash=True)
     assert not svc.trashed and not svc.purged
     assert events[-1]["result"]["no_video"] is True
 
@@ -420,7 +423,7 @@ async def test_finalize_retry_pass_marks_row(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         calls.append(code)
         return {"errors": 0}
 
@@ -455,7 +458,7 @@ async def test_finalize_retry_skips_still_downloading_task(tmp_path, monkeypatch
 
     calls = []
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         calls.append(code)
         return {"errors": 0}
 
@@ -483,7 +486,7 @@ async def test_finalize_retry_fails_closed_without_task_list(tmp_path, monkeypat
                        created_at=now - timedelta(hours=1)),
     ])
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         raise AssertionError("must not finalize when task list is unknown")
 
     async def boom():
@@ -542,7 +545,7 @@ async def test_finalize_retry_marks_flattened_layout_row(tmp_path, monkeypatch):
                        created_at=now - timedelta(hours=1)),
     ])
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         return None  # 找不到歸檔資料夾
 
     async def no_active():
@@ -626,7 +629,7 @@ async def test_finalize_retry_waits_out_settle_grace(tmp_path, monkeypatch):
                        created_at=now),  # just submitted — inside grace
     ])
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         raise AssertionError("must not finalize inside the settle grace")
 
     async def no_active():
@@ -833,7 +836,7 @@ async def test_finalize_retry_fails_closed_without_presence(tmp_path, monkeypatc
                        archived=True, archived_at=now, finalized=False),
     ])
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         raise AssertionError("must not finalize when presence is stale")
 
     async def no_active():
@@ -875,7 +878,7 @@ async def test_finalize_retry_row_timeout_does_not_freeze_pass(tmp_path, monkeyp
                        archived=True, archived_at=now, finalized=False),
     ])
 
-    async def run(svc, code, *, folder_id=None):
+    async def run(svc, code, *, folder_id=None, **_kw):
         if code == "AAA-001":
             await asyncio.sleep(30)  # simulated hung mutation
         return {"errors": 0}
@@ -924,7 +927,7 @@ async def test_retry_pass_refreshes_only_this_pass_codes(tmp_path, monkeypatch):
         forced.append(force)
         return set()
 
-    async def run(svc, code, *, folder_id=None):
+    async def run(svc, code, *, folder_id=None, **_kw):
         return None  # keep rows pending
 
     async def not_flattened(code):
@@ -1387,7 +1390,7 @@ async def test_finalize_retry_picks_up_collecting_orphan(tmp_path, monkeypatch):
 
     calls = []
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         calls.append(code)
         return {"errors": 0}
 
@@ -1445,7 +1448,7 @@ async def test_finalize_retry_refreshes_only_attempted_codes(tmp_path, monkeypat
 
     monkeypatch.setattr(presence_index, "refresh_codes", spy_refresh)
 
-    async def fake_run_finalize(svc, code, *, folder_id=None):
+    async def fake_run_finalize(svc, code, *, folder_id=None, **_kw):
         return {"errors": 0}
 
     async def active():

@@ -260,9 +260,10 @@ async def _list_subtree(
     out: list[tuple[Any, str]] = []
     folder_depth: list[tuple[Any, int]] = []
     partial_any = False
+    depth_truncated = False
 
     async def walk(fid: str, depth: int) -> None:
-        nonlocal partial_any
+        nonlocal partial_any, depth_truncated
         kids, partial = await svc.list_all_files(fid)
         partial_any = partial_any or bool(partial)
         for c in kids:
@@ -271,9 +272,19 @@ async def _list_subtree(
                 folder_depth.append((c, depth))
                 if depth < max_depth:
                     await walk(c.id, depth + 1)
+                else:
+                    # Recursion stops here, so everything below this
+                    # folder is invisible. NOT folded into ``partial``
+                    # (the purge path already survives it via the
+                    # unplanned-child skip cascade), but any "this
+                    # folder holds no video" verdict is unsafe on a
+                    # depth-truncated inventory — the ad-shell trash
+                    # must treat it as inconclusive (adversarial review
+                    # of #207; e.g. DVD/Disc1/VIDEO_TS/*.VOB).
+                    depth_truncated = True
 
     await walk(folder_id, 1)
-    return out, folder_depth, partial_any
+    return out, folder_depth, partial_any, depth_truncated
 
 
 async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
@@ -294,8 +305,13 @@ async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
     - any file still transferring → judge again once it lands.
     A file id (non-folder) yields an empty listing and lands on the
     empty case, so callers need not pre-check the kind."""
-    entries, _folders, partial = await _list_subtree(svc, folder_id)
-    if partial:
+    entries, _folders, partial, depth_truncated = await _list_subtree(
+        svc, folder_id
+    )
+    if partial or depth_truncated:
+        # Depth truncation hides everything below MAX_DEPTH — a video
+        # in the unseen tail (DVD/Disc1/VIDEO_TS/*.VOB) must never be
+        # condemned as an ad shell.
         return False
     files = [e for e, _pid in entries if not _is_folder(e)]
     if not files:
@@ -362,6 +378,7 @@ async def finalize_code_folder_stream(
     *,
     folder_id: str | None = None,
     dry_run: bool = True,
+    allow_shell_trash: bool = False,
 ) -> AsyncIterator[dict]:
     """Finalize one 番號's archive folder. Events mirror the cleanup
     stream: ``start`` / ``progress`` (action ∈ rename|move|purge|trash|
@@ -420,7 +437,9 @@ async def finalize_code_folder_stream(
         except Exception as exc:  # noqa: BLE001
             logger.debug("finalize %s: parent lookup failed: %s", code, exc)
 
-    entries, folder_depth, partial = await _list_subtree(svc, folder_id)
+    entries, folder_depth, partial, depth_truncated = await _list_subtree(
+        svc, folder_id
+    )
     parent_of = {e.id: p for e, p in entries}
     if partial:
         # An incomplete inventory could mis-plan a permanent delete.
@@ -480,12 +499,20 @@ async def finalize_code_folder_stream(
             #   skip (might be a real small film);
             # - any container → skip (container-swap loop's job, #173).
             shell_files = [e for e, _p in entries if not _is_folder(e)]
-            is_ad_shell = bool(shell_files) and not any(
+            # A depth-truncated inventory cannot prove "no video" — a
+            # film below MAX_DEPTH is simply invisible here. Treat as
+            # inconclusive: skip, never trash.
+            is_ad_shell = bool(shell_files) and not depth_truncated and not any(
                 is_video(e.name) or ext_of(e.name) in CONTAINER_EXTS
                 for e in shell_files
             )
             trashed = 0
-            if is_ad_shell:
+            # Opt-in only: a freshly-moved folder can list its video
+            # subfolder as empty (#140 optimistic listings), so the
+            # inline/sweep finalize must never shell-trash on a single
+            # snapshot. Only the aged retry path (row older than the
+            # abandon grace — folder long settled) enables this.
+            if is_ad_shell and allow_shell_trash:
                 try:
                     if not dry_run:
                         await _retry_transient(
@@ -729,13 +756,17 @@ async def finalize_code_folder_stream(
     yield {"type": "done", "result": summary}
 
 
-async def run_finalize(svc, code: str, *, folder_id: str | None = None) -> dict | None:
+async def run_finalize(
+    svc, code: str, *, folder_id: str | None = None,
+    allow_shell_trash: bool = False,
+) -> dict | None:
     """Drain the stream non-interactively (archiver hook). Returns the
     ``done`` summary when finalize fully succeeded, else ``None``."""
     summary: dict | None = None
     failed = False
     async for event in finalize_code_folder_stream(
-        svc, code, folder_id=folder_id, dry_run=False
+        svc, code, folder_id=folder_id, dry_run=False,
+        allow_shell_trash=allow_shell_trash,
     ):
         etype = event.get("type")
         if etype == "error":

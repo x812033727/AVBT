@@ -261,9 +261,15 @@ async def move_files(
     if not file_ids:
         raise HTTPException(status_code=400, detail="未指定要移動的檔案")
     try:
-        return await pikpak_service.move_files(file_ids, target_folder_id)
+        resp = await pikpak_service.move_files(file_ids, target_folder_id)
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+    # Every other mover stamps the moved ids so the empty-shell /
+    # emptied-source trash gates wait out the settle window; this
+    # human-triggered endpoint was the last unstamped one (#213 review).
+    for fid in file_ids:
+        pikpak_service.record_move_source(fid)
+    return resp
 
 
 @router.get("/files/stats")
@@ -623,7 +629,12 @@ async def archiver_status():
                 .where(OfflineTaskLog.abandoned.is_(True))
             )
         ).scalar_one()
-    return {**archiver.state.to_dict(), "abandoned_total": int(abandoned_total)}
+    return {
+        **archiver.state.to_dict(),
+        "abandoned_total": int(abandoned_total),
+        "throttle_backoff_total": pikpak_service.throttle_backoff_total,
+        "throttle_exhausted_total": pikpak_service.throttle_exhausted_total,
+    }
 
 
 @router.post("/archiver/run")

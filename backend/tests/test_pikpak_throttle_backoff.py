@@ -117,3 +117,25 @@ async def test_ensure_throttle_is_not_retried(service, no_sleep, monkeypatch):
     assert calls["ensure"] == 1     # not retried by the throttle backoff
     assert calls["op"] == 0         # operation never reached
     assert no_sleep == []           # no backoff sleep
+
+
+async def test_throttle_counters_track_backoff_and_exhaustion(service, no_sleep):
+    calls = {"n": 0}
+
+    async def flaky(client):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PikPakError(TOO_FREQUENT)
+        return "ok"
+
+    assert service.throttle_backoff_total == 0
+    assert await service._call(flaky) == "ok"
+    assert service.throttle_backoff_total == 2     # two absorbed throttles
+    assert service.throttle_exhausted_total == 0
+
+    async def hopeless(client):
+        raise PikPakError(TOO_FREQUENT)
+
+    with pytest.raises(PikPakError):
+        await service._call(hopeless)
+    assert service.throttle_exhausted_total == 1   # ran out of retries

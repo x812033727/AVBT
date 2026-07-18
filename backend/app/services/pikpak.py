@@ -187,6 +187,10 @@ class PikPakService:
         self._client: PikPakApi | None = None
         self._lock = asyncio.Lock()
         self._folder_cache: dict[str, str] = {}
+        # Ops observability: how often the round-1 throttle backoff fired
+        # and how often it ran out of retries (ramp watch signals).
+        self.throttle_backoff_total: int = 0
+        self.throttle_exhausted_total: int = 0
         self._canonical_cache: dict[str, tuple[str, float]] = {}
         self._create_lock = asyncio.Lock()
         self._username: str = ""
@@ -382,6 +386,8 @@ class PikPakService:
 
     def status(self) -> dict:
         return {
+            "throttle_backoff_total": self.throttle_backoff_total,
+            "throttle_exhausted_total": self.throttle_exhausted_total,
             "logged_in": self._client is not None,
             "username": self._username,
             "has_stored_token": TOKEN_FILE.exists(),
@@ -530,16 +536,24 @@ class PikPakService:
                     await self._drop_for_relogin(client)
                     client = await self._ensure()
                     return await _run(client)
-                if _is_too_frequent_error(exc) and attempt < max_retries:
-                    delay = min(base * (2**attempt), cap) + random.uniform(0, base)
-                    logger.warning(
-                        "PikPak throttled (%s); backoff %.1fs "
-                        "(retry %d/%d)",
-                        exc, delay, attempt + 1, max_retries,
-                    )
-                    await asyncio.sleep(delay)
-                    attempt += 1
-                    continue
+                if _is_too_frequent_error(exc):
+                    if attempt < max_retries:
+                        self.throttle_backoff_total += 1
+                        delay = min(base * (2**attempt), cap) + random.uniform(
+                            0, base
+                        )
+                        logger.warning(
+                            "PikPak throttled (%s); backoff %.1fs "
+                            "(retry %d/%d)",
+                            exc, delay, attempt + 1, max_retries,
+                        )
+                        await asyncio.sleep(delay)
+                        attempt += 1
+                        continue
+                    # Retries exhausted — the caller's loop-level backoff
+                    # takes over; count it so ops can see exhaustion
+                    # separately from absorbed throttles.
+                    self.throttle_exhausted_total += 1
                 raise
 
     async def login(

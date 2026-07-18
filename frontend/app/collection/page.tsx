@@ -54,6 +54,13 @@ export default function CollectionPage() {
   const [sort, setSort] = useState("added");
   const [filterText, setFilterText] = useState("");
 
+  // Changing the filter hides rows but would keep them selected — a batch
+  // delete could then hit rows the user can't see. Reset selection when
+  // the visible set's inputs change.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [filterText, sort]);
+
   async function syncStatus() {
     setSyncing(true);
     try {

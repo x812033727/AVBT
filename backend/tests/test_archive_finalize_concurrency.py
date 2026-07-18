@@ -201,3 +201,45 @@ async def test_archive_isolates_finalize_failure(tmp_path, monkeypatch):
         assert by_code["A-9"].archived and not by_code["A-9"].finalized
         assert by_code["B-9"].archived and by_code["B-9"].finalized
     await engine.dispose()
+
+
+async def test_archive_once_end_to_end_at_finalize_concurrency_two(tmp_path, monkeypatch):
+    # Full archive_once, 4 distinct codes, concurrency knob raised to 2:
+    # must reach the same end-state as serial (all archived + finalized,
+    # exactly one finalize call per code) while actually overlapping two
+    # finalizes in flight — proving the concurrency knob is really wired
+    # into the archive_once loop, not just the isolated _run_finalize_batch
+    # unit above.
+    engine, m = await _archive_db(tmp_path, monkeypatch, [
+        _mkrow("PAR-1", "f1"), _mkrow("PAR-2", "f2"),
+        _mkrow("PAR-3", "f3"), _mkrow("PAR-4", "f4"),
+    ])
+    await _harness(monkeypatch, m)
+    monkeypatch.setattr(arch.settings, "archive_finalize_concurrency", 2)
+
+    calls: list[str] = []
+    active = 0
+    peak = 0
+
+    async def fake_finalize_overlap(svc, code, *, folder_id=None):
+        nonlocal active, peak
+        calls.append(code)
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0)     # yield so overlap is possible/observable
+        active -= 1
+        return True
+
+    # Re-patch over _harness's own run_finalize stub to add overlap tracking.
+    monkeypatch.setattr("app.services.finalize.run_finalize", fake_finalize_overlap)
+
+    moved = await arch.archive_once()
+
+    assert moved == 4
+    assert sorted(calls) == ["PAR-1", "PAR-2", "PAR-3", "PAR-4"]  # once each
+    assert peak >= 2            # parallelism actually engaged
+    assert peak <= 2            # and stayed within the concurrency=2 bound
+    async with m() as s:
+        rows = (await s.execute(select(OfflineTaskLog))).scalars().all()
+        assert all(r.archived and r.finalized for r in rows)
+    await engine.dispose()

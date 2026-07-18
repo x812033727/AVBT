@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 
 from .config import cors_origin_list
 from .database import init_db
+from .gzip_stream import StreamAwareGZipMiddleware
 from .logging_setup import setup_logging
 from .routers import (
     actresses,
@@ -94,8 +94,11 @@ app = FastAPI(title="AVBT", version="0.1.0", lifespan=lifespan)
 
 _origins = cors_origin_list()
 # Large JSON payloads (missing-all ~7MB, actresses ~660KB) shrink ~85%
-# under gzip; tiny responses skip it via the minimum_size floor.
-app.add_middleware(GZipMiddleware, minimum_size=8 * 1024)
+# under gzip; tiny responses skip it via the minimum_size floor. The
+# stream-aware variant additionally leaves application/x-ndjson (and SSE)
+# uncompressed so the live progress feeds flush chunk by chunk instead of
+# buffering inside gzip (2026-07-18 audit).
+app.add_middleware(StreamAwareGZipMiddleware, minimum_size=8 * 1024)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,

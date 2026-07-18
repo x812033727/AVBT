@@ -46,9 +46,14 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
         ).all()
     )
     downloads_total = sum(by_phase.values())
+    # Uniform rule: every dashboard aggregate excludes abandoned rows —
+    # keeping archive_rate's numerator and denominator symmetric (a rare
+    # abandoned row whose file later lands can end up archived=True too).
     archived_count = (
         await session.execute(
-            select(func.count()).select_from(OfflineTaskLog).where(OfflineTaskLog.archived)
+            select(func.count())
+            .select_from(OfflineTaskLog)
+            .where(OfflineTaskLog.archived, OfflineTaskLog.abandoned.is_(False))
         )
     ).scalar_one()
     # Rate against rows that actually produced a file — pure failures
@@ -86,7 +91,10 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
         (
             await session.execute(
                 select(func.date(OfflineTaskLog.archived_at), func.count())
-                .where(OfflineTaskLog.archived_at >= cutoff)
+                .where(
+                    OfflineTaskLog.archived_at >= cutoff,
+                    OfflineTaskLog.abandoned.is_(False),
+                )
                 .group_by(func.date(OfflineTaskLog.archived_at))
             )
         ).all()

@@ -1513,6 +1513,14 @@ class PikPakService:
                     display_target = f"{target_parent_path}/{dest_leaf}"
                     if not dry_run:
                         await self.move_files([child.id], target_parent_id)
+                        # Every other wrapper-mover stamps the moved
+                        # folder so empty-shell trash (finalize's
+                        # is_empty_shell, organize's _trash_if_empty)
+                        # waits out the settle window. This was the one
+                        # unstamped path: a freshly relocated wrapper
+                        # can list empty while its videos are still
+                        # settling (#213 adversarial review).
+                        self.record_move_source(child.id)
                         if child.name != dest_leaf:
                             try:
                                 await self.rename_file(child.id, dest_leaf)

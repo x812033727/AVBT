@@ -13,9 +13,10 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from ..schemas import OpsReport, OpsReports
+from ..services import log_reconcile
 
 router = APIRouter(prefix="/api/ops", tags=["ops"])
 
@@ -68,3 +69,23 @@ async def ops_reports(limit: int = Query(30, ge=1, le=200)):
     return OpsReports(
         reports=blocks[:limit], total=len(blocks), updated_at=mtime
     )
+
+
+@router.post("/reconcile-fossils")
+async def reconcile_fossils(
+    dry_run: bool = Body(True, embed=True),
+    older_than: str = Body("2026-07-01", embed=True),
+    limit: int = Body(5000, embed=True),
+):
+    """Mark fossil offline_task_log rows (never archived, never
+    abandoned, code already accounted for elsewhere) as ``superseded``.
+    Defaults to a dry run — pass ``dry_run: false`` to actually write.
+    See services/log_reconcile.py for the evidence rules."""
+    try:
+        return await log_reconcile.reconcile_superseded(
+            dry_run=dry_run, older_than=older_than, limit=limit
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"older_than 需為 YYYY-MM-DD 絕對日期: {exc}"
+        ) from exc

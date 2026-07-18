@@ -202,6 +202,21 @@ async def _phase1_migrate_from(
             # OYC-205). wrapper_is_ad_shell answers False on any
             # can't-tell (truncated/empty/still-transferring listing),
             # so an in-flight download keeps migrating as usual.
+            #
+            # But an in-flight file is INVISIBLE to the listing, so a
+            # wrapper whose ad clips landed first while the real video is
+            # still transferring reads as an ad shell. Phase-2's winner
+            # path gates exactly this on is_settling (live: TRE-143);
+            # phase-1 ran over the same live TASK folder with NO such
+            # gate (2026-07-18 audit). Skip the trash while the task is
+            # still settling — it keeps migrating on a later pass once
+            # the video lands.
+            from .offline_tasks import is_settling  # avoid cycle
+
+            if await is_settling(child.id):
+                yield {**base, "action": "skip", "target": None,
+                       "reason": "settling"}
+                continue
             try:
                 from .finalize import wrapper_is_ad_shell  # avoid cycle
 

@@ -159,6 +159,18 @@ async def test_abandoned_row_excluded_from_retry_and_reap(maker):
     assert n_retry == 0
 
 
+async def test_superseded_row_excluded_from_retry_and_reap(maker):
+    async with maker() as s:
+        s.add(_row(code="FOSSIL-001", superseded=True))
+        await s.commit()
+    # Neither pass should select an already-superseded row — the fossil
+    # reconcile endpoint owns these now, not the live archiver loop.
+    n_reap = await archiver._reap_orphan_rows()
+    n_retry = await archiver._finalize_retry_pass()
+    assert n_reap == 0
+    assert n_retry == 0
+
+
 async def test_already_flattened_strict_raises_on_error(monkeypatch):
     # strict=True must surface a check error; default must swallow to False.
     # Stub _resolve_archive_path_by_code (established pattern, see

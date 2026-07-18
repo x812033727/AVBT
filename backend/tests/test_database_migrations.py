@@ -113,6 +113,26 @@ async def test_btih_backfill_fills_rows_and_terminates(tmp_path, monkeypatch):
     assert rows["BBB-002"] == ""
 
 
+async def test_init_db_adds_superseded_column(tmp_path, monkeypatch):
+    engine = await _fresh_engine(tmp_path)
+    monkeypatch.setattr(db, "engine", engine)
+
+    await db.init_db()
+    # Idempotence: a second boot must not choke on "duplicate column".
+    await db.init_db()
+
+    async with engine.begin() as conn:
+        cols = {
+            r[1]
+            for r in (
+                await conn.exec_driver_sql("PRAGMA table_info(offline_task_log)")
+            ).all()
+        }
+    await engine.dispose()
+
+    assert "superseded" in cols
+
+
 async def test_legacy_tracked_actresses_copied_once(tmp_path, monkeypatch):
     engine = await _fresh_engine(tmp_path)
     monkeypatch.setattr(db, "engine", engine)

@@ -1093,6 +1093,7 @@ async def _finalize_retry_pass() -> int:
                 .where(
                     OfflineTaskLog.finalized.is_(False),
                     OfflineTaskLog.abandoned.is_(False),
+                    OfflineTaskLog.superseded.is_(False),
                     or_(
                         # Normal path: sweep/archiver stamped the move.
                         (OfflineTaskLog.archived.is_(True))
@@ -1278,6 +1279,7 @@ async def _reap_orphan_rows() -> int:
                 .where(
                     OfflineTaskLog.finalized.is_(False),
                     OfflineTaskLog.abandoned.is_(False),
+                    OfflineTaskLog.superseded.is_(False),
                     or_(
                         # Not-yet-archived orphan: the sweep's file_id
                         # stamp never owned this row. This spans BOTH the
@@ -1644,6 +1646,9 @@ async def archive_once() -> int:
                     # pending > 0 forever and every pass burns a
                     # list_tasks round-trip for rows nothing will match.
                     OfflineTaskLog.abandoned.is_(False),
+                    # Fossil rows reconciled by log_reconcile keep a stale
+                    # file_id too — same reasoning as abandoned above.
+                    OfflineTaskLog.superseded.is_(False),
                     OfflineTaskLog.file_id != "",
                     OfflineTaskLog.code != "",
                 )

@@ -182,3 +182,27 @@ async def test_phase1_dry_run_reports_but_keeps_shell(monkeypatch):
     )]
     assert any(ev.get("action") == "trash" for ev in events)
     assert svc.trashed == []
+
+
+def _null_size_container_entries():
+    from types import SimpleNamespace
+
+    def f(name, fid, size):
+        return SimpleNamespace(
+            id=fid, name=name, kind="drive#file", size=size,
+            parent_id=None, created_time=None, thumbnail_link=None,
+            phase="PHASE_TYPE_COMPLETE", duration=None,
+        )
+    return [f("最新網址.txt", "t", 1), f("SNIS-494.iso", "iso", None)]
+
+
+async def test_null_size_container_blocks_ad_shell_verdict():
+    """PikPak can list a file with size=None (missing/zero size field).
+    Everywhere else the codebase treats None as 'assume legit' — the
+    ad-shell verdict must too, or a real disc image's wrapper gets
+    trashed and the container-swap loop then drops the code for good."""
+    from app.services.finalize import _counts_as_content
+
+    ents = _null_size_container_entries()
+    assert _counts_as_content(ents[1]) is True   # None size → content
+    assert _counts_as_content(ents[0]) is False  # txt is still junk

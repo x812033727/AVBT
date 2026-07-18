@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bookmark } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import { RowSkeleton } from "@/components/Skeleton";
@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorBox } from "@/components/shared/ErrorBox";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
   api,
   imgProxy,
@@ -31,6 +32,15 @@ const STATUS_LABELS: Record<string, string> = {
   done: "完成",
 };
 
+const SELECT_CLASS =
+  "h-9 rounded-md border border-input bg-background px-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+const SORT_OPTIONS = [
+  { value: "added", label: "加入順序(新→舊)" },
+  { value: "release", label: "發行日期(新→舊)" },
+  { value: "code", label: "番號(A→Z)" },
+];
+
 export default function CollectionPage() {
   const [status, setStatus] = useState("");
   const [items, setItems] = useState<CollectionItem[]>([]);
@@ -41,6 +51,15 @@ export default function CollectionPage() {
   const [counts, setCounts] = useState<Record<string, VideoCountResult | "loading">>({});
   const [counting, setCounting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [sort, setSort] = useState("added");
+  const [filterText, setFilterText] = useState("");
+
+  // Changing the filter hides rows but would keep them selected — a batch
+  // delete could then hit rows the user can't see. Reset selection when
+  // the visible set's inputs change.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [filterText, sort]);
 
   async function syncStatus() {
     setSyncing(true);
@@ -113,8 +132,8 @@ export default function CollectionPage() {
   }
 
   function selectAll() {
-    if (selected.size === items.length) setSelected(new Set());
-    else setSelected(new Set(items.map((i) => i.code)));
+    if (selected.size === visible.length) setSelected(new Set());
+    else setSelected(new Set(visible.map((i) => i.code)));
   }
 
   async function batchStatus(s: string) {
@@ -197,7 +216,33 @@ export default function CollectionPage() {
   }
 
   const wishlistCount = items.filter((i) => i.status === "wishlist").length;
-  const allSelected = selected.size > 0 && selected.size === items.length;
+
+  const visible = useMemo(() => {
+    const q = filterText.trim().toLowerCase();
+    const filtered = q
+      ? items.filter((it) => {
+          const haystack = [it.code, it.title, ...it.actresses, ...it.genres]
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(q);
+        })
+      : items;
+    if (sort === "added") return filtered;
+    const sorted = [...filtered];
+    if (sort === "release") {
+      sorted.sort((a, b) => {
+        if (!a.release_date && !b.release_date) return 0;
+        if (!a.release_date) return 1;
+        if (!b.release_date) return -1;
+        return b.release_date.localeCompare(a.release_date);
+      });
+    } else if (sort === "code") {
+      sorted.sort((a, b) => a.code.localeCompare(b.code));
+    }
+    return sorted;
+  }, [items, filterText, sort]);
+
+  const allSelected = selected.size > 0 && selected.size === visible.length;
 
   return (
     <div className="space-y-4">
@@ -248,11 +293,36 @@ export default function CollectionPage() {
 
       {error && <ErrorBox message={error} />}
 
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+          placeholder="篩選番號 / 標題 / 女優 / 類別"
+          className="w-64"
+        />
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+          className={SELECT_CLASS}
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {filterText.trim() && (
+          <span className="text-sm text-muted-foreground">
+            顯示 {visible.length} / 共 {items.length}
+          </span>
+        )}
+      </div>
+
       {items.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
           <label className="flex items-center gap-2 text-foreground/70">
             <Checkbox checked={allSelected} onCheckedChange={selectAll} />
-            {allSelected ? "全部取消" : `全選 (${items.length})`}
+            {allSelected ? "全部取消" : `全選 (${visible.length})`}
           </label>
           {selected.size > 0 && (
             <>
@@ -319,8 +389,12 @@ export default function CollectionPage() {
         />
       )}
 
+      {!loading && items.length > 0 && !visible.length && (
+        <EmptyState icon={Bookmark} title="沒有符合篩選條件的收藏" />
+      )}
+
       <div className="grid gap-3">
-        {items.map((it) => (
+        {visible.map((it) => (
           <div
             key={it.code}
             className={

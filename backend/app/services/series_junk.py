@@ -36,7 +36,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..config import all_kind_paths
-from .jav_code import CONTAINER_EXTS, ext_of, extract_jav_code, is_video
+from .jav_code import (
+    CONTAINER_EXTS,
+    ext_of,
+    extract_jav_code,
+    is_archive_volume,
+    is_video,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +78,13 @@ def is_series_junk(
     if phase not in ("", "PHASE_TYPE_COMPLETE"):
         return False  # still being written — hands off (#129)
     if not is_video(name):
+        if is_archive_volume(name):
+            # Piece of a multi-volume set: the SET is the work. Trashing
+            # pieces on sight — or retiring them one-by-one against a
+            # replacement that dwarfs a single piece — leaves an
+            # unextractable remainder. Keep-always; a human (or a future
+            # set-aware sweep) retires the whole family together.
+            return False
         if ext_of(name) not in CONTAINER_EXTS:
             return True
         if size is None:

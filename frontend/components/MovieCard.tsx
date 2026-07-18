@@ -1,16 +1,19 @@
 import Link from "next/link";
 import { Check } from "lucide-react";
-import { imgProxy, type MovieListItem } from "@/lib/api";
+import { imgProxy, type CachedDetailLite, type MovieListItem } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export default function MovieCard({
   item,
   present,
+  meta,
   selectable,
   selected,
   onToggleSelect,
 }: {
   item: MovieListItem;
+  /** Cache-join metadata line (studio/series/genres); absent = no line. */
+  meta?: CachedDetailLite;
   /** true = exists in PikPak, false = missing, undefined = unknown */
   present?: boolean;
   /** Multi-select mode: show a checkbox overlay instead of navigating. */
@@ -59,6 +62,17 @@ export default function MovieCard({
       <div className="px-3 py-2">
         <div className="text-sm font-semibold text-primary">{item.code}</div>
         <div className="line-clamp-2 text-sm text-foreground/80">{item.title}</div>
+        {meta && (meta.studio || meta.series || meta.genres.length > 0) && (
+          <div className="mt-0.5 truncate text-xs text-muted-foreground/70">
+            {[
+              meta.studio?.name,
+              meta.series?.name,
+              ...meta.genres.slice(0, 2),
+            ]
+              .filter(Boolean)
+              .join("・")}
+          </div>
+        )}
         {item.date && (
           <div className="mt-1 text-xs text-muted-foreground">{item.date}</div>
         )}

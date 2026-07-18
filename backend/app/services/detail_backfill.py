@@ -109,22 +109,41 @@ async def _pick_missing_codes(limit: int) -> list[str]:
     return picked
 
 
+# Consecutive-failure circuit breaker: a JavBus outage or block makes
+# every fetch in the batch fail the same way; grinding through the rest
+# only burns request budget against a host that is already refusing us.
+_BACKFILL_BREAKER_THRESHOLD = 5
+
+
 async def _backfill_details() -> int:
     codes = await _pick_missing_codes(max(0, settings.actress_backfill_batch_limit))
     fetched = 0
-    for code in codes:
+    consecutive_failures = 0
+    for pos, code in enumerate(codes, start=1):
         try:
             detail = await scraper.fetch_detail_resolved(code)
             _attempted.add(code)
             if detail.title:
                 state.done_total += 1
                 fetched += 1
+                consecutive_failures = 0
             else:
                 state.failed_total += 1
+                consecutive_failures += 1
         except Exception as exc:  # noqa: BLE001 — one bad code must not stop the cycle
             _attempted.add(code)
             state.failed_total += 1
+            consecutive_failures += 1
             logger.debug("detail backfill %s failed: %s", code, exc)
+        if consecutive_failures >= _BACKFILL_BREAKER_THRESHOLD:
+            logger.warning(
+                "detail backfill: %d consecutive failures, aborting cycle "
+                "(%d/%d codes processed)",
+                consecutive_failures,
+                pos,
+                len(codes),
+            )
+            break
         await asyncio.sleep(settings.actress_backfill_spacing_seconds)
     return fetched
 

@@ -778,12 +778,21 @@ def _detail_cache_put(code: str, detail: MovieDetail) -> None:
             _detail_cache.pop(k, None)
 
 
-def _parse_stale(d: MovieDetail) -> bool:
+# Codes whose parse-stale heal has been ATTEMPTED this process — one
+# shot per code, shared by every caller. Without this, the stale check
+# turned genre-less cache rows into a network miss for ALL fetch_detail
+# callers (bulk sweeps included), and a genuinely tagless or dead title
+# refetched on every view forever (integration audit 2026-07-18).
+_heal_attempted: set[str] = set()
+
+
+def _parse_stale(d: MovieDetail, code: str) -> bool:
     """Cached rows written before the genre-parse fix carry genres=[]
     even though JavBus tags essentially every title. Treat such a hit as
-    stale so one view-paced refetch heals the row (a genuinely tagless
-    title refetches per view — rare, bounded, and self-limiting)."""
-    return bool(d.title) and not d.genres
+    stale so one refetch heals the row — but only the FIRST attempt per
+    process; afterwards the (possibly still genre-less) row is served
+    as-is, restoring plain cache-hit availability semantics."""
+    return bool(d.title) and not d.genres and code not in _heal_attempted
 
 
 async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
@@ -791,12 +800,12 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     owns_inflight = False
     if not refresh:
         cached = _detail_cache_get(code)
-        if cached is not None and not _parse_stale(cached):
+        if cached is not None and not _parse_stale(cached, code):
             return cached
         # Coalesce concurrent callers onto the same in-flight fetch.
         async with _detail_cache_lock:
             cached = _detail_cache_get(code)
-            if cached is not None and not _parse_stale(cached):
+            if cached is not None and not _parse_stale(cached, code):
                 return cached
             event = _detail_inflight.get(code)
             if event is None:
@@ -806,7 +815,7 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
         if not owns_inflight:
             await event.wait()
             cached = _detail_cache_get(code)
-            if cached is not None and not _parse_stale(cached):
+            if cached is not None and not _parse_stale(cached, code):
                 return cached
             # Owner finished but didn't cache (empty title / error). Fall
             # through to fetch ourselves — rare and we deliberately do
@@ -816,19 +825,35 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     url = f"{base}/{code}"
     cli = _get_client()
 
+    # The stale row being healed (if any), kept as the fallback: a failed
+    # heal must degrade to the answer the caller would have gotten before
+    # the heal existed — never a 502 or an empty detail.
+    stale_row: MovieDetail | None = None
+    if not refresh:
+        stale_row = _detail_cache_get(code)
+
     try:
         if not refresh:
             # Persistent layer: survives restarts. Inside the try so the
             # finally below always releases the in-flight event; waiters
             # then hit the in-memory entry we just refilled.
             db_hit = await detail_cache.get(code)
-            if db_hit is not None and not _parse_stale(db_hit):
+            if db_hit is not None and not _parse_stale(db_hit, code):
                 _detail_cache_put(code, db_hit)
                 return db_hit
+            if db_hit is not None and stale_row is None:
+                stale_row = db_hit
+
+        if stale_row is not None:
+            # Entering a heal: one shot per code per process.
+            _heal_attempted.add(code)
 
         html = await _fetch(cli, url)
         if not html:
             scraper_health.record_detail("empty_html")
+            if stale_row is not None:
+                await detail_cache.touch(code)
+                return stale_row
             return MovieDetail(code=code, title="")
 
         detail = _parse_detail(html, code)
@@ -861,9 +886,23 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
             # Write-through: refresh=True lands here too, so a forced
             # refetch also renews the persistent row.
             await detail_cache.put(code, detail)
+        elif stale_row is not None:
+            # Heal fetched an empty page (removed listing / parse miss):
+            # keep serving the stale row and advance its fetched_at so
+            # the backfill's oldest-first window rotates past it instead
+            # of wedging on the same unfixable rows.
+            await detail_cache.touch(code)
+            return stale_row
         return detail
     except Exception:
         scraper_health.record_detail("error")
+        if stale_row is not None and not refresh:
+            logger.warning("detail heal for %s failed; serving stale row", code)
+            try:
+                await detail_cache.touch(code)
+            except Exception:  # noqa: BLE001 — fallback must not raise
+                pass
+            return stale_row
         raise
     finally:
         if owns_inflight:

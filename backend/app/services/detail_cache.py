@@ -95,6 +95,47 @@ async def get_many_lite(codes: list[str]) -> dict[str, dict]:
     return out
 
 
+async def touch(code: str) -> None:
+    """Advance ``fetched_at`` without changing the payload — a failed
+    heal must rotate out of the backfill's oldest-first window instead
+    of parking there forever (integration audit 2026-07-18)."""
+    if not settings.javbus_persist_cache_enabled:
+        return
+    try:
+        async with SessionLocal() as session:
+            row = await session.get(MovieDetailCache, code.strip().upper())
+            if row is not None:
+                row.fetched_at = datetime.utcnow()
+                await session.commit()
+    except Exception as exc:  # noqa: BLE001 — bookkeeping only
+        logger.warning("detail cache touch failed for %s: %s", code, exc)
+
+
+def _log_identity_drift(code: str, prev_raw: str, new: MovieDetail) -> None:
+    """Observability only. Heal rewrites of pre-genre-fix rows import
+    today's JavBus studio/series identity over what the row held when
+    the code was archived; path resolution reads presence so nothing
+    misfolders yet, but drifting identity deserves a trace before any
+    consumer trusts rewritten rows for foldering decisions."""
+    try:
+        prev = MovieDetail.model_validate_json(prev_raw)
+    except Exception:  # noqa: BLE001 — legacy/corrupt rows carry no signal
+        return
+    for field in ("studio", "series"):
+        old_ref = getattr(prev, field)
+        new_ref = getattr(new, field)
+        old_name = old_ref.name if old_ref else None
+        new_name = new_ref.name if new_ref else None
+        if old_name and new_name and old_name != new_name:
+            logger.warning(
+                "detail cache %s: %s identity drift %r -> %r",
+                code,
+                field,
+                old_name,
+                new_name,
+            )
+
+
 async def put(code: str, detail: MovieDetail) -> None:
     # Empty-title details are fetch misses; negative results live in the
     # scraper's in-memory _unresolved_cache, never in this table.
@@ -102,6 +143,9 @@ async def put(code: str, detail: MovieDetail) -> None:
         return
     try:
         async with SessionLocal() as session:
+            prev = await session.get(MovieDetailCache, code)
+            if prev is not None:
+                _log_identity_drift(code, prev.detail, detail)
             await session.merge(
                 MovieDetailCache(
                     code=code,

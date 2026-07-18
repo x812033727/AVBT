@@ -28,6 +28,7 @@ export default function ListingPage({
   headerSlot,
   trackName,
   trackAvatar,
+  trackDisabled,
 }: {
   /** JavBus URL kind */
   kind: "studio" | "label" | "series" | "director" | "genre" | "star";
@@ -44,6 +45,9 @@ export default function ListingPage({
   headerSlot?: React.ReactNode | ((ctx: { uncensored: boolean }) => React.ReactNode);
   /** Display name to send with the track POST instead of "" (e.g. star profile name) */
   trackName?: string;
+  /** Disable the track button until caller-side data (e.g. the star
+   *  profile whose avatar the track POST captures) has settled. */
+  trackDisabled?: boolean;
   /** Avatar URL to send with the track POST instead of "" (e.g. star profile avatar) */
   trackAvatar?: string;
 }) {
@@ -190,7 +194,7 @@ export default function ListingPage({
   // Hide-downloaded only filters the items already on this (server-paginated)
   // page — it can't reach ahead into pages that haven't been fetched yet.
   const visibleItems =
-    hideDownloaded && presence
+    hideDownloaded && presence && tracked
       ? (data?.items ?? []).filter((it) => !presence.has(it.code))
       : data?.items ?? [];
 
@@ -234,6 +238,9 @@ export default function ListingPage({
               <Button
                 variant={tracked ? "outline" : "default"}
                 onClick={toggleTrack}
+                disabled={!tracked && !!trackDisabled}
+                title={!tracked && trackDisabled
+                  ? "載入女優資料中…(避免追蹤時遺失頭像)" : undefined}
               >
                 {tracked ? (
                   <>

@@ -114,6 +114,9 @@ function ProfileCard({
 export default function StarPage({ params }: { params: { id: string } }) {
   const id = decodeURIComponent(params.id);
   const [profile, setProfile] = useState<StarProfile | null>(null);
+  // Tracking before the profile settles would store avatar="" forever
+  // (the backend never backfills avatars) — gate the button until then.
+  const [profileSettled, setProfileSettled] = useState(false);
 
   return (
     <ListingPage
@@ -121,10 +124,18 @@ export default function StarPage({ params }: { params: { id: string } }) {
       id={id}
       label="女優"
       headerSlot={(ctx) => (
-        <ProfileCard id={id} uncensored={ctx.uncensored} onProfile={setProfile} />
+        <ProfileCard
+          id={id}
+          uncensored={ctx.uncensored}
+          onProfile={(p) => {
+            setProfile(p);
+            setProfileSettled(true);
+          }}
+        />
       )}
       trackName={profile?.name}
       trackAvatar={profile?.avatar}
+      trackDisabled={!profileSettled}
     />
   );
 }

@@ -230,6 +230,10 @@ async def test_rehome_live_records_move_source_and_defers_shell_trash(
     ]
     # The settle gate must be armed for the folder the move left …
     assert "nameDir" in fake.move_sources
+    # … and for the moved wrapper itself, whose own listing is
+    # optimistic right after the move (#140) — finalize's empty-shell
+    # trash keys off this stamp.
+    assert "mvfolder" in fake.move_sources
     # … and the emptied shell must NOT be trashed while unsettled.
     assert fake.trashed == []
     await engine.dispose()

@@ -516,12 +516,18 @@ async def finalize_code_folder_stream(
             # still go to the trash, not delete_forever — "a video for this
             # code exists at the parent" does not prove the disc image is
             # the same content.
+            # Same container-family predicate as build_finalize_plan:
+            # volume pieces (.r00/.z01/.001/.partN.rar) ride with the
+            # containers into recoverable trash, never delete_forever
+            # (2026-07-18 audit — #227 fixed the sibling branch only).
             leftovers = [e for e, _p in entries if not _is_folder(e)]
             plan = FinalizePlan(
                 purge_files=[e for e in leftovers
-                             if ext_of(e.name) not in CONTAINER_EXTS],
+                             if ext_of(e.name) not in CONTAINER_EXTS
+                             and not is_archive_volume(e.name)],
                 trash_files=[e for e in leftovers
-                             if ext_of(e.name) in CONTAINER_EXTS],
+                             if ext_of(e.name) in CONTAINER_EXTS
+                             or is_archive_volume(e.name)],
                 purge_folders=[f for f, _d in folder_depth],
             )
         else:

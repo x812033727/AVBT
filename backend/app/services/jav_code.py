@@ -94,15 +94,22 @@ VIDEO_EXTS = {
 # exactly what nearly destroyed the legacy .mpg keepers.
 CONTAINER_EXTS = {".iso", ".zip", ".rar", ".7z"}
 
-# Multi-volume archive pieces (.r00/.r01…, .z01…, .001…): each volume is
-# small but the SET is one big archive — container-family, never plain
-# junk. ``.partN.rar`` already ends in .rar (CONTAINER_EXTS).
-_ARCHIVE_VOLUME_RE = re.compile(r"\.(?:r\d{2}|z\d{2}|\d{3})$", re.IGNORECASE)
+# Multi-volume archive pieces (.r00/.r01…, .z01…, .001…, .partN.rar):
+# each volume is small but the SET is one big archive — container-family,
+# never plain junk. ``.partN.rar`` also ends in .rar (CONTAINER_EXTS),
+# but must count as a VOLUME too: #219's per-piece size floor made a
+# known-sub-300MB .rar junk, so a scene-split film (part1..partN, each
+# 100-250MB) had no guard at all until the set-sum treats it as one
+# archive (2026-07-18 integration audit).
+_ARCHIVE_VOLUME_RE = re.compile(
+    r"\.(?:r\d{2}|z\d{2}|\d{3})$|\.part\d+\.rar$", re.IGNORECASE
+)
 
 
 def is_archive_volume(name: str) -> bool:
     """True for a multi-volume archive piece (``X.r00`` / ``X.z01`` /
-    ``X.001``). Plain ``.rar``/``.zip`` are CONTAINER_EXTS, not volumes."""
+    ``X.001`` / ``X.part2.rar``). Plain ``.rar``/``.zip`` are
+    CONTAINER_EXTS, not volumes."""
     return bool(_ARCHIVE_VOLUME_RE.search(name or ""))
 
 

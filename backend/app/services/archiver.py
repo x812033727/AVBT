@@ -1714,6 +1714,11 @@ async def archive_once() -> int:
                 if not target_id:
                     continue
                 await pikpak_service.move_files([row.file_id], target_id)
+                # The moved wrapper's listing is optimistic (#140): its
+                # children can read as empty right after the move. Stamp
+                # it so the aged retry pass's empty-shell trash cannot
+                # take a wrapper whose files are still in flight.
+                pikpak_service.record_move_source(row.file_id)
                 row.archived = True
                 row.archived_at = datetime.utcnow()
                 moved += 1

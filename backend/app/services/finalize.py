@@ -493,8 +493,6 @@ async def finalize_code_folder_stream(
             # reaper's nothing-landed check turns true, the row closes,
             # and the code is back in the missing-scan's sight.
             # Kept conservative on purpose:
-            # - empty listing → skip (PikPak lists freshly moved
-            #   folders as empty while files are in flight, #140);
             # - any video-extension file, even a sub-keeper ad clip →
             #   skip (might be a real small film);
             # - any container → skip (container-swap loop's job, #173).
@@ -506,13 +504,31 @@ async def finalize_code_folder_stream(
                 is_video(e.name) or ext_of(e.name) in CONTAINER_EXTS
                 for e in shell_files
             )
+            # An empty tree (zero files anywhere, complete listing) is
+            # the other permanent-residue shape: the task died before
+            # PikPak wrote a single byte and the sweep migrated the
+            # bare wrapper (live 07-15 batch: EKDV-244 / DVDMS-047 /
+            # ATOM-304 …). Row age alone cannot clear it — the sweep
+            # may migrate a wrapper days after its row was created, and
+            # a freshly-moved folder lists empty while its files are
+            # still in flight (#140) — so this additionally requires
+            # the move-settle gate on the folder itself (every wrapper
+            # mover stamps it via record_move_source).
+            is_empty_shell = (
+                allow_shell_trash
+                and not shell_files
+                and not depth_truncated
+                and svc.move_settled(folder_id)
+            )
             trashed = 0
             # Opt-in only: a freshly-moved folder can list its video
             # subfolder as empty (#140 optimistic listings), so the
             # inline/sweep finalize must never shell-trash on a single
             # snapshot. Only the aged retry path (row older than the
             # abandon grace — folder long settled) enables this.
-            if is_ad_shell and allow_shell_trash:
+            if (is_ad_shell and allow_shell_trash) or is_empty_shell:
+                reason = ("ad_shell_no_video" if is_ad_shell
+                          else "empty_shell_no_video")
                 try:
                     if not dry_run:
                         await _retry_transient(
@@ -520,7 +536,7 @@ async def finalize_code_folder_stream(
                         trashed = 1
                     yield {"type": "progress", "current": 1, "kind": "folder",
                            "action": "trash", "source": folder_leaf,
-                           "target": None, "reason": "ad_shell_no_video"}
+                           "target": None, "reason": reason}
                 except Exception as exc:  # noqa: BLE001
                     yield {"type": "warn",
                            "message": f"{code} 廣告殼資料夾丟垃圾桶失敗:{exc}"}

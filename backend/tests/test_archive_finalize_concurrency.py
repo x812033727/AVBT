@@ -279,3 +279,18 @@ async def test_archive_skips_list_tasks_when_only_abandoned_pending(
     assert await arch.archive_once() == 0
     assert called["n"] == 0   # pending peek short-circuits before list_tasks
     await engine.dispose()
+
+
+async def test_archive_move_stamps_wrapper_settle_gate(tmp_path, monkeypatch):
+    # The archive pass moves the wrapper into the series folder; the
+    # wrapper's own listing is optimistic right after (#140), so the
+    # move must stamp it — finalize's empty-shell trash keys off this.
+    engine, m = await _archive_db(tmp_path, monkeypatch,
+                                  [_mkrow("STMP-1", "f9")])
+    await _harness(monkeypatch, m)
+    stamps: list[str] = []
+    monkeypatch.setattr(arch.pikpak_service, "record_move_source",
+                        lambda sid: stamps.append(sid))
+    await arch.archive_once()
+    assert "f9" in stamps
+    await engine.dispose()

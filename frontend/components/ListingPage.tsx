@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Check, PackageSearch, Star } from "lucide-react";
+import { Check, PackageSearch, Star } from "lucide-react";
 import BulkSendButton from "@/components/BulkSendButton";
 import MovieCard from "@/components/MovieCard";
 import { MovieGridSkeleton } from "@/components/Skeleton";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorBox } from "@/components/shared/ErrorBox";
 import { MovieGrid } from "@/components/shared/MovieGrid";
+import { PresenceSummary } from "@/components/shared/PresenceSummary";
 import { toast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,13 +25,27 @@ export default function ListingPage({
   kind,
   id,
   label,
+  headerSlot,
+  trackName,
+  trackAvatar,
 }: {
   /** JavBus URL kind */
-  kind: "studio" | "label" | "series" | "director" | "genre";
+  kind: "studio" | "label" | "series" | "director" | "genre" | "star";
   /** JavBus slug (the bit after /{kind}/) */
   id: string;
   /** Human-readable label, e.g. "製作商" */
   label: string;
+  /**
+   * Replaces the default title block (label + name/slug) above the
+   * controls row. Function form receives the current `uncensored` state
+   * so callers (e.g. the star page's profile card) can keep their own
+   * fetches in sync with it.
+   */
+  headerSlot?: React.ReactNode | ((ctx: { uncensored: boolean }) => React.ReactNode);
+  /** Display name to send with the track POST instead of "" (e.g. star profile name) */
+  trackName?: string;
+  /** Avatar URL to send with the track POST instead of "" (e.g. star profile avatar) */
+  trackAvatar?: string;
 }) {
   const [uncensored, setUncensored] = useState(false);
   const [page, setPage] = useState(1);
@@ -47,6 +62,7 @@ export default function ListingPage({
   } | null>(null);
   const [presenceBusy, setPresenceBusy] = useState(false);
   const [presenceError, setPresenceError] = useState<string | null>(null);
+  const [hideDownloaded, setHideDownloaded] = useState(false);
   // 全部六種 kind 都可追蹤;類別目錄很大,tracked 頁開 auto_send 前會
   // 另行 confirm,補檔量由 backfill batch limit 節流。
   const trackable = true;
@@ -140,13 +156,16 @@ export default function ListingPage({
       await api.del(`/api/tracked/${kind}/${encodeURIComponent(id)}`);
       setTracked(null);
     } else {
-      // Send name="" so the backend pulls the real display name from the
-      // listing page header (e.g. "SODクリエイト" instead of slug "ca").
+      // Send name="" (default) so the backend pulls the real display name
+      // from the listing page header (e.g. "SODクリエイト" instead of slug
+      // "ca"). Callers that already have the name/avatar on hand (e.g. the
+      // star page's profile fetch) can pass trackName/trackAvatar to avoid
+      // losing the avatar to that server-side resolution.
       const t = await api.post<TrackedListing>("/api/tracked", {
         kind: kind as TrackedKind,
         id,
-        name: "",
-        avatar: "",
+        name: trackName ?? "",
+        avatar: trackAvatar ?? "",
         uncensored,
         auto_send: false,
       });
@@ -165,24 +184,37 @@ export default function ListingPage({
 
   const firstTitle = data?.items?.[0]?.title || "";
 
+  const renderedHeaderSlot =
+    typeof headerSlot === "function" ? headerSlot({ uncensored }) : headerSlot;
+
+  // Hide-downloaded only filters the items already on this (server-paginated)
+  // page — it can't reach ahead into pages that haven't been fetched yet.
+  const visibleItems =
+    hideDownloaded && presence
+      ? (data?.items ?? []).filter((it) => !presence.has(it.code))
+      : data?.items ?? [];
+
   return (
     <div className="space-y-4">
+      {renderedHeaderSlot && <div>{renderedHeaderSlot}</div>}
       <div className="flex flex-wrap items-center gap-3">
-        <div>
-          <div className="text-xs text-muted-foreground">{label}</div>
-          {tracked?.name ? (
-            <>
-              <h1 className="text-lg font-semibold text-foreground">
-                {tracked.name}
-              </h1>
-              <div className="font-mono text-xs text-muted-foreground">
-                slug: {id}
-              </div>
-            </>
-          ) : (
-            <h1 className="font-mono text-lg text-primary">{id}</h1>
-          )}
-        </div>
+        {!renderedHeaderSlot && (
+          <div>
+            <div className="text-xs text-muted-foreground">{label}</div>
+            {tracked?.name ? (
+              <>
+                <h1 className="text-lg font-semibold text-foreground">
+                  {tracked.name}
+                </h1>
+                <div className="font-mono text-xs text-muted-foreground">
+                  slug: {id}
+                </div>
+              </>
+            ) : (
+              <h1 className="font-mono text-lg text-primary">{id}</h1>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Checkbox
             id="listing-uncensored"
@@ -256,83 +288,23 @@ export default function ListingPage({
               </span>
             )}
           </div>
-          {tracked && presenceMeta && (
-            <div className="space-y-1 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
-              <div className="flex flex-wrap items-center gap-3">
-                <span>
-                  追蹤全集共{" "}
-                  <span className="font-semibold text-foreground">
-                    {presenceMeta.total}
-                  </span>{" "}
-                  部 ・{" "}
-                  <span className="text-emerald-300">
-                    已下載 {presenceMeta.total - presenceMeta.missing}
-                  </span>{" "}
-                  ／{" "}
-                  <span className="text-amber-300">
-                    缺漏 {presenceMeta.missing}
-                  </span>
-                  {presenceMeta.extras > 0 && (
-                    <>
-                      {" "}・{" "}
-                      <span
-                        className="text-purple-300"
-                        title="此資料夾有,但不在 JavBus 列表內的番號"
-                      >
-                        多餘 {presenceMeta.extras}
-                      </span>
-                    </>
-                  )}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto h-6 px-2 text-xs"
-                  onClick={() => loadPresence(true)}
-                  disabled={presenceBusy}
-                >
-                  {presenceBusy ? "重建中…" : "重新整理 PikPak 索引"}
-                </Button>
-              </div>
-              {presenceMeta.expected_root && (
-                <div className="text-muted-foreground/70">
-                  判斷路徑:
-                  <span className="ml-1 font-mono text-foreground/70">
-                    {presenceMeta.expected_root}/&lt;番號&gt;
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-          {tracked && presenceError && !presenceMeta && (
-            <div
-              role="alert"
-              className="flex flex-wrap items-center gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300"
-            >
-              <span className="inline-flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" aria-hidden />
-                <span>
-                  缺漏讀取失敗:{presenceError}
-                  <span className="ml-1 text-red-300/70">
-                    (JavBus 可能限流 / 暫時無法連線,稍後再試)
-                  </span>
-                </span>
-              </span>
-              <button
-                type="button"
-                onClick={() => loadPresence(true)}
-                disabled={presenceBusy}
-                className="ml-auto rounded-md border border-red-400/30 px-2 py-0.5 transition hover:bg-red-500/15 disabled:opacity-40"
-              >
-                {presenceBusy ? "重試中…" : "重試"}
-              </button>
-            </div>
+          {tracked && (
+            <PresenceSummary
+              meta={presenceMeta}
+              error={presenceError}
+              busy={presenceBusy}
+              onRefresh={() => loadPresence(true)}
+              hideDownloaded={hideDownloaded}
+              onHideDownloadedChange={setHideDownloaded}
+            />
           )}
           {data.items.length === 0 ? (
             <EmptyState icon={PackageSearch} title="這一頁沒有作品" />
+          ) : visibleItems.length === 0 ? (
+            <EmptyState icon={Check} title="這一頁都已下載" />
           ) : (
             <MovieGrid>
-              {data.items.map((it) => (
+              {visibleItems.map((it) => (
                 <MovieCard
                   key={it.code + it.detail_url}
                   item={it}

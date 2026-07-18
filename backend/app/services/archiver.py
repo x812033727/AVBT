@@ -401,6 +401,7 @@ class ArchiverState:
             "last_legacy_sweep_moved": _last_legacy_sweep_moved,
             "last_legacy_sweep_error": _last_legacy_sweep_error,
             "legacy_sweep_swept_total": _legacy_swept_total,
+            "cleanup_error_total": _cleanup_error_total,
         }
 
 
@@ -421,6 +422,12 @@ _last_legacy_sweep_at: datetime | None = None
 _last_legacy_sweep_moved: int = 0
 _last_legacy_sweep_error: str = ""
 _legacy_swept_total: int = 0
+
+# Count of per-file "error" events phase-2 cleanup (rename/trash/move
+# failures inside ``_cleanup_target_parents``) has yielded across every
+# run. Cumulative, never reset — a status-page trend indicator, not a
+# per-run count.
+_cleanup_error_total: int = 0
 
 
 def _sweep_due() -> bool:
@@ -920,16 +927,29 @@ async def _cleanup_target_parents(parent_ids: set[str]) -> int:
     Returns the count of folders we successfully traversed."""
     from .reorganize import _phase2_cleanup_target
 
+    global _cleanup_error_total
+
     cleaned = 0
     for pid in parent_ids:
         try:
             children = await pikpak_service.list_files(pid, size=500)
             if not children:
                 continue
-            async for _ev in _phase2_cleanup_target(
+            error_count = 0
+            first_reason = ""
+            async for ev in _phase2_cleanup_target(
                 pid, pid, children, dry_run=False, idx_start=0
             ):
-                pass  # silent consume — this is background tidying
+                if ev.get("action") == "error":
+                    error_count += 1
+                    if not first_reason:
+                        first_reason = ev.get("reason") or ""
+            if error_count:
+                _cleanup_error_total += error_count
+                logger.warning(
+                    "phase-2 cleanup %s: %d error(s); first: %s",
+                    pid, error_count, first_reason,
+                )
             cleaned += 1
         except Exception as exc:  # noqa: BLE001
             logger.debug("cleanup target %s failed: %s", pid, exc)

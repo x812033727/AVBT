@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
   api,
+  type CachedDetailLite,
   type MissingCodesResult,
   type SearchResult,
   type TrackedKind,
@@ -54,6 +55,7 @@ export default function ListingPage({
   const [uncensored, setUncensored] = useState(false);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<SearchResult | null>(null);
+  const [metaMap, setMetaMap] = useState<Record<string, CachedDetailLite>>({});
   const [tracked, setTracked] = useState<TrackedListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +91,16 @@ export default function ListingPage({
         }
         setData(res);
         setPage(p);
+        // Best-effort card enrichment from the local detail cache — one
+        // POST per page, hits only, silently absent otherwise. Never a
+        // live JavBus fetch.
+        api
+          .post<{ items: Record<string, CachedDetailLite> }>(
+            "/api/javbus/details/cached",
+            { codes: res.items.map((it) => it.code) }
+          )
+          .then((r) => setMetaMap(r.items))
+          .catch(() => setMetaMap({}));
       } catch (e: any) {
         setError(e.message);
         setData(null);
@@ -316,6 +328,7 @@ export default function ListingPage({
                   key={it.code + it.detail_url}
                   item={it}
                   present={presence ? presence.has(it.code) : undefined}
+                  meta={metaMap[it.code]}
                 />
               ))}
             </MovieGrid>

@@ -53,7 +53,11 @@ _CODE_RE = re.compile(
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
-_SPLIT_RE = re.compile(rf"(\d{{0,4}}{_LABEL_RE})(\d{{2,6}})$", re.IGNORECASE)
+# _SPLIT_RE deliberately does NOT take the PA0 alternative: real PA0
+# inputs are always hyphenated (483PA0-xxx) so the no-hyphen splitter
+# never serves them, and including PA0 minted a ghost for the exact
+# PA0+6-digit unhyphenated shape (opus review of the allowlist).
+_SPLIT_RE = re.compile(r"(\d{0,4}[A-Z]{2,8})(\d{2,6})$", re.IGNORECASE)
 _PREFIX_RE = re.compile(rf"^(\d{{1,4}})({_LABEL_RE}-\d{{2,6}})$")
 
 # Numeric prefixes (300MIUM, 259LUXU, 200GANA, …) are ALWAYS stripped

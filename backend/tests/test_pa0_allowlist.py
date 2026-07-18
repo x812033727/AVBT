@@ -30,3 +30,10 @@ def test_existing_classes_byte_identical():
     assert extract_jav_code("SOE00829HHB3") == "SOE-829"
     assert extract_jav_code("300MIUM-1098") == "MIUM-1098"
     assert extract_jav_code_full("OFJE-296CD1-B.mp4") is not None
+
+
+def test_unhyphenated_pa0_glue_stays_unparsed():
+    # The no-hyphen splitter deliberately excludes PA0: this shape was a
+    # ghost vector (PA0+exactly-6-digits) and no real input is unhyphenated.
+    assert extract_jav_code("PA0123456") is None
+    assert extract_jav_code("483PA0123456") is None

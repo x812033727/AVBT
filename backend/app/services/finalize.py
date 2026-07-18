@@ -459,11 +459,50 @@ async def finalize_code_folder_stream(
                 purge_folders=[f for f, _d in folder_depth],
             )
         else:
-            yield {"type": "warn",
-                   "message": f"{code} 資料夾內沒有影片,略過(不做任何刪除)"}
+            # Ad shell: files landed but not one video or container
+            # (same verdict as wrapper_is_ad_shell — the listing is
+            # complete and settled here, since partial / transferring
+            # aborted above). Leaving it "略過" forever deadlocks the
+            # row: finalize keeps skipping, the reaper won't abandon
+            # while a per-code folder exists, and the shell's presence
+            # path makes every missing-scan read the code as collected
+            # so nothing ever re-sends it (EDD-138 / OYC-205 pattern;
+            # live 2026-07-18: ~95 sweep-archived shells from 07-15).
+            # Trash the whole folder — recoverable, never
+            # delete_forever — and still report no_video so
+            # run_finalize returns None: with the shell gone the
+            # reaper's nothing-landed check turns true, the row closes,
+            # and the code is back in the missing-scan's sight.
+            # Kept conservative on purpose:
+            # - empty listing → skip (PikPak lists freshly moved
+            #   folders as empty while files are in flight, #140);
+            # - any video-extension file, even a sub-keeper ad clip →
+            #   skip (might be a real small film);
+            # - any container → skip (container-swap loop's job, #173).
+            shell_files = [e for e, _p in entries if not _is_folder(e)]
+            is_ad_shell = bool(shell_files) and not any(
+                is_video(e.name) or ext_of(e.name) in CONTAINER_EXTS
+                for e in shell_files
+            )
+            trashed = 0
+            if is_ad_shell:
+                try:
+                    if not dry_run:
+                        await _retry_transient(
+                            lambda: svc.trash_files([folder_id]))
+                        trashed = 1
+                    yield {"type": "progress", "current": 1, "kind": "folder",
+                           "action": "trash", "source": folder_leaf,
+                           "target": None, "reason": "ad_shell_no_video"}
+                except Exception as exc:  # noqa: BLE001
+                    yield {"type": "warn",
+                           "message": f"{code} 廣告殼資料夾丟垃圾桶失敗:{exc}"}
+            else:
+                yield {"type": "warn",
+                       "message": f"{code} 資料夾內沒有影片,略過(不做任何刪除)"}
             yield {"type": "done", "result": {
                 "kept": 0, "renamed": 0, "moved": 0, "purged": 0,
-                "trashed": 0, "skipped": 0, "settling": 0, "errors": 0,
+                "trashed": trashed, "skipped": 0, "settling": 0, "errors": 0,
                 "dry_run": dry_run, "no_video": True,
             }}
             return

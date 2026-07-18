@@ -313,13 +313,57 @@ async def test_folder_with_unplanned_leftover_is_skipped():
     assert "wrap" not in svc.purged and "wrap" not in svc.trashed
 
 
-async def test_no_video_aborts_and_run_finalize_returns_none():
-    svc = FakeSvc({"root": [_file("readme.txt", "t", 0)]})
+async def test_ad_shell_folder_is_trashed_and_row_left_for_reaper():
+    """Files but zero video/container = ad shell. Leaving it "略過" forever
+    strands the row (finalize skips, the reaper sees a folder and won't
+    abandon) AND the shell's presence path makes every missing-scan think
+    the code is collected, so nothing ever re-sends it (live 2026-07-18:
+    ~95 rows from 07-15, EKDV-244/ESK-253/KKJ-024…). Trash the shell —
+    recoverable — and keep returning None so the reaper's nothing-landed
+    check turns true and abandons the row honestly."""
+    svc = FakeSvc({
+        "root": [_file("最新網址.txt", "t", 0), _file("宣傳.url", "u", 0),
+                 _folder("Sample", "smp")],
+        "smp": [_file("screen1.jpg", "s1", 1)],
+    })
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    assert svc.trashed == ["root"]
+    assert not svc.purged
+    done = events[-1]["result"]
+    assert done["no_video"] is True and done["trashed"] == 1
+    svc2 = FakeSvc({
+        "root": [_file("screens.jpg", "s", 2)],
+    })
+    assert await run_finalize(svc2, "MIDV-001", folder_id="root") is None
+    assert svc2.trashed == ["root"]
+
+
+async def test_ad_shell_dry_run_touches_nothing():
+    svc = FakeSvc({"root": [_file("screens.jpg", "s", 2)]})
+    events = await _collect(svc, "MIDV-001", "root", dry_run=True)
+    assert not svc.trashed and not svc.purged
+    assert events[-1]["result"]["no_video"] is True
+
+
+async def test_container_only_folder_is_skipped_not_trashed():
+    # A lone disc image is the container-swap loop's business (#173) —
+    # it must survive until a COMPLETE replacement video lands.
+    svc = FakeSvc({"root": [_file("MIDV-001.iso", "iso", 20000)]})
     events = await _collect(svc, "MIDV-001", "root", dry_run=False)
     assert events[0]["type"] == "warn"
     assert events[-1]["result"]["no_video"] is True
     assert not svc.purged and not svc.trashed
     assert await run_finalize(svc, "MIDV-001", folder_id="root") is None
+
+
+async def test_empty_folder_is_skipped_not_trashed():
+    # PikPak's optimistic listings show freshly moved folders as empty
+    # while files are still in flight (#140) — empty ≠ ad shell.
+    svc = FakeSvc({"root": []})
+    events = await _collect(svc, "MIDV-001", "root", dry_run=False)
+    assert events[0]["type"] == "warn"
+    assert events[-1]["result"]["no_video"] is True
+    assert not svc.purged and not svc.trashed
 
 
 async def test_run_finalize_success_returns_summary():

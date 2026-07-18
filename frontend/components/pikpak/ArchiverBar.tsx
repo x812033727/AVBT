@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 import LegacySweepButton from "@/components/LegacySweepButton";
 import type { ArchiverStatus } from "@/lib/api";
@@ -37,6 +38,20 @@ export default function ArchiverBar({
       <span>累計 {archiver.archived_total} 個</span>
       {archiver.last_run && (
         <span className="text-muted-foreground/60">最後 {fmtTime(archiver.last_run)}</span>
+      )}
+      <span className="font-mono text-muted-foreground/60">
+        finalize×{archiver.finalize_concurrency}
+      </span>
+      <span className="font-mono text-muted-foreground/60">
+        poll×{archiver.pcloud_poll_concurrency}
+      </span>
+      {!!archiver.abandoned_total && (
+        <Link
+          href="/history?abandoned=true"
+          className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-amber-300 hover:bg-amber-500/30"
+        >
+          放棄 {archiver.abandoned_total}
+        </Link>
       )}
       <Button
         variant="outline"

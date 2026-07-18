@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Check, History, Loader2 } from "lucide-react";
 import {
   api,
@@ -45,15 +46,34 @@ const PHASE_OPTIONS = [
   { value: "PHASE_TYPE_ERROR", label: "ERROR" },
 ];
 
+const ABANDONED_OPTIONS = [
+  { value: "", label: "全部" },
+  { value: "true", label: "只看已放棄" },
+  { value: "false", label: "排除已放棄" },
+];
+
 const SELECT_CLASS =
   "h-9 rounded-md border border-input bg-background px-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function HistoryListPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-muted-foreground">載入中…</div>}>
+      <HistoryListPageInner />
+    </Suspense>
+  );
+}
+
+function HistoryListPageInner() {
+  const searchParams = useSearchParams();
   const [code, setCode] = useState("");
   const [debouncedCode, setDebouncedCode] = useState("");
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [archived, setArchived] = useState("");
+  const [abandoned, setAbandoned] = useState(() => {
+    const v = searchParams.get("abandoned");
+    return v === "true" || v === "false" ? v : "";
+  });
   const [phase, setPhase] = useState("");
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<HistoryPage | null>(null);
@@ -91,6 +111,7 @@ export default function HistoryListPage() {
       if (debouncedCode) params.set("code", debouncedCode);
       if (debouncedQ) params.set("q", debouncedQ);
       if (archived) params.set("archived", archived);
+      if (abandoned) params.set("abandoned", abandoned);
       if (phase) params.set("phase", phase);
       const res = await api.get<HistoryPage>(
         `/api/collection/history?${params.toString()}`
@@ -108,7 +129,7 @@ export default function HistoryListPage() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedCode, debouncedQ, archived, phase, offset]);
+  }, [debouncedCode, debouncedQ, archived, abandoned, phase, offset]);
 
   useEffect(() => {
     load();
@@ -349,6 +370,23 @@ export default function HistoryListPage() {
             ))}
           </select>
         </div>
+        <div>
+          <div className="mb-1 text-xs text-muted-foreground">死信</div>
+          <select
+            value={abandoned}
+            onChange={(e) => {
+              setAbandoned(e.target.value);
+              setOffset(0);
+            }}
+            className={SELECT_CLASS}
+          >
+            {ABANDONED_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <Button type="submit" variant="outline" disabled={loading}>
           {loading ? "讀取中…" : "刷新"}
         </Button>
@@ -432,7 +470,14 @@ export default function HistoryListPage() {
                       </div>
                     </TableCell>
                     <TableCell className="px-3">
-                      <StatusBadge tone={phaseView.tone}>{phaseView.label}</StatusBadge>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <StatusBadge tone={phaseView.tone}>{phaseView.label}</StatusBadge>
+                        {it.abandoned && (
+                          <span title={it.message}>
+                            <StatusBadge tone="warning">已放棄</StatusBadge>
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="px-3 text-xs">
                       {it.archived ? (

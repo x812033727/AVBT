@@ -72,6 +72,16 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
     ).scalar_one()
     archive_rate = archived_count / with_file if with_file else 0.0
 
+    # Dead-lettered rows: excluded from every aggregate above by design,
+    # but never reported — surface the count on its own.
+    abandoned_total = (
+        await session.execute(
+            select(func.count())
+            .select_from(OfflineTaskLog)
+            .where(OfflineTaskLog.abandoned.is_(True))
+        )
+    ).scalar_one()
+
     # ----- 30-day trend -----
     cutoff = datetime.utcnow() - timedelta(days=_TREND_DAYS - 1)
     cutoff = cutoff.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -174,5 +184,6 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
         top_actresses=top_actresses,
         top_genres=top_genres,
         pcloud_transfers_by_status=transfers_by_status,
+        abandoned_total=int(abandoned_total),
         built_at=datetime.utcnow(),
     )

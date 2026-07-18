@@ -170,6 +170,7 @@ async def history(
     offset: int = Query(0, ge=0),
     code: str | None = None,
     archived: bool | None = None,
+    abandoned: bool | None = None,
     phase: str | None = None,
     q: str | None = None,
     session: AsyncSession = Depends(get_session),
@@ -183,6 +184,9 @@ async def history(
     if archived is not None:
         stmt = stmt.where(OfflineTaskLog.archived == archived)
         count_stmt = count_stmt.where(OfflineTaskLog.archived == archived)
+    if abandoned is not None:
+        stmt = stmt.where(OfflineTaskLog.abandoned == abandoned)
+        count_stmt = count_stmt.where(OfflineTaskLog.abandoned == abandoned)
     if phase:
         stmt = stmt.where(OfflineTaskLog.phase == phase)
         count_stmt = count_stmt.where(OfflineTaskLog.phase == phase)
@@ -207,6 +211,7 @@ async def history(
             message=r.message,
             archived=bool(r.archived),
             archived_at=r.archived_at,
+            abandoned=bool(r.abandoned),
             created_at=r.created_at,
         )
         for r in rows

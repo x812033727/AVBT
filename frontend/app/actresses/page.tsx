@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Users } from "lucide-react";
 import { toast } from "@/components/Toast";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -54,6 +54,12 @@ export default function ActressesPage() {
     }
   }
 
+  // 4,000+ cards in one paint stalls the page — render a growing window
+  // instead (IntersectionObserver bumps it as the sentinel scrolls in).
+  const STEP = 60;
+  const [visibleCount, setVisibleCount] = useState(STEP);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
   const list = useMemo(() => {
     if (!data) return [];
     const q = query.trim().toLowerCase();
@@ -66,6 +72,22 @@ export default function ActressesPage() {
         : a.name.localeCompare(b.name, "ja")
     );
   }, [data, query, sort]);
+
+  useEffect(() => {
+    setVisibleCount(STEP);
+  }, [query, sort]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const ob = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        setVisibleCount((n) => Math.min(n + STEP, list.length));
+      }
+    });
+    ob.observe(el);
+    return () => ob.disconnect();
+  }, [list.length]);
 
   if (error) return <ErrorBox message={error} />;
   if (!data) {
@@ -141,7 +163,7 @@ export default function ActressesPage() {
         />
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-          {list.map((a) => (
+          {list.slice(0, visibleCount).map((a) => (
             <Link
               key={a.name}
               href={`/actresses/${encodeURIComponent(a.name)}`}
@@ -167,6 +189,11 @@ export default function ActressesPage() {
               <div className="text-xs text-muted-foreground">{a.count} 部</div>
             </Link>
           ))}
+        </div>
+      )}
+      {visibleCount < list.length && (
+        <div ref={sentinelRef} className="py-4 text-center text-sm text-muted-foreground">
+          載入中…({visibleCount} / {list.length})
         </div>
       )}
     </div>

@@ -42,7 +42,7 @@ from ..config import (
     task_folder_path,
 )
 from ..database import SessionLocal
-from ..models import TrackedListing
+from ..models import OfflineTaskLog, TrackedListing
 from .archiver import _resolve_archive_path_by_code, _safe_code, _safe_name
 from .jav_code import KIND_LABELS_CH, ext_of, extract_jav_code, is_video
 from .pikpak import (
@@ -139,6 +139,41 @@ def _phase1_file_leaf(original_name: str, code_leaf: str, ext: str) -> str:
     return f"{code_leaf}{ext}"
 
 
+async def _task_log_codes(file_ids: list[str]) -> dict[str, str]:
+    """Map wrapper/file ids → the 番號 they were submitted for.
+
+    The OfflineTaskLog row is the authoritative identity of a landed
+    wrapper: BT release names routinely defeat ``extract_jav_code``
+    (glued suffixes like ``gdtm148hd`` parse to nothing; site tags like
+    ``RCT-116-AVI@Touch99`` parse to a *wrong* code), which strands the
+    wrapper in TASK forever or parks it in 已完成 under a phantom code
+    while finalize loops on "找不到歸檔資料夾". Rows are matched by
+    ``file_id`` regardless of finalized/abandoned state — a dead-lettered
+    row still names the code correctly. Later rows win (re-downloads).
+
+    Returns ``{}`` on any DB error so the sweep degrades to pure
+    name-parsing instead of failing outright."""
+    ids = [fid for fid in file_ids if fid]
+    if not ids:
+        return {}
+    try:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        OfflineTaskLog.file_id, OfflineTaskLog.code
+                    ).where(
+                        OfflineTaskLog.file_id.in_(ids),
+                        OfflineTaskLog.code != "",
+                    ).order_by(OfflineTaskLog.created_at)
+                )
+            ).all()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("task-log code lookup failed: %s", exc)
+        return {}
+    return {file_id: code for file_id, code in rows}
+
+
 async def _phase1_migrate_from(
     source_path: str,
     *,
@@ -168,6 +203,10 @@ async def _phase1_migrate_from(
     children = [c for c in children_all if c.name not in skip_names]
     yield {"type": "_phase1_total", "count": len(children), "source": source_path}
 
+    # DB-first identity: the submitted code from OfflineTaskLog beats
+    # whatever the BT release name parses to (see _task_log_codes).
+    db_codes = await _task_log_codes([c.id for c in children])
+
     legacy_path = settings.pikpak_archive_folder or "AVBT/已完成"
     target_parent_cache: dict[str, str] = {}
     siblings_cache: dict[str, set[str]] = {}
@@ -190,7 +229,7 @@ async def _phase1_migrate_from(
             "context": source_path,
         }
 
-        code = extract_jav_code(child.name)
+        code = db_codes.get(child.id) or extract_jav_code(child.name)
         if not code:
             yield {**base, "action": "skip", "target": None, "reason": "no_code"}
             continue

@@ -1157,7 +1157,17 @@ async def _finalize_retry_pass() -> int:
                 # archiver loop (a folder rename once hung it for good —
                 # no timeout anywhere down the pikpakapi stack).
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
-                    if await run_finalize(pikpak_service, row.code):
+                    # Shell-trash (#207) only for rows aged past the
+                    # abandon grace: their folders are long settled, so
+                    # the #140 optimistic-empty window cannot apply.
+                    # Fresh rows keep the safe skip-forever behaviour.
+                    if await run_finalize(
+                        pikpak_service, row.code,
+                        allow_shell_trash=(
+                            row.created_at
+                            < datetime.utcnow() - _ABANDON_GRACE
+                        ),
+                    ):
                         if not row.archived:
                             # Collecting-orphan: the sweep's stamp never
                             # matched, so close the move here too.

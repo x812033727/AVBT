@@ -309,6 +309,13 @@ async def _phase1_migrate_from(
                 # process and deletes the folder with the file still in
                 # flight.
                 pikpak_service.record_move_source(source_id)
+                if is_folder:
+                    # The moved wrapper's own listing is optimistic too
+                    # (#140): right after the move its children can read
+                    # as empty. Stamp the wrapper so finalize's
+                    # empty-shell trash waits out the settle gate
+                    # instead of condemning a fresh move.
+                    pikpak_service.record_move_source(child.id)
                 if child.name != final_leaf:
                     try:
                         await pikpak_service.rename_file(child.id, final_leaf)

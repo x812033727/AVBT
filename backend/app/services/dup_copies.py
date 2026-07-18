@@ -73,6 +73,12 @@ def plan_group(entries: list) -> tuple[list, Any | None]:
              if (getattr(e, "phase", "") or "") in ("", "PHASE_TYPE_COMPLETE")]
     if not ready:
         return [], None
+    # An unknown size cannot lose a size contest: PikPak lists real files
+    # with size=None (#220/#225), and collapsing that to 0 made a genuine
+    # upgrade the guaranteed loser — trashed, then the stale small copy
+    # renamed over it. Defer the whole group until every size is known.
+    if any(e.size is None for e in ready):
+        return [], None
     # Biggest wins; name breaks ties so the choice is stable across runs.
     ranked = sorted(ready, key=lambda e: (-(e.size or 0), e.name))
     winner, losers = ranked[0], ranked[1:]

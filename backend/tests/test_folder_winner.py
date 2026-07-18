@@ -80,6 +80,25 @@ async def test_two_disc_boxset_keeps_both_as_parts(monkeypatch):
     assert sorted(svc.trashed) == ["j", "t", "wrap"]
 
 
+async def test_none_size_disc_still_kept_as_part(monkeypatch):
+    # PikPak can list a real disc with size=None (#220/#225). Collapsing
+    # it to 0 broke the "all parts ≥500MB" test → the set was demoted to
+    # single-keeper and the None-size disc trashed. None → assume legit,
+    # matching finalize's part gate; both discs survive.
+    svc = StubSvc([
+        _file("idbd-939-1.mp4", "d1", 10300),
+        SimpleNamespace(name="idbd-939-2.mp4", id="d2",
+                        kind="drive#file", size=None,
+                        phase="PHASE_TYPE_COMPLETE"),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "IDBD-939", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    assert sorted(i for ids, _p in svc.moved for i in ids) == ["d1", "d2"]
+    assert "d2" not in svc.trashed
+
+
 async def test_resolution_dup_still_drops_smaller(monkeypatch):
     svc = StubSvc([
         _file("MIDV-001.mp4", "big", 6000),

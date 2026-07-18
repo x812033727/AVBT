@@ -33,7 +33,12 @@ def _patch_scraper(monkeypatch, *, title="Some Title", release_date="2020-01-01"
         return "<html>stub</html>"
 
     def fake_parse(html, code):
-        return MovieDetail(code=code, title=title, release_date=release_date)
+        # Carry one genre: rows without genres are now treated as
+        # parse-stale (pre-genre-fix cache) and deliberately refetch.
+        from app.schemas import GenreRef
+
+        return MovieDetail(code=code, title=title, release_date=release_date,
+                           genres=[GenreRef(name="g", id="1")])
 
     monkeypatch.setattr(jb, "_fetch", fake_fetch)
     monkeypatch.setattr(jb, "_parse_detail", fake_parse)

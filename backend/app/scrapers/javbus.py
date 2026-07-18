@@ -778,17 +778,25 @@ def _detail_cache_put(code: str, detail: MovieDetail) -> None:
             _detail_cache.pop(k, None)
 
 
+def _parse_stale(d: MovieDetail) -> bool:
+    """Cached rows written before the genre-parse fix carry genres=[]
+    even though JavBus tags essentially every title. Treat such a hit as
+    stale so one view-paced refetch heals the row (a genuinely tagless
+    title refetches per view — rare, bounded, and self-limiting)."""
+    return bool(d.title) and not d.genres
+
+
 async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
     code = code.strip().upper()
     owns_inflight = False
     if not refresh:
         cached = _detail_cache_get(code)
-        if cached is not None:
+        if cached is not None and not _parse_stale(cached):
             return cached
         # Coalesce concurrent callers onto the same in-flight fetch.
         async with _detail_cache_lock:
             cached = _detail_cache_get(code)
-            if cached is not None:
+            if cached is not None and not _parse_stale(cached):
                 return cached
             event = _detail_inflight.get(code)
             if event is None:
@@ -798,7 +806,7 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
         if not owns_inflight:
             await event.wait()
             cached = _detail_cache_get(code)
-            if cached is not None:
+            if cached is not None and not _parse_stale(cached):
                 return cached
             # Owner finished but didn't cache (empty title / error). Fall
             # through to fetch ourselves — rare and we deliberately do
@@ -814,7 +822,7 @@ async def fetch_detail(code: str, *, refresh: bool = False) -> MovieDetail:
             # finally below always releases the in-flight event; waiters
             # then hit the in-memory entry we just refilled.
             db_hit = await detail_cache.get(code)
-            if db_hit is not None:
+            if db_hit is not None and not _parse_stale(db_hit):
                 _detail_cache_put(code, db_hit)
                 return db_hit
 
@@ -1017,6 +1025,23 @@ def _parse_detail(html: str, code: str) -> MovieDetail:
                     href = a.get("href", "")
                     gm = _GENRE_PATH_RE.search(href)
                     genres.append(GenreRef(name=name, id=gm.group(1) if gm else ""))
+
+        # 類別 actually lives OUTSIDE the span.header pattern on the real
+        # page: a bare ``<p class="header">類別:</p>`` followed by a
+        # sibling ``<p>`` of ``<span class="genre">`` checkboxes — the
+        # loop above can never see it, which shipped genres=[] for every
+        # cached detail (live: whole 15k-row cache). Select the spans
+        # directly. Only /genre/ hrefs count: uncensored pages reuse
+        # span.genre for ACTRESS links (/star/…).
+        if not genres:
+            for a in info_root.select("span.genre a"):
+                name = _text(a)
+                if not name:
+                    continue
+                gm = _GENRE_PATH_RE.search(a.get("href", ""))
+                if not gm:
+                    continue
+                genres.append(GenreRef(name=name, id=gm.group(1)))
 
         # Actresses live in their own block below the genre paragraphs.
         star_block = info_root.find("p", class_="star-show")

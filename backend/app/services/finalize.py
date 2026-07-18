@@ -160,7 +160,9 @@ def build_finalize_plan(
     dup_trash: list[Any] = []
     ad_purge: list[Any] = []
     for canon, members in groups.items():
-        if len(members) >= 2 and all((m.size or 0) >= part_min for m in members):
+        if len(members) >= 2 and all(
+            m.size is None or m.size >= part_min for m in members
+        ):
             # Same canonical + all substantial usually means discs, but a
             # member whose name declares an encode (SD/4K tag beside a
             # bare sibling) or whose runtime proves it means encodes of
@@ -194,7 +196,12 @@ def build_finalize_plan(
         else:
             ad_purge.append(best)
         for m in rest:
-            (dup_trash if (m.size or 0) >= junk_bytes else ad_purge).append(m)
+            # size=None → assume legit → recoverable trash, NEVER the
+            # permanent ad-purge (#220-class: None collapsed to 0 sent a
+            # possibly-real video to delete_forever).
+            (dup_trash
+             if (m.size is None or m.size >= junk_bytes)
+             else ad_purge).append(m)
 
     if not keepers:
         # Every video looked like an ad — keep the largest anyway; the

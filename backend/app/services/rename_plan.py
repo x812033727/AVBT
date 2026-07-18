@@ -332,7 +332,8 @@ def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
     median = sizes[len(sizes) // 2]
     parts, outliers = [], []
     for f in files:
-        if (int(f.size or 0) >= median * 0.5
+        if (f.size is None
+                or int(f.size) >= median * 0.5
                 or _part_marker_index(f.name, code) > 0):
             parts.append(f)
         else:
@@ -376,7 +377,8 @@ def low_bitrate_copies(files: list) -> list:
         same_length = (abs(f.duration - biggest.duration)
                        <= max(f.duration, biggest.duration)
                        * _SAME_FILM_DURATION_TOLERANCE)
-        much_smaller = (f.size or 0) <= (biggest.size or 0) * _COPY_MAX_SIZE_FRACTION
+        much_smaller = (f.size is not None
+                        and f.size <= (biggest.size or 0) * _COPY_MAX_SIZE_FRACTION)
         if same_length and much_smaller:
             out.append(f)
     return out
@@ -522,7 +524,7 @@ def _build_video_rename_plan(
                 plan[c.name] = target
             continue
         # Multi-file group: multipart naming if all substantial.
-        if not all((f.size or 0) >= min_size for f in files):
+        if not all(f.size is None or f.size >= min_size for f in files):
             continue
         if require_marker and not any(
             _part_marker_index(f.name, canon) > 0 for f in files

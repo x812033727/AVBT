@@ -51,7 +51,7 @@ class _ListingMemo:
     per-key lock so only the first triggers the load and the rest read
     the stored result. This is NOT a TTL cache: it is discarded when the
     call returns, so it can never serve a stale listing to a later call
-    or to a change-polling caller such as confirm_arrivals. Neither failed
+    or to a change-polling caller. Neither failed
     loads nor empty results are stored, so a later caller re-lists (an
     empty [] may be a swallowed transient failure, not a genuinely empty
     folder)."""

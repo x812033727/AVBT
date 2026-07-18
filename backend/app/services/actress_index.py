@@ -15,6 +15,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -48,6 +49,18 @@ _cache: ActressAggregation | None = None
 _built_at = 0.0
 _lock = asyncio.Lock()
 
+# Light per-code projection of the fields ``_build`` actually needs out
+# of a ``MovieDetail`` blob: (title, cover, release_date, [(name, id), ...]).
+_Projection = tuple[str, str, str, list[tuple[str, str]]]
+
+# Row-level parse cache, keyed by code, keyed off ``fetched_at`` so a
+# rebuild (triggered at least every 300s by detail_backfill) only pays
+# ``model_validate_json`` for rows whose detail actually changed instead
+# of re-parsing every cached row's JSON on every rebuild. Survives across
+# ``invalidate()`` on purpose — that only forces ``_build`` to run again,
+# it doesn't mean every row changed.
+_parsed: dict[str, tuple[datetime, _Projection]] = {}
+
 
 def invalidate() -> None:
     global _built_at
@@ -72,7 +85,11 @@ async def _build() -> ActressAggregation:
     async with SessionLocal() as session:
         rows = (
             await session.execute(
-                select(MovieDetailCache.code, MovieDetailCache.detail)
+                select(
+                    MovieDetailCache.code,
+                    MovieDetailCache.detail,
+                    MovieDetailCache.fetched_at,
+                )
             )
         ).all()
         avatar_rows = (
@@ -83,33 +100,50 @@ async def _build() -> ActressAggregation:
     avatars = {aid: av for aid, av in avatar_rows if av}
 
     agg = ActressAggregation(downloaded_total=len(downloaded))
-    for code, detail_json in rows:
+    table_codes: set[str] = set()
+    for code, detail_json, fetched_at in rows:
+        table_codes.add(code)
         if code not in downloaded:
             continue
-        try:
-            detail = MovieDetail.model_validate_json(detail_json)
-        except Exception:  # noqa: BLE001 — one corrupt row must not kill the page
-            logger.warning("actress index: corrupt detail row for %s", code)
-            continue
+
+        cached = _parsed.get(code)
+        if cached is not None and cached[0] == fetched_at:
+            projection = cached[1]
+        else:
+            try:
+                detail = MovieDetail.model_validate_json(detail_json)
+            except Exception:  # noqa: BLE001 — one corrupt row must not kill the page
+                logger.warning("actress index: corrupt detail row for %s", code)
+                _parsed.pop(code, None)
+                continue
+            refs = [
+                ((ref.name or ""), (ref.id or "")) for ref in detail.actresses
+            ]
+            projection = (detail.title, detail.cover, detail.release_date or "", refs)
+            _parsed[code] = (fetched_at, projection)
+
         agg.indexed_total += 1
+        title, cover, date, refs = projection
         item = MovieListItem(
-            code=code,
-            title=detail.title,
-            cover=detail.cover,
-            detail_url="",
-            date=detail.release_date or "",
+            code=code, title=title, cover=cover, detail_url="", date=date,
         )
-        for ref in detail.actresses:
-            name = (ref.name or "").strip()
+        for name, star_id in refs:
+            name = name.strip()
             if not name:
                 continue
             entry = agg.actresses.get(name)
             if entry is None:
                 entry = ActressEntry(name=name)
                 agg.actresses[name] = entry
-            if ref.id and not entry.id:
-                entry.id = ref.id
+            if star_id and not entry.id:
+                entry.id = star_id
             entry.works.append(item)
+
+    # Drop rows that vanished from the table entirely (deleted / expired
+    # cache row) so this dict doesn't grow unbounded across restarts-free
+    # uptime.
+    for stale in [c for c in _parsed if c not in table_codes]:
+        del _parsed[stale]
 
     for entry in agg.actresses.values():
         _sort_works(entry.works)

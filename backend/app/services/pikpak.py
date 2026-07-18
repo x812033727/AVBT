@@ -269,7 +269,12 @@ class PikPakService:
 
         Stamps are wall clock: a backward clock jump keeps gates closed
         longer (safe); the unrecorded window of a hard crash between a
-        move call and its stamp is milliseconds and accepted."""
+        move call and its stamp is milliseconds and accepted.
+
+        A destination-sighting poll (``confirm_arrivals``, since removed)
+        was tried first and proved insufficient on its own — see
+        HRV-012/MTM-010, where files were lost even after a positive
+        sighting at the destination."""
         now = time.time()
         if now < self._boot_guard_until:
             return False
@@ -308,8 +313,8 @@ class PikPakService:
                 token = client.encode_token()
                 if token:
                     self._save_token(token)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PikPak token persist failed: %s", exc)
 
     def _build_kwargs(self, **base: Any) -> dict[str, Any]:
         kwargs = dict(base)
@@ -326,8 +331,8 @@ class PikPakService:
             token = getattr(client, "encoded_token", "") or ""
             if token:
                 self._save_token(token)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PikPak token persist failed: %s", exc)
 
     # ---------- login cooldown ----------
 
@@ -899,31 +904,6 @@ class PikPakService:
         return await self._run_batch(
             ids, lambda c, ch: c.file_batch_move(ch, to_parent_id)
         )
-
-    async def confirm_arrivals(
-        self, parent_id: str, file_ids: set[str],
-        *, attempts: int = 6, delay: float = 5.0,
-    ) -> bool:
-        """True once every id in ``file_ids`` is listed under
-        ``parent_id``. PikPak moves are asynchronous — a move_files()
-        ack does NOT mean the file has left its source folder, and a
-        source that lists empty is not proof either. Deleting the source
-        before the file lands takes the file down with it (live loss:
-        DVDMS-129_3 rode its wrapper into the trash). Only a positive
-        sighting at the DESTINATION is proof of arrival."""
-        want = set(file_ids)
-        if not want:
-            return True
-        for i in range(attempts):
-            try:
-                kids, _partial = await self.list_all_files(parent_id)
-                if want <= {k.id for k in kids}:
-                    return True
-            except Exception:  # noqa: BLE001
-                pass  # transient listing failure — poll again
-            if i < attempts - 1:
-                await asyncio.sleep(delay)
-        return False
 
     async def rename_file(self, file_id: str, new_name: str) -> dict:
         return await self._call(lambda c: c.file_rename(file_id, new_name))

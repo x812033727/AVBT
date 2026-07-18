@@ -193,11 +193,6 @@ class FakeSvc:
         self._remove(ids)
         return {}
 
-    async def confirm_arrivals(self, parent_id, file_ids, **_kw):
-        # Mirror the real semantics without the polling: arrival = the
-        # id is listed under the destination right now.
-        return set(file_ids) <= {n.id for n in self._graph.get(parent_id, [])}
-
     # Settle gate: fake moves are instantaneous, so tests default to an
     # open gate; set ``settled = False`` to simulate an in-flight move.
     settled = True

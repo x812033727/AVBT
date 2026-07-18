@@ -1,7 +1,7 @@
 """Actress aggregation: presence ∩ detail-cache grouping for the 女優 page."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -48,6 +48,10 @@ async def _seed(tmp_path, monkeypatch, rows, presence_codes, avatars=()):
     monkeypatch.setattr(ai, "SessionLocal", maker)
     monkeypatch.setattr(ai, "presence_index", FakePresence(presence_codes))
     ai.invalidate()
+    # Hermetic: the parsed-projection cache is a module dict keyed by
+    # code, so it would otherwise leak between tests reusing the same
+    # code strings (e.g. "AAA-001") across different sqlite files.
+    ai._parsed.clear()
     async with maker() as session:
         session.add_all(rows)
         session.add_all(
@@ -150,3 +154,86 @@ async def test_presence_failure_returns_empty(tmp_path, monkeypatch):
     agg = await ai.get(force=True)
     await engine.dispose()
     assert agg.actresses == {} and agg.downloaded_total == 0
+
+
+def _wrap_model_validate_json(monkeypatch):
+    """Count real ``MovieDetail.model_validate_json`` calls so the
+    parsed-projection cache's job — skipping unchanged rows — is
+    directly observable rather than inferred from timing."""
+    calls: list[str] = []
+    orig = ai.MovieDetail.model_validate_json
+
+    def counting(payload):
+        calls.append(payload)
+        return orig(payload)
+
+    monkeypatch.setattr(ai.MovieDetail, "model_validate_json", counting)
+    return calls
+
+
+async def test_unchanged_rows_are_not_reparsed(tmp_path, monkeypatch):
+    calls = _wrap_model_validate_json(monkeypatch)
+    engine = await _seed(
+        tmp_path,
+        monkeypatch,
+        [
+            _detail_row("AAA-001", actresses=[("小島", "star1")]),
+            _detail_row("AAA-002", actresses=[("山田", "")]),
+        ],
+        presence_codes={"AAA-001", "AAA-002"},
+    )
+    await ai.get(force=True)
+    assert len(calls) == 2
+    calls.clear()
+
+    # Second build, same rows untouched — the parsed-projection cache
+    # must serve both from memory instead of re-parsing their JSON.
+    await ai.get(force=True)
+    assert calls == []
+    await engine.dispose()
+
+
+async def test_changed_fetched_at_reparses_only_that_row(tmp_path, monkeypatch):
+    calls = _wrap_model_validate_json(monkeypatch)
+    row_a = _detail_row("AAA-001", actresses=[("小島", "star1")])
+    row_b = _detail_row("AAA-002", actresses=[("山田", "")])
+    engine = await _seed(
+        tmp_path, monkeypatch, [row_a, row_b],
+        presence_codes={"AAA-001", "AAA-002"},
+    )
+    await ai.get(force=True)
+    calls.clear()
+
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        row = await session.get(MovieDetailCache, "AAA-001")
+        # An explicit, distinct offset — not another datetime.utcnow()
+        # call, which could in principle land in the same microsecond
+        # and make the "changed" row undetectable from the unchanged one.
+        row.fetched_at = row.fetched_at + timedelta(days=1)
+        await session.commit()
+
+    await ai.get(force=True)
+    assert len(calls) == 1
+    assert "AAA-001" in calls[0]
+    await engine.dispose()
+
+
+async def test_pruned_code_drops_from_parsed_cache(tmp_path, monkeypatch):
+    engine = await _seed(
+        tmp_path, monkeypatch,
+        [_detail_row("AAA-001", actresses=[("小島", "star1")])],
+        presence_codes={"AAA-001"},
+    )
+    await ai.get(force=True)
+    assert "AAA-001" in ai._parsed
+
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        row = await session.get(MovieDetailCache, "AAA-001")
+        await session.delete(row)
+        await session.commit()
+
+    await ai.get(force=True)
+    assert "AAA-001" not in ai._parsed
+    await engine.dispose()

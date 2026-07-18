@@ -188,6 +188,34 @@ async def missing_all_endpoint(refresh: bool = False):
     return await missing_svc.missing_all(refresh=refresh)
 
 
+# ---------- missing-scan ignore list ----------
+
+# Registered ABOVE the catch-all /{kind}/{slug:path} routes below, same
+# reason as missing-summary/missing-all: "ignored-codes" would otherwise
+# be swallowed as a (kind="ignored-codes", slug=...) lookup.
+
+
+@router.get("/ignored-codes")
+async def list_ignored_codes():
+    return await missing_svc.get_ignored_codes()
+
+
+@router.post("/ignored-codes")
+async def add_ignored_code_endpoint(
+    code: str = Body(..., embed=True),
+    reason: str = Body("", embed=True),
+):
+    code = code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="missing code")
+    return await missing_svc.add_ignored_code(code, reason)
+
+
+@router.delete("/ignored-codes/{code}")
+async def remove_ignored_code_endpoint(code: str):
+    return await missing_svc.remove_ignored_code(code)
+
+
 # ---------- CRUD ----------
 
 

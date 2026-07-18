@@ -14,6 +14,7 @@ here serve the persisted catalog at any age.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -22,7 +23,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import TrackedListing
+from ..models import AppMeta, TrackedListing
 from ..schemas import (
     AggregatedMissing,
     AggregatedMissingItem,
@@ -68,6 +69,93 @@ def _catalog_truncated(pages: int) -> bool:
     window as an extra (live: 2,060 false extras across 8 studios,
     2026-07-17). Callers skip extras entirely and surface the flag."""
     return pages >= max(1, settings.missing_max_pages)
+
+
+# ---------------------------------------------------------------------------
+# Missing-scan ignore list: codes a human has decided don't belong in
+# either bucket (e.g. a JavBus catalog entry with no real release, or a
+# folder the extras detector keeps misjudging). Persisted as one JSON
+# object {code: reason} under a single app_meta row — same storage shape
+# as presence's _BUILT_AT_KEY, just holding a dict instead of a
+# timestamp. Small enough (handful to low hundreds of entries) that a
+# fresh read per call is cheap; callers that loop over many tracked
+# listings in one rebuild (missing_summary / missing_all) load it once
+# and thread the resulting set down instead of re-querying per listing.
+
+IGNORED_CODES_KEY = "missing:ignored_codes"
+
+
+async def get_ignored_codes() -> dict[str, str]:
+    """``{code: reason}`` of codes excluded from missing-scan
+    classification — counted as neither missing nor extra."""
+    async with SessionLocal() as session:
+        meta = await session.get(AppMeta, IGNORED_CODES_KEY)
+    if not meta or not meta.value:
+        return {}
+    try:
+        data = json.loads(meta.value)
+    except ValueError:
+        logger.warning("ignored-codes app_meta value is not valid JSON — ignoring")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _save_ignored_codes(ignored: dict[str, str]) -> None:
+    async with SessionLocal() as session:
+        await session.merge(
+            AppMeta(
+                key=IGNORED_CODES_KEY,
+                value=json.dumps(ignored, ensure_ascii=False),
+            )
+        )
+        await session.commit()
+
+
+async def add_ignored_code(code: str, reason: str = "") -> dict[str, str]:
+    """Add/update one ignored code (normalised) and invalidate the
+    cached aggregate missing views so the change is visible immediately."""
+    norm = normalize_code(code) or code.strip().upper()
+    ignored = await get_ignored_codes()
+    ignored[norm] = reason
+    await _save_ignored_codes(ignored)
+    invalidate_result_caches()
+    return ignored
+
+
+async def remove_ignored_code(code: str) -> dict[str, str]:
+    """Remove one ignored code (normalised) if present."""
+    norm = normalize_code(code) or code.strip().upper()
+    ignored = await get_ignored_codes()
+    ignored.pop(norm, None)
+    await _save_ignored_codes(ignored)
+    invalidate_result_caches()
+    return ignored
+
+
+def _filter_ignored_items(
+    items: list[MovieListItem], ignored: set[str]
+) -> list[MovieListItem]:
+    """Drop ignored codes from a catalog list BEFORE present/missing
+    classification, so they can never surface as "missing"."""
+    if not ignored:
+        return items
+    return [
+        it for it in items if (normalize_code(it.code) or it.code) not in ignored
+    ]
+
+
+def _drop_ignored_extras(
+    extras: list[ExtraCode], ignored: set[str]
+) -> list[ExtraCode]:
+    """Companion filter for the extras side: an ignored code physically
+    present under the listing's folder must not surface as "extra"
+    either — it's simply outside the normal expected-catalog set once
+    filtered out of ``items`` above, so extras needs its own drop."""
+    if not ignored:
+        return extras
+    return [
+        e for e in extras if (normalize_code(e.code) or e.code) not in ignored
+    ]
 
 
 def _compute_extras(
@@ -477,6 +565,10 @@ async def missing_for_listing(
             kind, slug, name, items, uncensored=uncensored, refresh=refresh
         )
 
+    ignored = set(await get_ignored_codes())
+    if items and ignored:
+        items = _filter_ignored_items(items, ignored)
+
     present_codes, missing, expected = _split_present_missing(items, presence)
 
     # Display-side dedup: when the same code is missing from multiple
@@ -508,6 +600,7 @@ async def missing_for_listing(
     truncated = _catalog_truncated(pages)
     if items and not truncated:
         extras = _compute_extras(kind, slug, name, expected)
+        extras = _drop_ignored_extras(extras, ignored)
     else:
         extras = []
 
@@ -546,13 +639,16 @@ async def _summary_item(
     presence: set[str],
     owned: set[str] | None = None,
     fetched: dict[tuple[str, str], datetime] | None = None,
+    ignored: set[str] | None = None,
 ) -> MissingSummaryItem:
     """``owned`` (when not None) restricts missing_count to codes this
     listing owns under the global first-seen ownership rule. Missing
     counts then sum to the deduped total — same numbers the /missing
     page shows after dedup. ``fetched`` is the pre-fetched
     ``listing_catalog.fetched_map()`` so 78 items don't need 78 point
-    queries for their catalog_fetched_at stamp."""
+    queries for their catalog_fetched_at stamp. ``ignored`` is the
+    pre-loaded missing-scan ignore set (see get_ignored_codes) — loaded
+    once by the caller instead of per-listing."""
     expected_root = _expected_root(row.kind, row.id, row.name or "")
     fetched_at = (fetched or {}).get((row.kind, row.id))
     try:
@@ -574,6 +670,8 @@ async def _summary_item(
             row.kind, row.id, row.name or "", items,
             uncensored=bool(row.uncensored),
         )
+    if items and ignored:
+        items = _filter_ignored_items(items, ignored)
     _, missing, expected = _split_present_missing(items, presence)
     if owned is not None:
         missing = [m for m in missing if m.code in owned]
@@ -583,6 +681,7 @@ async def _summary_item(
     truncated = _catalog_truncated(pages)
     if items and not truncated:
         extras = _compute_extras(row.kind, row.id, row.name or "", expected)
+        extras = _drop_ignored_extras(extras, ignored or set())
     else:
         extras = []
     return MissingSummaryItem(
@@ -631,6 +730,7 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     # Same split as missing_for_listing: ``refresh`` re-fetches listings,
     # it does not re-walk the drive.
     presence = await presence_index.get()
+    ignored = set(await get_ignored_codes())
     async with SessionLocal() as session:
         rows = (
             await session.execute(
@@ -653,6 +753,7 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
             row, presence,
             owned=owned_by_row.get((row.kind, row.id), set()),
             fetched=fetched,
+            ignored=ignored,
         ),
         settings.missing_rebuild_concurrency,
     )
@@ -686,6 +787,7 @@ async def missing_summary_stream(
         # does not re-walk the drive (#163/#169).
         try:
             presence = await presence_index.get()
+            ignored = set(await get_ignored_codes())
             async with SessionLocal() as session:
                 rows = (
                     await session.execute(
@@ -719,6 +821,7 @@ async def missing_summary_stream(
                     presence,
                     owned=owned_by_row.get((row.kind, row.id), set()),
                     fetched=fetched,
+                    ignored=ignored,
                 )
             return idx, row, item
 
@@ -777,6 +880,7 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
             return _all_result
         # Listing refresh, not a drive walk — see missing_for_listing.
         presence = await presence_index.get()
+        ignored = set(await get_ignored_codes())
         async with SessionLocal() as session:
             rows = (
                 await session.execute(
@@ -797,6 +901,8 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("missing_all failed for %s/%s: %s", row.kind, row.id, exc)
                 return None
+            if listing and ignored:
+                listing = _filter_ignored_items(listing, ignored)
             _, missing, _expected = _split_present_missing(listing, presence)
             owned = owned_by_row.get((row.kind, row.id), set())
             missing = [m for m in missing if m.code in owned]

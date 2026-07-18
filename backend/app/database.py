@@ -146,6 +146,10 @@ _MIGRATION_DDL = (
     "ALTER TABLE offline_task_log ADD COLUMN finalized BOOLEAN DEFAULT 0",
     "ALTER TABLE offline_task_log ADD COLUMN finalized_at DATETIME",
     "ALTER TABLE offline_task_log ADD COLUMN abandoned BOOLEAN DEFAULT 0",
+    # Fossil reconcile bookkeeping (services/log_reconcile.py) — marks
+    # historical rows whose code is already archived/finalized elsewhere
+    # so they stop holding archive_once's pending peek open.
+    "ALTER TABLE offline_task_log ADD COLUMN superseded BOOLEAN DEFAULT 0",
 )
 
 

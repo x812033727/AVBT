@@ -1,6 +1,14 @@
 """Ops report log parsing."""
 
-from app.routers.ops import parse_reports
+from datetime import datetime
+
+import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+import app.database as db
+from app.models import OfflineTaskLog, PresenceEntry
+from app.routers.ops import parse_reports, reconcile_fossils
+from app.services import log_reconcile
 
 
 def test_parse_blocks_newest_last_and_critical_flag():
@@ -24,3 +32,43 @@ def test_parse_blocks_newest_last_and_critical_flag():
 
 def test_parse_empty():
     assert parse_reports("") == []
+
+
+async def test_reconcile_fossils_endpoint_delegates_to_service(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", future=True)
+    monkeypatch.setattr(db, "engine", engine)
+    await db.init_db()
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(log_reconcile, "SessionLocal", maker)
+
+    async with maker() as s:
+        s.add(
+            OfflineTaskLog(
+                code="EP-001", magnet="m", created_at=datetime(2026, 1, 1),
+            )
+        )
+        s.add(PresenceEntry(code="EP-001", path="AVBT/S/X/EP-001/EP-001.mp4"))
+        await s.commit()
+
+    result = await reconcile_fossils(dry_run=True, older_than="2026-07-01", limit=5000)
+
+    assert result == {
+        "scanned": 1, "dry_run": True,
+        "presence_video": 1, "finalized_sibling": 0, "untouched": 0,
+    }
+    await engine.dispose()
+
+
+async def test_reconcile_fossils_endpoint_rejects_relative_older_than(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db", future=True)
+    monkeypatch.setattr(db, "engine", engine)
+    await db.init_db()
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(log_reconcile, "SessionLocal", maker)
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        await reconcile_fossils(dry_run=True, older_than="7d", limit=5000)
+    assert exc_info.value.status_code == 400
+    await engine.dispose()

@@ -189,6 +189,20 @@ class OfflineTaskLog(Base):
     abandoned: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0"
     )
+    # Terminal bookkeeping flag for historical rows whose code is already
+    # archived/finalized elsewhere (a sibling row landed it, or the
+    # presence index already carries a real video/container for it) —
+    # set by the fossil reconcile pass (services/log_reconcile.py) so
+    # these ~7-day-old-or-older stragglers stop holding archive_once's
+    # pending peek open and stop being re-listed by the finalize retry /
+    # reap passes. Distinct from ``abandoned`` (a genuinely-dead orphan)
+    # so stats/forensics stay honest — a superseded row was a real
+    # submission, not a dead one — and log_cleanup's abandoned-pruning
+    # timer does not apply to it. server_default keeps fresh create_all
+    # in lockstep with the ALTER TABLE DEFAULT 0.
+    superseded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     # Snapshot of the tracked listing this code belonged to at enqueue
     # time. Lets the archiver pick the right kind/name folder without
     # re-fetching JavBus. Empty for manual submits — those fall back to

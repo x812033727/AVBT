@@ -109,9 +109,14 @@ async def _pick_missing_codes(limit: int) -> list[str]:
     return picked
 
 
-# Consecutive-failure circuit breaker: a JavBus outage or block makes
-# every fetch in the batch fail the same way; grinding through the rest
-# only burns request budget against a host that is already refusing us.
+# Consecutive-EXCEPTION circuit breaker: a JavBus outage or block raises
+# on every fetch in the batch, so grinding through the rest only burns
+# request budget against a host that is already refusing us. An
+# empty-title result is NOT this signal — it is JavBus successfully
+# answering "this code does not exist" (dead/nonstandard codes like
+# AAVV-121 / BA-035). Dead codes cluster at the front of the pick order,
+# so counting them tripped the breaker at 5 every cycle and the batch
+# never reached the stale rows it was meant to heal (2026-07-18 audit).
 _BACKFILL_BREAKER_THRESHOLD = 5
 
 
@@ -123,13 +128,16 @@ async def _backfill_details() -> int:
         try:
             detail = await scraper.fetch_detail_resolved(code)
             _attempted.add(code)
+            # Either outcome is JavBus answering us, so the outage
+            # breaker resets: a present title healed the row, an empty
+            # title is a definitive "does not exist" (marked _attempted,
+            # skipped next cycle).
+            consecutive_failures = 0
             if detail.title:
                 state.done_total += 1
                 fetched += 1
-                consecutive_failures = 0
             else:
                 state.failed_total += 1
-                consecutive_failures += 1
         except Exception as exc:  # noqa: BLE001 — one bad code must not stop the cycle
             _attempted.add(code)
             state.failed_total += 1

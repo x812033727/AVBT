@@ -207,6 +207,36 @@ async def test_backfill_breaker_aborts_after_consecutive_failures(monkeypatch):
     assert len(codes) > db_mod._BACKFILL_BREAKER_THRESHOLD
 
 
+async def test_backfill_breaker_ignores_dead_codes(monkeypatch):
+    """Empty-title results are JavBus answering 'does not exist' (dead
+    codes cluster at the front of the pick order). They must NOT trip
+    the outage breaker, or the batch never reaches the stale rows it
+    exists to heal (2026-07-18 audit)."""
+    import app.services.detail_backfill as db_mod
+    from app.schemas import MovieDetail
+
+    codes = [f"DEAD-{i}" for i in range(10)]
+
+    async def fake_pick(limit):
+        return codes
+
+    calls = {"n": 0}
+
+    async def empty(code):
+        calls["n"] += 1
+        return MovieDetail(code=code, title="")  # dead: JavBus 404
+
+    monkeypatch.setattr(db_mod, "_pick_missing_codes", fake_pick)
+    monkeypatch.setattr(db_mod.scraper, "fetch_detail_resolved", empty)
+    monkeypatch.setattr(db_mod, "_attempted", set())
+    monkeypatch.setattr(
+        db_mod.settings, "actress_backfill_spacing_seconds", 0
+    )
+
+    await db_mod._backfill_details()
+    assert calls["n"] == len(codes)  # walked the WHOLE batch, not just 5
+
+
 async def test_put_logs_identity_drift(tmp_path, monkeypatch, caplog):
     """Overwriting a row with a different studio/series identity is
     logged — heal rewrites import today's JavBus identity over what the

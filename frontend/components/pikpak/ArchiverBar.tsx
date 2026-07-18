@@ -45,6 +45,22 @@ export default function ArchiverBar({
       <span className="font-mono text-muted-foreground/60">
         poll×{archiver.pcloud_poll_concurrency}
       </span>
+            {!!archiver.throttle_backoff_total && (
+        <span
+          className="font-mono text-xs text-muted-foreground"
+          title="PikPak 限流退避已吸收次數(round-1 backoff)"
+        >
+          退避×{archiver.throttle_backoff_total}
+        </span>
+      )}
+      {!!archiver.throttle_exhausted_total && (
+        <span
+          className="font-mono text-xs text-amber-400"
+          title="退避重試耗盡次數 — 頻繁出現時考慮把併發旋鈕調回 1"
+        >
+          耗盡×{archiver.throttle_exhausted_total}
+        </span>
+      )}
       {!!archiver.abandoned_total && (
         <Link
           href="/history?abandoned=true"

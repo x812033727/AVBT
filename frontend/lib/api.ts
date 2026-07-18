@@ -363,6 +363,8 @@ export type ArchiverStatus = {
   finalize_concurrency: number;
   pcloud_poll_concurrency: number;
   abandoned_total?: number;
+  throttle_backoff_total?: number;
+  throttle_exhausted_total?: number;
 };
 
 export type HistoryItem = {

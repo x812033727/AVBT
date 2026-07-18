@@ -62,6 +62,13 @@ async def test_container_is_content_not_junk():
     assert await wrapper_is_ad_shell(svc, "w") is False
 
 
+async def test_small_container_is_junk_not_content():
+    # DVDMS-047 live shape: ads + one 29MB QQ-ad .rar. A sub-JUNK_BYTES
+    # container cannot be a disc image — the wrapper is still an ad shell.
+    svc = Svc({"w": ADS + [_file("QQ真人祼聊免費試看.rar", "c", 29)]})
+    assert await wrapper_is_ad_shell(svc, "w") is True
+
+
 async def test_nested_video_is_content():
     svc = Svc({"w": ADS + [_folder("CD1", "sub")],
                "sub": [_file("EDD-138_1.avi", "v", 900)]})

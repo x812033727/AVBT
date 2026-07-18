@@ -63,6 +63,18 @@ PART_MIN_BYTES = 500 * 1024 * 1024
 # How deep below the 番號 folder we look: 番號夾 → wrapper → Sample/.
 MAX_DEPTH = 3
 
+
+def _counts_as_content(f) -> bool:
+    """A file that saves a wrapper from the ad-shell verdict: any video
+    (even a tiny clip might be a real short film), or a container big
+    enough to actually hold one. A sub-``JUNK_BYTES`` .rar/.zip is an ad
+    archive, not a disc image — counting it as content hands the folder
+    to the container-swap loop forever and re-creates the EDD-138
+    deadlock (live: DVDMS-047, ads + one 29MB QQ-ad .rar)."""
+    return is_video(f.name) or (
+        ext_of(f.name) in CONTAINER_EXTS and (f.size or 0) >= JUNK_BYTES
+    )
+
 _TRANSIENT_RE = re.compile(r"transmission|reached the limit|too\s*frequent", re.IGNORECASE)
 _PURGE_CHUNK = 50
 
@@ -294,8 +306,9 @@ async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
     Some magnets deliver a wrapper of pure ads/screenshots with no film
     at all. Archiving one anyway mints a canonical-looking 番號 folder
     that every layer reads as success, and nothing ever re-sends the
-    code (live: EDD-138, then OYC-205). Containers count as content:
-    a lone ``CODE.iso`` is the container-swap loop's job, not junk.
+    code (live: EDD-138, then OYC-205). Containers ≥ ``JUNK_BYTES``
+    count as content: a lone ``CODE.iso`` is the container-swap loop's
+    job, not junk. Smaller ones are ad archives (``_counts_as_content``).
 
     Every "can't tell" answer is False — only a complete, settled
     listing may condemn a folder:
@@ -318,9 +331,7 @@ async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
         return False
     if any(_is_transferring(f) for f in files):
         return False
-    return not any(
-        is_video(f.name) or ext_of(f.name) in CONTAINER_EXTS for f in files
-    )
+    return not any(_counts_as_content(f) for f in files)
 
 
 async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
@@ -495,14 +506,15 @@ async def finalize_code_folder_stream(
             # Kept conservative on purpose:
             # - any video-extension file, even a sub-keeper ad clip →
             #   skip (might be a real small film);
-            # - any container → skip (container-swap loop's job, #173).
+            # - any container ≥ JUNK_BYTES → skip (container-swap
+            #   loop's job, #173). Sub-JUNK containers are ad archives
+            #   and must not block the verdict (_counts_as_content).
             shell_files = [e for e, _p in entries if not _is_folder(e)]
             # A depth-truncated inventory cannot prove "no video" — a
             # film below MAX_DEPTH is simply invisible here. Treat as
             # inconclusive: skip, never trash.
             is_ad_shell = bool(shell_files) and not depth_truncated and not any(
-                is_video(e.name) or ext_of(e.name) in CONTAINER_EXTS
-                for e in shell_files
+                _counts_as_content(e) for e in shell_files
             )
             # An empty tree (zero files anywhere, complete listing) is
             # the other permanent-residue shape: the task died before

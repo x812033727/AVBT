@@ -140,6 +140,30 @@ async def test_ad_shell_trashed_with_allow_flag():
     assert done["result"]["trashed"] == 1
 
 
+async def test_small_container_does_not_block_shell_trash():
+    # DVDMS-047 live shape: ads + a 29MB QQ-ad .rar. A sub-JUNK_BYTES
+    # container is junk, not "container-swap's job" — without this the
+    # row deadlocks (finalize skips forever, reaper sees an archived
+    # copy, missing-scan reads the code as collected).
+    svc = _Svc({"codef": [
+        _file("screen1.jpg", "jpg", 2),
+        _file("QQ真人祼聊免費試看.rar", "rar", 29 * 1024 * 1024),
+    ]})
+    events = await _run(svc, "X-001", "codef", allow_shell_trash=True)
+    assert svc.trashed == ["codef"]
+    assert any(e.get("reason") == "ad_shell_no_video" for e in events)
+
+
+async def test_big_container_still_defers_to_container_swap():
+    svc = _Svc({"codef": [
+        _file("screen1.jpg", "jpg", 2),
+        _file("X-001.iso", "iso", 8_000_000_000),
+    ]})
+    events = await _run(svc, "X-001", "codef", allow_shell_trash=True)
+    assert svc.trashed == []
+    assert any(e["type"] == "warn" and "略過" in e["message"] for e in events)
+
+
 # ---------------------------------------------------------------------------
 # call site — retry pass opens the gate only for aged rows
 # ---------------------------------------------------------------------------

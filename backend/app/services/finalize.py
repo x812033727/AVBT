@@ -44,7 +44,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .jav_code import CONTAINER_EXTS, ext_of, extract_jav_code, is_video
+from .jav_code import (
+    CONTAINER_EXTS,
+    ext_of,
+    extract_jav_code,
+    is_archive_volume,
+    is_video,
+)
 from .rename_plan import (
     _build_video_rename_plan,
     _split_size_outliers,
@@ -62,6 +68,17 @@ PART_MIN_BYTES = 500 * 1024 * 1024
 
 # How deep below the 番號 folder we look: 番號夾 → wrapper → Sample/.
 MAX_DEPTH = 3
+
+
+def _volume_set_counts_as_content(files) -> bool:
+    """Multi-volume archives: each piece can sit under JUNK_BYTES while
+    the SET is the film. Sum the volumes; unknown sizes assume legit."""
+    vols = [f for f in files if is_archive_volume(f.name)]
+    if not vols:
+        return False
+    if any(f.size is None for f in vols):
+        return True
+    return sum(f.size or 0 for f in vols) >= JUNK_BYTES
 
 
 def _counts_as_content(f) -> bool:
@@ -141,9 +158,13 @@ def build_finalize_plan(
     files = [(e, p) for e, p in entries if not _is_folder(e)]
     videos = [(e, p) for e, p in files if is_video_fn(e.name)]
     non_videos = [e for e, _p in files if not is_video_fn(e.name)
-                  and ext_of(e.name) not in CONTAINER_EXTS]
+                  and ext_of(e.name) not in CONTAINER_EXTS
+                  and not is_archive_volume(e.name)]
+    # Archive volumes ride with containers: recoverable trash, never the
+    # permanent purge — a .r00 is a piece of the work (#219 review gap).
     containers = [e for e, _p in files if not is_video_fn(e.name)
-                  and ext_of(e.name) in CONTAINER_EXTS]
+                  and (ext_of(e.name) in CONTAINER_EXTS
+                       or is_archive_volume(e.name))]
 
     if not videos:
         plan.no_video = True
@@ -344,6 +365,8 @@ async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
         return False
     if any(_is_transferring(f) for f in files):
         return False
+    if _volume_set_counts_as_content(files):
+        return False
     return not any(_counts_as_content(f) for f in files)
 
 
@@ -526,8 +549,11 @@ async def finalize_code_folder_stream(
             # A depth-truncated inventory cannot prove "no video" — a
             # film below MAX_DEPTH is simply invisible here. Treat as
             # inconclusive: skip, never trash.
-            is_ad_shell = bool(shell_files) and not depth_truncated and not any(
-                _counts_as_content(e) for e in shell_files
+            is_ad_shell = (
+                bool(shell_files)
+                and not depth_truncated
+                and not _volume_set_counts_as_content(shell_files)
+                and not any(_counts_as_content(e) for e in shell_files)
             )
             # An empty tree (zero files anywhere, complete listing) is
             # the other permanent-residue shape: the task died before

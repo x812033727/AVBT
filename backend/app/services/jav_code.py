@@ -40,13 +40,25 @@ _PART_SUFFIX_RE = r"(?:CD\d+(?:-[A-Z])?|HHB\d*)?"
 # (live: OYCVR-058, stuck in AVBT/TASK while its row was closed).
 _POSTER_SUFFIX_RE = r"(?:PL)?"
 
+# Labels containing a DIGIT can never match ``[A-Z]{2,8}`` — allowlist
+# them literally, one by one, with live JavBus evidence. PA0 verified
+# 2026-07-18: /PA0-010 catalogs a real title, /PAO-010 404s. Without
+# this the PA0 wrappers were unarchivable-by-name and invisible to the
+# presence walk (PA0-007~010 stuck-Saving rescue was blocked on it).
+_DIGIT_LABEL_ALT = "PA0"
+_LABEL_RE = rf"(?:[A-Z]{{2,8}}|{_DIGIT_LABEL_ALT})"
+
 _CODE_RE = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}})[A-Z]?{_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}{_LABEL_RE}-?\d{{2,6}})[A-Z]?{_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 _EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+# _SPLIT_RE deliberately does NOT take the PA0 alternative: real PA0
+# inputs are always hyphenated (483PA0-xxx) so the no-hyphen splitter
+# never serves them, and including PA0 minted a ghost for the exact
+# PA0+6-digit unhyphenated shape (opus review of the allowlist).
 _SPLIT_RE = re.compile(r"(\d{0,4}[A-Z]{2,8})(\d{2,6})$", re.IGNORECASE)
-_PREFIX_RE = re.compile(r"^(\d{1,4})([A-Z]{2,8}-\d{2,6})$")
+_PREFIX_RE = re.compile(rf"^(\d{{1,4}})({_LABEL_RE}-\d{{2,6}})$")
 
 # Numeric prefixes (300MIUM, 259LUXU, 200GANA, …) are ALWAYS stripped
 # from the canonical code: JavBus catalogs these without the prefix —
@@ -256,7 +268,7 @@ def is_video(name: str) -> bool:
 # The Chinese-sub marker (``ch``/``-ch``/``_ch``) is consumed but NOT
 # captured — different sub languages aren't different products.
 _CODE_RE_FULL = re.compile(
-    rf"(?:^|[^A-Z0-9])(\d{{0,4}}[A-Z]{{2,8}}-?\d{{2,6}}[A-Z]?){_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
+    rf"(?:^|[^A-Z0-9])(\d{{0,4}}{_LABEL_RE}-?\d{{2,6}}[A-Z]?){_POSTER_SUFFIX_RE}{_PART_SUFFIX_RE}{_CH_SUFFIX_RE}{_FAKE_EXT_RE}?(?=$|[^A-Z0-9])",
     re.IGNORECASE,
 )
 

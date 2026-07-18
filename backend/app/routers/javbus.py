@@ -1,9 +1,11 @@
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ..schemas import (
+    CachedDetailLite,
+    CachedDetailsResponse,
     MovieDetail,
     SearchResult,
     SendAllOptions,
@@ -12,11 +14,15 @@ from ..schemas import (
 )
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import JavbusBlocked
-from ..services import bulk
+from ..services import bulk, detail_cache
 from ..services.part_estimate import estimate_multipart
 from ..services.scraper_health import scraper_health
 
 router = APIRouter(prefix="/api/javbus", tags=["javbus"])
+
+# Browse-card enrichment batches one page at a time; way above any
+# realistic page size, just a sanity ceiling on the SELECT ... IN (...).
+_CACHED_DETAILS_CAP = 60
 
 
 @router.get("/scraper-health")
@@ -53,6 +59,17 @@ async def movie_detail(code: str, refresh: bool = Query(False)):
     # duration+magnets so thresholds tune without cache invalidation.
     detail.part_estimate = estimate_multipart(detail)
     return detail
+
+
+@router.post("/details/cached", response_model=CachedDetailsResponse)
+async def cached_details(codes: list[str] = Body(..., embed=True)):
+    """Cache-join only: studio/series/genres for browse cards, straight
+    from the persistent detail cache. Never scrapes — codes with no
+    cached row are simply absent from ``items``. Best-effort enrichment,
+    so callers truncate rather than error past the cap."""
+    lite = await detail_cache.get_many_lite(codes[:_CACHED_DETAILS_CAP])
+    items = {code: CachedDetailLite(code=code, **fields) for code, fields in lite.items()}
+    return CachedDetailsResponse(items=items)
 
 
 @router.get("/star/{star_id}", response_model=SearchResult)

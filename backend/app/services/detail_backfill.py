@@ -79,7 +79,34 @@ async def _pick_missing_codes(limit: int) -> list[str]:
         }
     missing = sorted(downloaded - cached)
     state.pending = len(missing)
-    return [c for c in missing if c not in _attempted][:limit]
+    picked = [c for c in missing if c not in _attempted][:limit]
+    if len(picked) < limit:
+        # Fill remaining slots with parse-stale rows (genres=[] — written
+        # before the genre-parse fix). fetch_detail treats such a cache
+        # hit as stale and refetches, healing the row; this drains the
+        # whole pre-fix cache at the loop's existing gentle pacing.
+        from sqlalchemy import func
+
+        async with SessionLocal() as session:
+            stale_rows = await session.execute(
+                select(MovieDetailCache.code)
+                .where(
+                    func.json_array_length(
+                        MovieDetailCache.detail, "$.genres"
+                    )
+                    == 0
+                )
+                .order_by(MovieDetailCache.fetched_at.asc())
+                .limit(limit * 3)
+            )
+        seen = set(picked)
+        for (c,) in stale_rows.all():
+            if len(picked) >= limit:
+                break
+            if c not in seen and c not in _attempted:
+                picked.append(c)
+                seen.add(c)
+    return picked
 
 
 async def _backfill_details() -> int:

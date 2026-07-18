@@ -56,14 +56,63 @@ def test_ok_no_magnets_is_not_a_failure(monkeypatch):
 
 
 def test_irrelevant_outcomes_do_not_dilute_ratio(monkeypatch):
-    # errors/empty_html are excluded from the gid ratio — 10 errors plus
-    # 10 gid_missing must still alert (10/10, not 10/20).
+    # errors are excluded from the gid ratio — 10 errors plus 10
+    # gid_missing must still gid-alert (10/10, not 10/20). The errors
+    # additionally trip their own error-rate alert; the gid alert must
+    # still be present (non-dilution is the property under test).
     health, sent = _fresh(monkeypatch)
     for _ in range(10):
         health.record_detail("error")
     for _ in range(10):
         health.record_detail("gid_missing")
-    assert [k for k, _ in sent] == ["gid_missing"]
+    assert "gid_missing" in [k for k, _ in sent]
+
+
+def test_error_rate_alerts_over_threshold(monkeypatch):
+    health, sent = _real_alert_capture(monkeypatch)
+    for _ in range(5):
+        health.record_detail("ok_magnets")
+    for _ in range(6):
+        health.record_detail("error")   # 6/11 > 0.5
+    assert len(sent) == 1
+    assert "封鎖" in sent[0] or "429" in sent[0]
+    assert health.degraded()
+
+
+def test_error_alert_quiet_below_min_sample(monkeypatch):
+    health, sent = _fresh(monkeypatch)
+    for _ in range(9):  # < _ERROR_MIN_SAMPLE
+        health.record_detail("error")
+    assert sent == []
+
+
+def test_dead_code_empty_html_never_error_alerts(monkeypatch):
+    # empty_html is JavBus answering "does not exist" for a dead code —
+    # a full window of it must NOT look like an outage.
+    health, sent = _fresh(monkeypatch)
+    for _ in range(50):
+        health.record_detail("empty_html")
+    assert sent == []
+    assert not health.degraded()
+
+
+def test_listing_error_alerts(monkeypatch):
+    health, sent = _real_alert_capture(monkeypatch)
+    for _ in range(12):
+        health.record_listing("error")
+    assert len(sent) == 1          # cooldown dedups the repeated trips
+    assert "列表" in sent[0]
+    assert health.degraded()
+
+
+def test_snapshot_exposes_limiter_spacing(monkeypatch):
+    health, _ = _fresh(monkeypatch)
+    snap = health.snapshot()
+    assert "limiter" in snap
+    # In the test process the shared limiter is importable; spacing keys
+    # present and base is the floor.
+    lim = snap["limiter"]
+    assert lim is None or {"current_s", "base_s", "penalised"} <= lim.keys()
 
 
 def test_challenge_alert_after_three_in_window(monkeypatch):

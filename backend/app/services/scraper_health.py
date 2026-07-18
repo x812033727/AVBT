@@ -38,6 +38,14 @@ WINDOW = 200
 _GID_SAMPLE = 20          # look at the last N detail outcomes...
 _GID_MIN_SAMPLE = 10      # ...but stay quiet below this many samples
 _GID_RATIO = 0.5          # alert when gid_missing exceeds this ratio
+# Error-rate rule: a 429 storm / IP block / persistent age-gate makes
+# fetches RAISE (recorded as "error"), unlike a dead code which answers
+# empty_html. A high error ratio is the outage signal the breaker reacts
+# to but that was invisible on /api/health (2026-07-18 audit). Keyed on
+# "error" only, so dead-code empty_html never trips it.
+_ERROR_SAMPLE = 20
+_ERROR_MIN_SAMPLE = 10
+_ERROR_RATIO = 0.5
 _CHALLENGE_WINDOW_S = 600.0
 _CHALLENGE_COUNT = 3      # alert on >= N challenges inside the window
 _ALERT_COOLDOWN_S = 3600.0
@@ -61,10 +69,14 @@ class ScraperHealth:
         self.totals[f"detail:{outcome}"] += 1
         if outcome == "gid_missing":
             self._check_gid_alert()
+        elif outcome == "error":
+            self._check_error_alert("detail", self.detail)
 
     def record_listing(self, outcome: str) -> None:
         self.listing.append((time.time(), outcome))
         self.totals[f"listing:{outcome}"] += 1
+        if outcome == "error":
+            self._check_error_alert("listing", self.listing)
 
     # -- alerting ----------------------------------------------------
 
@@ -93,6 +105,19 @@ class ScraperHealth:
                 f"{int(_CHALLENGE_WINDOW_S // 60)} 分鐘內遇到 {recent} 次"
                 "反機器人挑戰頁,JavBus 可能正在封鎖本機 IP(考慮設 HTTP_PROXY"
                 " 或換鏡像站)。",
+            )
+
+    def _check_error_alert(self, kind: str, events: deque[tuple[float, str]]) -> None:
+        recent = [o for _, o in list(events)[-_ERROR_SAMPLE:]]
+        if len(recent) < _ERROR_MIN_SAMPLE:
+            return
+        errors = sum(1 for o in recent if o == "error")
+        if errors / len(recent) > _ERROR_RATIO:
+            self._alert(
+                f"{kind}_error",
+                f"近 {len(recent)} 次{'詳細頁' if kind == 'detail' else '列表頁'}"
+                f"有 {errors} 次抓取失敗(429/封鎖/網路)——JavBus 可能正在限流或"
+                "封鎖本機 IP(考慮設 HTTP_PROXY 或換鏡像站)。",
             )
 
     def _check_gid_alert(self) -> None:
@@ -133,9 +158,29 @@ class ScraperHealth:
             "challenges_10m": sum(
                 1 for t in self.challenges if now - t <= _CHALLENGE_WINDOW_S
             ),
+            # Current JavBus rate-limiter spacing vs its floor: when the
+            # limiter is penalised by 429s it widens toward the ceiling,
+            # so spacing > base is a live throttle signal (2026-07-18).
+            "limiter": self._limiter_spacing(),
             "totals": dict(self.totals),
             "last_alert_at": dict(self.last_alert_at),
         }
+
+    @staticmethod
+    def _limiter_spacing() -> dict | None:
+        """Current/base spacing of the shared JavBus RateLimiter, or None
+        if unavailable. Lazy import: the scraper imports this module, so a
+        top-level import would be a cycle."""
+        try:
+            from ..scrapers.javbus import _limiter
+
+            return {
+                "current_s": round(_limiter._cur, 3),
+                "base_s": round(_limiter._base, 3),
+                "penalised": _limiter._cur > _limiter._base,
+            }
+        except Exception:  # noqa: BLE001 — reporting must never raise
+            return None
 
 
 scraper_health = ScraperHealth()

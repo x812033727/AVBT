@@ -134,6 +134,124 @@ def test_legacy_containers_are_video():
     assert extract_jav_code("PPPD-539MPG") == "PPPD-539"
 
 
+# ---------------------------------------------------------------------------
+# Site-noise pre-strip (#182-hazard: CANONICAL-PARSING change).
+#
+# BT wrapper names glue a site tag onto the real code in three shapes:
+# [bracket], user@ (one or more chained), and a bare host.tld token. All
+# three must be stripped BEFORE the code scan runs, so a domain that has
+# NO real code in it at all (``hjd2048.com``) can't have its own
+# digits+letters misread as a squished code (the ``HJD-2048`` ghost).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("name", "want"),
+    [
+        # [bracket] site tag
+        ("[44x.me]gapl-015", "GAPL-015"),
+        ("[88K.ME]TRE-112", "TRE-112"),
+        # user@ site tag, single and chained (multi-layer)
+        ("ccc11.cc@230ORECZ-510J", "ORECZ-510"),
+        ("kfa55.com@483DAM-043", "DAM-043"),
+        ("a.b@c.d@CODE-123", "CODE-123"),
+        # Bare host.tld token, space-separated from the code
+        ("hjd2048.com GAPL-015", "GAPL-015"),
+        ("kan224.com ABP-543", "ABP-543"),
+        # Digit-domain glue: "44" reads as extract_jav_code's existing
+        # numeric-prefix noise (300MIUM/259LUXU-style stripping, out of
+        # scope for this feature) once "test.la@" is stripped off — pinned
+        # as-is, not a behavior change from this feature.
+        ("test.la@44ID-026", "ID-026"),
+    ],
+)
+def test_extract_jav_code_strips_site_noise(name, want):
+    assert extract_jav_code(name) == want
+
+
+@pytest.mark.parametrize(
+    ("name", "want"),
+    [
+        ("[44x.me]gapl-015", "GAPL-015"),
+        ("ccc11.cc@230ORECZ-510J", "ORECZ-510J"),
+        ("a.b@c.d@CODE-123", "CODE-123"),
+        ("hjd2048.com GAPL-015", "GAPL-015"),
+    ],
+)
+def test_extract_jav_code_full_strips_site_noise(name, want):
+    assert extract_jav_code_full(name) == want
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Domain-only wrapper names carry NO real code anywhere — must
+        # return None, never mint a fabricated code from the domain's
+        # own digits+letters.
+        "hjd2048.com",
+        "kan224.com",
+        "hjd2048.net",
+        "[44x.me]",
+    ],
+)
+def test_extract_jav_code_domain_only_is_none(name):
+    assert extract_jav_code(name) is None
+    assert extract_jav_code_full(name) is None
+
+
+# #182-class negatives: site-noise stripping must not change extraction
+# of names that already work today — byte-identical before vs after this
+# feature (values captured from the pre-change extractor).
+@pytest.mark.parametrize(
+    ("name", "want"),
+    [
+        ("HRSM-032-SD", "HRSM-032"),
+        ("HRSM-032", "HRSM-032"),
+        ("ABC-123A", "ABC-123"),
+        ("ABC-123B", "ABC-123"),
+        ("OFJE-296CD1-B", "OFJE-296"),
+        ("SOE00829HHB3", "SOE-829"),
+        ("300MIUM-1098", "MIUM-1098"),
+        ("259LUXU-1543", "LUXU-1543"),
+    ],
+)
+def test_extract_jav_code_site_noise_byte_identical_negatives(name, want):
+    assert extract_jav_code(name) == want
+
+
+# Corpus-evidence-driven guards (round4-prB): the corpus run against every
+# live presence_entry / offline_task_log name proved that stripping a
+# ``[bracket]`` tag or a ``user@`` prefix unconditionally (mirroring
+# rename_plan.py's _BT_PREFIX_BRACKET_RE / _BT_PREFIX_AT_RE) destroys real
+# codes that legitimately sit in that position — a "[CODE] title" or
+# "CODE@uploader-tag" wrapper is just as common as "[SITE]CODE" /
+# "site@CODE" in this corpus, and _CODE_RE's own boundary check already
+# gets the former right without any stripping. So _strip_site_noise
+# implements ONLY the bare-domain-token rule, not bracket/at.
+@pytest.mark.parametrize(
+    ("name", "want"),
+    [
+        # [CODE] title — bracket wraps the real code, not a site tag.
+        ("[CLUB-044] Title", "CLUB-044"),
+        ("[HUNTA-594] some title text", "HUNTA-594"),
+        # CODE@uploader-tag — @ separates the code from a release-group /
+        # uploader label, not a site name from the code.
+        ("ATOM-035@oldman", "ATOM-035"),
+        ("(DVD)EKDV-038@wolf", "EKDV-038"),
+    ],
+)
+def test_extract_jav_code_bracket_and_at_are_not_stripped(name, want):
+    assert extract_jav_code(name) == want
+
+
+def test_extract_jav_code_domain_tld_label_collision_guard():
+    # "CLUB" is both a curated site TLD and a real JAV label prefix
+    # (CLUB-032, CLUB-044, …). The domain rule's lookahead requires
+    # whitespace/@//  /end right after the TLD — NOT a hyphen — so a real
+    # code like ``122.CLUB-032`` (BT numeric-prefix glue + the label
+    # CLUB-032) is never mistaken for a ``122.club`` domain.
+    assert extract_jav_code("122.club-032") == "CLUB-032"
+
+
 def test_dmm_poster_suffix_stripped():
     # Torrents named after DMM cover art keep its ``pl`` (package-large)
     # tail glued to the content id — the wrapper must still parse or the

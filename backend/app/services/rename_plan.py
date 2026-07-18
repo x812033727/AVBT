@@ -59,6 +59,23 @@ _DUP_SUFFIX_RE = re.compile(
 # these out of the canonical so e.g. ``[88K.ME]TRE-112-2.mp4`` and
 # ``kfa55.com@TRE-112.mp4`` and ``TRE-112-2.mp4`` group together as the
 # same code.
+#
+# jav_code.py's ``_strip_site_noise`` (NOT imported — see its own copy of
+# ``_SITE_TLDS``, cycle risk) runs a NARROWER version of this same idea
+# INSIDE extract_jav_code(_full) itself, before this module ever sees the
+# name (#182-hazard: a canonical-parsing change). A corpus same-group-after
+# run there proved that mirroring the bracket/at-chain strip too (as done
+# here) is a pure regression for extract_jav_code's callers — real corpus
+# names like ``[CLUB-044] Title`` and ``ATOM-035@oldman`` have the CODE,
+# not a site tag, in the bracket/at-prefix position, and this module's own
+# _CODE_RE-boundary-only matching already gets those right without any
+# stripping. jav_code.py therefore only strips a bare ``host.tld`` token,
+# with a tighter lookahead (whitespace/@//  /end only, no ``-``/``_``/``.``)
+# that additionally guards the TLD-vs-label collision this module still
+# carries latently (``CLUB`` is both a site TLD below and a real label
+# prefix — see jav_code.py's comment for detail). Only the ``_SITE_TLDS``
+# list needs to stay in sync between the two files; the bracket/at shapes
+# and lookahead are intentionally NOT mirrored.
 _BT_PREFIX_BRACKET_RE = re.compile(r"^\s*\[[^\]]+\]\s*")
 _BT_PREFIX_AT_RE = re.compile(r"^(?:[^@/\s]+@)+")
 _BT_SUFFIX_TILDE_RE = re.compile(r"\s*~\s*[A-Z0-9._\-]+\s*$", re.IGNORECASE)
@@ -70,6 +87,10 @@ _BT_SUFFIX_WWW_RE = re.compile(r"[-_ ]WWW\.[A-Z0-9][A-Z0-9.\-]*$", re.IGNORECASE
 # code and title text in front of the domain (live near-miss: the
 # repair script's first draft turned ``300MIUM-1270-UNCENSORED-NYAP2P
 # .COM`` into ``300MIUM``). Only the final token pair is site noise.
+# DUPLICATED into jav_code.py's ``_SITE_TLDS`` — see the note above
+# _BT_PREFIX_BRACKET_RE; the TLD list itself must not drift, even though
+# jav_code.py's usage of it (lookahead, bracket/at handling) intentionally
+# does not mirror this module 1:1 — see that note for why.
 _SITE_TLDS = r"(?:COM|NET|ORG|CC|CO|ME|TV|XYZ|LA|CLUB|VIP|INFO)"
 _BT_SUFFIX_DOMAIN_RE = re.compile(
     rf"[-_. ][A-Z0-9]+\.{_SITE_TLDS}$",

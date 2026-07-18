@@ -135,16 +135,93 @@ def _depad_number(raw: str) -> str:
     return raw
 
 
+# ---------------------------------------------------------------------------
+# Site-noise pre-strip (#182-hazard: this touches canonical parsing, so any
+# change here changes what code every wrapper name collapses onto — a
+# corpus same-group-after comparison against every live presence_entry /
+# offline_task_log name gates this function, see .superpowers/ in this
+# branch's worktree for the diff).
+#
+# Only a bare leading ``host.tld`` domain token is stripped. A ``[bracket]``
+# tag or a ``user@`` prefix was ALSO tried (mirroring rename_plan.py's
+# _BT_PREFIX_BRACKET_RE / _BT_PREFIX_AT_RE) but the corpus run proved both
+# are pure regressions for this function's callers: ``_CODE_RE``'s existing
+# boundary check (``]``/``@`` already count as valid non-alnum boundaries)
+# already extracts the code correctly from every ``[SITE]CODE`` /
+# ``site@CODE`` wrapper in the corpus with NO stripping at all — while
+# blindly stripping breaks the equally common ``[CODE] title`` and
+# ``CODE@uploader-tag`` conventions (real corpus losses: ``[CLUB-044]
+# Title`` → None, ``ATOM-035@oldman`` → None), because both shapes are
+# "token@" / "[token]" at the front regardless of whether the token is
+# site junk or the actual code. Bracket/at-prefix stripping is therefore
+# NOT implemented — see the round4-prB report for the full before/after
+# numbers.
+#
+# The bare-domain case has no such ambiguity to fall back on: without
+# stripping it, a name that is JUST a site domain with no real code at all
+# (``hjd2048.com``) has its own digits+letters misread by the
+# squished-code heuristic below as a fabricated code (``HJD-2048`` — a
+# total ghost, the domain never named a JAV work) — nothing else in the
+# pipeline can recover the right answer here, so this one rule earns its
+# keep.
+#
+# DUPLICATED from rename_plan.py's _SITE_TLDS / _BT_PREFIX_DOMAIN_RE — NOT
+# imported, because rename_plan imports FROM jav_code and importing back
+# would create a cycle. The TLD list must be kept in sync between the two
+# files. The lookahead is a deliberate DIVERGENCE, not drift: this runs
+# BEFORE extension stripping (see extract_jav_code below) and on RAW
+# torrent/task names rather than rename_plan's already-mostly-clean
+# per-file canonical form, so it requires a trailing whitespace/``@``/``/``
+# /end-of-string — no ``.``/``-``/``_`` — to avoid exactly the collision
+# the corpus caught: a real label that happens to share text with a site
+# TLD (``122.CLUB-032`` is the real code CLUB-032, not a ``122.club``
+# domain — the tightened lookahead fails on the ``-`` and leaves it
+# alone). rename_plan's own domain regex allows ``-``/``_``/``.`` in its
+# lookahead and therefore shares this same CLUB-vs-label ambiguity in
+# _canonical_video_name; that's a pre-existing, separate risk left
+# untouched here (out of scope for this change).
+_SITE_TLDS = r"(?:COM|NET|ORG|CC|CO|ME|TV|XYZ|LA|CLUB|VIP|INFO)"
+
+_SITE_PREFIX_DOMAIN_RE = re.compile(
+    rf"^(?:[A-Z0-9]+\.)+{_SITE_TLDS}(?=[\s@/]|$)",
+    re.IGNORECASE,
+)
+
+
+def _strip_site_noise(stem: str) -> str:
+    """Strip a leading bare ``host.tld`` site-domain token off the FRONT
+    of *stem*, to a fixpoint (handles a chain of bare domains, though a
+    single one is the overwhelmingly common case in practice).
+
+    Requires an actual dot + a known site TLD, so a code-like token with
+    no dot at all (``SOE00829HHB3``) can never be mistaken for a domain,
+    and requires the TLD to be followed by whitespace/``@``/``/``/end —
+    not a hyphen — so a real label that happens to read like a site TLD
+    (``CLUB-032``) is never eaten (see module comment above for the full
+    corpus-evidence rationale for this narrower-than-spec scope).
+
+    Returns *stem* unchanged when no such token is at the front.
+    """
+    prev = None
+    while prev != stem:
+        prev = stem
+        stem = _SITE_PREFIX_DOMAIN_RE.sub("", stem)
+    return stem
+
+
 def extract_jav_code(name: str) -> str | None:
     """Return the canonical JAV code embedded in *name* (e.g. ``DAM-043``,
     ``300MIUM-1090``).
 
-    Pipeline: strip extension → scan for every code-like substring → take
-    the LAST match (real codes sit at the tail of dirty BT names) →
-    upper-case → re-insert a hyphen if the form was squished
-    (``483DAM043`` → ``483DAM-043``) → drop any leading digit cluster
-    (``259LUXU-1543`` → ``LUXU-1543``).
-    Returns None when nothing matches.
+    Pipeline: strip site-noise wrapper (see ``_strip_site_noise``) → strip
+    extension → scan for every code-like substring → take the LAST match
+    (real codes sit at the tail of dirty BT names) → upper-case →
+    re-insert a hyphen if the form was squished (``483DAM043`` →
+    ``483DAM-043``) → drop any leading digit cluster (``259LUXU-1543`` →
+    ``LUXU-1543``).
+    Returns None when nothing matches — including when *name* is nothing
+    but a site domain (``hjd2048.com``), so a bare BT site tag can never
+    mint a fabricated code.
 
     A single trailing letter (``SDMM-14903C``, ``ABP-123A``) is allowed
     but stripped — JavBus catalogs the base code, so variant suffixes
@@ -152,7 +229,8 @@ def extract_jav_code(name: str) -> str | None:
     """
     if not name:
         return None
-    stem = _EXT_RE.sub("", name)
+    stem = _strip_site_noise(name)
+    stem = _EXT_RE.sub("", stem)
     matches = _CODE_RE.findall(stem)
     if not matches:
         return None
@@ -193,7 +271,8 @@ def extract_jav_code_full(name: str) -> str | None:
     """
     if not name:
         return None
-    stem = _EXT_RE.sub("", name)
+    stem = _strip_site_noise(name)
+    stem = _EXT_RE.sub("", stem)
     matches = _CODE_RE_FULL.findall(stem)
     if not matches:
         return None

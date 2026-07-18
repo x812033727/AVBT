@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..database import SessionLocal
 from ..models import OfflineTaskLog
@@ -615,7 +615,15 @@ async def reorganize_endpoint(opts: ReorganizeOptions):
 
 @router.get("/archiver")
 async def archiver_status():
-    return archiver.state.to_dict()
+    async with SessionLocal() as session:
+        abandoned_total = (
+            await session.execute(
+                select(func.count())
+                .select_from(OfflineTaskLog)
+                .where(OfflineTaskLog.abandoned.is_(True))
+            )
+        ).scalar_one()
+    return {**archiver.state.to_dict(), "abandoned_total": int(abandoned_total)}
 
 
 @router.post("/archiver/run")

@@ -120,6 +120,7 @@ class HistoryItem(BaseModel):
     message: str = ""
     archived: bool = False
     archived_at: datetime | None = None
+    abandoned: bool = False
     created_at: datetime
 
 
@@ -629,6 +630,9 @@ class DashboardStats(BaseModel):
     top_genres: list[TopItem] = Field(default_factory=list)
     # PikPak → pCloud transfers
     pcloud_transfers_by_status: dict[str, int] = Field(default_factory=dict)
+    # Dead-lettered offline_task_log rows (excluded from every aggregate
+    # above) — surfaced as a count so they're visible, not hidden.
+    abandoned_total: int = 0
     built_at: datetime
 
 # ---------- Video count (分集 vs 單一影片) ----------

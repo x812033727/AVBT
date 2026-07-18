@@ -102,3 +102,6 @@ async def test_dashboard_aggregates(tmp_path, monkeypatch):
     assert len(out.trend) == 30
     today_point = out.trend[-1]
     assert today_point.sent == 3 and today_point.archived == 1
+    # The two DEAD-* rows above are excluded from every other aggregate —
+    # this is the one place their count actually surfaces.
+    assert out.abandoned_total == 2

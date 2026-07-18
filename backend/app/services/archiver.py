@@ -402,6 +402,8 @@ class ArchiverState:
             "last_legacy_sweep_error": _last_legacy_sweep_error,
             "legacy_sweep_swept_total": _legacy_swept_total,
             "cleanup_error_total": _cleanup_error_total,
+            "finalize_concurrency": settings.archive_finalize_concurrency,
+            "pcloud_poll_concurrency": settings.pcloud_poll_concurrency,
         }
 
 

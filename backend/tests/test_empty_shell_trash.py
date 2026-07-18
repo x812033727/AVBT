@@ -120,3 +120,31 @@ async def test_depth_truncated_empty_view_is_inconclusive():
     events = await _run(svc, "IESP-999", "codef", allow_shell_trash=True)
     assert svc.trashed == []
     assert any(e["type"] == "warn" and "略過" in e["message"] for e in events)
+
+
+# --- ad-shell path must consult the SAME settle gate (2026-07-18 audit) ---
+# is_ad_shell (files present, none a video/container) had no move_settled
+# gate: an aged row whose wrapper was moved seconds ago lists only its
+# already-landed ad clips while the real video is still in flight (#140),
+# reads as an ad shell, and gets trashed with the video inside.
+_AD_CLIPS = [_file("最新地址.txt", "t", 0), _file("廣告.jpg", "j", 1)]
+
+
+async def test_ad_shell_trashed_when_settled():
+    svc = _Svc({"codef": list(_AD_CLIPS)})
+    events = await _run(svc, "EDD-138", "codef", allow_shell_trash=True)
+    assert svc.trashed == ["codef"]
+    assert any(e.get("reason") == "ad_shell_no_video" for e in events)
+
+
+async def test_ad_shell_skipped_while_gate_closed():
+    # Freshly-moved wrapper: only the ad clips have landed, the film is
+    # still in flight and invisible to the listing. The stamp holds the
+    # gate — must not trash the wrapper (and lose the in-flight video).
+    svc = _Svc({"codef": list(_AD_CLIPS)}, settled=False)
+    events = await _run(svc, "EDD-138", "codef", allow_shell_trash=True)
+    assert svc.trashed == []
+    assert svc.gate_queries == ["codef"]
+    assert any(e["type"] == "warn" and "略過" in e["message"] for e in events)
+    done = next(e for e in events if e["type"] == "done")
+    assert done["result"]["trashed"] == 0

@@ -565,15 +565,26 @@ async def finalize_code_folder_stream(
             # the other permanent-residue shape: the task died before
             # PikPak wrote a single byte and the sweep migrated the
             # bare wrapper (live 07-15 batch: EKDV-244 / DVDMS-047 /
-            # ATOM-304 …). Row age alone cannot clear it — the sweep
-            # may migrate a wrapper days after its row was created, and
-            # a freshly-moved folder lists empty while its files are
-            # still in flight (#140) — so this additionally requires
-            # the move-settle gate on the folder itself (every wrapper
-            # mover stamps it via record_move_source).
+            # ATOM-304 …).
             is_empty_shell = (
                 allow_shell_trash
                 and not shell_files
+                and not depth_truncated
+            )
+            # BOTH shell shapes require the folder to have settled since
+            # its last move. Row age alone cannot clear it — a freshly
+            # moved wrapper lists optimistically (#140): an EMPTY tree
+            # while every file is in flight, OR only its already-landed
+            # ad clips while the real video is still transferring and
+            # invisible to the listing. Aging keys on created_at, but a
+            # PENDING task can be >24h old with its move seconds fresh,
+            # so the move-settle gate on the folder itself is the real
+            # proof (every wrapper mover stamps it via record_move_source).
+            # is_ad_shell lacked this gate — an aged ad-shell verdict on
+            # an in-flight wrapper trashed the video with it (2026-07-18
+            # integration audit). Query once, share both verdicts.
+            shell_settled = (
+                allow_shell_trash
                 and not depth_truncated
                 and svc.move_settled(folder_id)
             )
@@ -583,7 +594,7 @@ async def finalize_code_folder_stream(
             # inline/sweep finalize must never shell-trash on a single
             # snapshot. Only the aged retry path (row older than the
             # abandon grace — folder long settled) enables this.
-            if (is_ad_shell and allow_shell_trash) or is_empty_shell:
+            if shell_settled and (is_ad_shell or is_empty_shell):
                 reason = ("ad_shell_no_video" if is_ad_shell
                           else "empty_shell_no_video")
                 try:

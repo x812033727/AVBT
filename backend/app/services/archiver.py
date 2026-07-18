@@ -1181,13 +1181,19 @@ async def _finalize_retry_pass() -> int:
                 # no timeout anywhere down the pikpakapi stack).
                 async with asyncio.timeout(_FINALIZE_ROW_TIMEOUT):
                     # Shell-trash (#207) only for rows aged past the
-                    # abandon grace: their folders are long settled, so
-                    # the #140 optimistic-empty window cannot apply.
-                    # Fresh rows keep the safe skip-forever behaviour.
+                    # abandon grace. Age keys on when the wrapper was
+                    # ARCHIVED (moved), not when the row was created: a
+                    # PENDING task can sit >24h before its move lands, so
+                    # created_at aging does not prove the folder settled
+                    # (2026-07-18 audit). Collecting-orphans have no
+                    # archived_at yet — fall back to created_at (their
+                    # wrapper was migrated by the sweep long ago). The
+                    # move-settle gate in finalize is the real guard;
+                    # this just avoids opting in prematurely.
                     if await run_finalize(
                         pikpak_service, row.code,
                         allow_shell_trash=(
-                            row.created_at
+                            (row.archived_at or row.created_at)
                             < datetime.utcnow() - _ABANDON_GRACE
                         ),
                     ):

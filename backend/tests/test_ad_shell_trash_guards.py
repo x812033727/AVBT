@@ -53,6 +53,12 @@ class _Svc:
     async def lookup_folder_id(self, path):
         return None
 
+    # Aged retry path: the folder is long settled. The shell verdicts now
+    # gate on this (2026-07-18 audit — an in-flight wrapper must not be
+    # shell-trashed); these tests model the settled case.
+    def move_settled(self, folder_id):
+        return True
+
 
 async def _run(svc, code, folder_id, **kw):
     return [e async for e in finalize_code_folder_stream(

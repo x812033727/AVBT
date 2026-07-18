@@ -72,7 +72,13 @@ def _counts_as_content(f) -> bool:
     to the container-swap loop forever and re-creates the EDD-138
     deadlock (live: DVDMS-047, ads + one 29MB QQ-ad .rar)."""
     return is_video(f.name) or (
-        ext_of(f.name) in CONTAINER_EXTS and (f.size or 0) >= JUNK_BYTES
+        ext_of(f.name) in CONTAINER_EXTS
+        # None size → assume legit (PikPak can list a real file with a
+        # missing size field; same rule as the video keeper below and
+        # pikpak.py's cleanup paths). Only a KNOWN-small container is
+        # junk — collapsing None to 0 here handed a real disc image's
+        # wrapper to the trash (#219 adversarial review).
+        and (f.size is None or f.size >= JUNK_BYTES)
     )
 
 _TRANSIENT_RE = re.compile(r"transmission|reached the limit|too\s*frequent", re.IGNORECASE)

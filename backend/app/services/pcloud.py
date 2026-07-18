@@ -30,6 +30,7 @@ import httpx
 
 from ..config import settings
 from ..schemas import PCloudFile, PCloudQuota
+from .jav_code import folder_key
 from .pcloud_errors import PCloudError  # noqa: F401 — re-exported for back-compat
 from .pcloud_organize import (  # noqa: F401 — re-exported for back-compat
     _JUNK_BYTES,
@@ -69,6 +70,23 @@ def _to_pcloud_file(item: dict) -> PCloudFile:
         parent_id=str(parent_raw) if parent_raw is not None else None,
         created_time=item.get("created"),
     )
+
+
+def _folder_match_key(name: str) -> str:
+    """Match key for twin-tolerant folder lookup: same idea as PikPak's
+    ``folder_key`` (spacing / width / case don't count — JavBus drift),
+    plus a trailing-ASCII-dot strip on top.
+
+    #210 made ``safe_folder_name`` rstrip trailing ASCII dots (PikPak
+    rejects folder names ending in one), so an archive that used to
+    create "働くドMさん." now asks for "働くドMさん". Any such folder
+    that already exists on pCloud — which tolerates trailing dots,
+    unlike PikPak — is a legacy twin of the new name, not a miss. Plain
+    ``folder_key`` alone doesn't cover this (it doesn't touch trailing
+    punctuation), so this wraps it with the same rstrip ``safe_folder_name``
+    uses.
+    """
+    return folder_key((name or "").rstrip(". "))
 
 
 class PCloudService(PCloudOrganizeMixin):
@@ -831,16 +849,57 @@ class PCloudService(PCloudOrganizeMixin):
 
     # ---------- cleanup ----------
 
+    @staticmethod
+    def _find_folder(children: list[PCloudFile], seg: str) -> PCloudFile | None:
+        """Match ``seg`` among FOLDER entries: exact name first, falling
+        back to :func:`_folder_match_key` equivalence (a legacy/twin
+        spelling of the same folder — see PikPak's ``folder_key`` fallback
+        in ``lookup_folder_id`` for the sibling implementation). Exact
+        match always wins when both exist, so an actual same-named folder
+        is never redirected to a different one that merely matches loosely."""
+        exact = next(
+            (c for c in children if c.kind == "folder" and c.name == seg),
+            None,
+        )
+        if exact is not None:
+            return exact
+        key = _folder_match_key(seg)
+        twin = next(
+            (c for c in children if c.kind == "folder" and _folder_match_key(c.name) == key),
+            None,
+        )
+        if twin is not None:
+            logger.debug("pcloud path lookup: %r reuses existing twin %r", seg, twin.name)
+        return twin
+
     async def ensure_path(self, path: str) -> int:
         """Walk-create ``/a/b/c`` and return the leaf folder id. Empty
         / ``"/"`` returns the root (0). Used to materialise the user's
-        chosen destination before submitting a transfer."""
+        chosen destination before submitting a transfer.
+
+        Each segment is checked against the existing children first (exact
+        name, then the twin-tolerant fallback — see :meth:`_find_folder`)
+        before falling back to ``createfolderifnotexists``. pCloud's own
+        dedup there only matches by exact name, same as the bug this
+        guards against, so skipping the check would still fork a sibling
+        for a drifted/legacy name instead of reusing it."""
         path = (path or "").strip()
         if not path or path == "/":
             return 0
         segments = [s for s in path.split("/") if s]
         parent_id = 0
         for seg in segments:
+            try:
+                children = await self.list_files(str(parent_id))
+            except PCloudError:
+                children = []
+            match = self._find_folder(children, seg)
+            if match is not None:
+                try:
+                    parent_id = int(match.id)
+                    continue
+                except (TypeError, ValueError):
+                    pass  # fall through and create instead
             data = await self._call(
                 "createfolderifnotexists",
                 {"folderid": parent_id, "name": seg},
@@ -873,14 +932,7 @@ class PCloudService(PCloudOrganizeMixin):
                 children = await self.list_files(str(parent_id))
             except PCloudError:
                 return None
-            match = next(
-                (
-                    c
-                    for c in children
-                    if c.kind == "folder" and c.name == seg
-                ),
-                None,
-            )
+            match = self._find_folder(children, seg)
             if match is None:
                 return None
             try:

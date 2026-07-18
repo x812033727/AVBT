@@ -36,7 +36,15 @@ const TRANSFER_LABELS: Record<string, string> = {
   cancelled: "已取消",
 };
 
-function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatTile({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+}) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="text-sm text-muted-foreground">{label}</div>
@@ -185,7 +193,21 @@ export default function DashboardPage() {
             <StatTile
               label="離線任務"
               value={String(stats.downloads_total)}
-              sub={`已歸檔 ${stats.archived_count}`}
+              sub={
+                <>
+                  已歸檔 {stats.archived_count}
+                  {stats.abandoned_total > 0 ? (
+                    <>
+                      ・
+                      <Link href="/history?abandoned=true" className="underline hover:text-foreground">
+                        已放棄 {stats.abandoned_total}
+                      </Link>
+                    </>
+                  ) : (
+                    <>・已放棄 {stats.abandoned_total}</>
+                  )}
+                </>
+              }
             />
             <StatTile
               label="歸檔率"

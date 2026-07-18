@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, ClipboardList, RefreshCw } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, type ArchiverStatus } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +23,7 @@ type OpsReports = {
 
 export default function OpsReportsPage() {
   const [data, setData] = useState<OpsReports | null>(null);
+  const [archiver, setArchiver] = useState<ArchiverStatus | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -29,6 +31,9 @@ export default function OpsReportsPage() {
     setLoading(true);
     try {
       setData(await api.get<OpsReports>("/api/ops/reports?limit=50"));
+      setArchiver(
+        await api.get<ArchiverStatus>("/api/pikpak/archiver").catch(() => null)
+      );
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -68,6 +73,27 @@ export default function OpsReportsPage() {
         無人值守輪值每小時驗收自動下載的成果(分集連號、資料夾歸位、垃圾清除),
         並把每輪摘要寫在這裡。標紅的是資料遺失級事件。
       </p>
+
+      {archiver && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary" className="font-mono">
+            finalize×{archiver.finalize_concurrency}
+          </Badge>
+          <Badge variant="secondary" className="font-mono">
+            poll×{archiver.pcloud_poll_concurrency}
+          </Badge>
+          {!!archiver.abandoned_total && (
+            <Link href="/history?abandoned=true">
+              <Badge
+                variant="outline"
+                className="border-amber-500/40 bg-amber-500/20 font-mono text-amber-300 hover:bg-amber-500/30"
+              >
+                放棄 {archiver.abandoned_total}
+              </Badge>
+            </Link>
+          )}
+        </div>
+      )}
 
       {error && (
         <Card className="border-destructive">

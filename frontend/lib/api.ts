@@ -352,6 +352,9 @@ export type ArchiverStatus = {
   sweep_swept_total: number;
   task_folder: string;
   sweep_fallback_root: boolean;
+  finalize_concurrency: number;
+  pcloud_poll_concurrency: number;
+  abandoned_total?: number;
 };
 
 export type HistoryItem = {
@@ -365,6 +368,7 @@ export type HistoryItem = {
   message: string;
   archived: boolean;
   archived_at: string | null;
+  abandoned: boolean;
   created_at: string;
 };
 
@@ -718,6 +722,7 @@ export type DashboardStats = {
   top_actresses: TopItem[];
   top_genres: TopItem[];
   pcloud_transfers_by_status: Record<string, number>;
+  abandoned_total: number;
   built_at: string;
 };
 

@@ -95,6 +95,20 @@ class MovieDetail(BaseModel):
     part_estimate: PartEstimate | None = None
 
 
+class CachedDetailLite(BaseModel):
+    """Cache-join-only projection of MovieDetail for browse cards — just
+    the identity fields (studio/series/genres), never fetched over the
+    network. See ``detail_cache.get_many_lite``."""
+    code: str
+    studio: LinkRef | None = None
+    series: LinkRef | None = None
+    genres: list[str] = Field(default_factory=list)
+
+
+class CachedDetailsResponse(BaseModel):
+    items: dict[str, CachedDetailLite]
+
+
 # ---------- Collection ----------
 
 class CollectionIn(BaseModel):

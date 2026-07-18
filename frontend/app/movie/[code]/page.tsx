@@ -2,7 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Play } from "lucide-react";
+import {
+  type LucideIcon,
+  Building2,
+  CalendarDays,
+  Clapperboard,
+  Clock,
+  Play,
+  Tag,
+  User,
+} from "lucide-react";
 import FinalizeButton from "@/components/FinalizeButton";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
@@ -171,8 +180,6 @@ export default function MoviePage({ params }: { params: { code: string } }) {
             </h1>
           </div>
           <dl className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 text-sm">
-            <Info k="發行日期" v={data.release_date} />
-            <Info k="長度" v={data.duration} />
             {!((cloudCount?.video_count ?? 0) > 0 ||
                (pcloudCount?.video_count ?? 0) > 0) &&
               data.part_estimate &&
@@ -184,10 +191,6 @@ export default function MoviePage({ params }: { params: { code: string } }) {
                   </dd>
                 </>
               )}
-            <RefInfo k="導演" kind="director" ref={data.director} />
-            <RefInfo k="製作商" kind="studio" ref={data.studio} />
-            <RefInfo k="發行商" kind="label" ref={data.label} />
-            <RefInfo k="系列" kind="series" ref={data.series} />
             {(cloudCount || pcloudCount) && (
               <>
                 <dt className="text-muted-foreground">雲端影片</dt>
@@ -238,6 +241,58 @@ export default function MoviePage({ params }: { params: { code: string } }) {
               </>
             )}
           </dl>
+
+          {/* 製作資訊 — identity metadata grouped in one place */}
+          <div className="rounded-md border border-border bg-muted/20 p-3">
+            <div className="mb-2 text-xs font-medium text-muted-foreground">
+              製作資訊
+            </div>
+            <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+              <MetaItem icon={Building2} k="製作商" kind="studio" refv={data.studio} />
+              <MetaItem icon={Tag} k="發行商" kind="label" refv={data.label} />
+              <MetaItem icon={Clapperboard} k="系列" kind="series" refv={data.series} />
+              <MetaItem icon={User} k="導演" kind="director" refv={data.director} />
+              {data.release_date && (
+                <div className="flex items-center gap-2 text-foreground/80">
+                  <CalendarDays className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="text-muted-foreground">發行日期</span>
+                  <span>{data.release_date}</span>
+                </div>
+              )}
+              {data.duration && (
+                <div className="flex items-center gap-2 text-foreground/80">
+                  <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="text-muted-foreground">長度</span>
+                  <span>{data.duration}</span>
+                </div>
+              )}
+            </div>
+            {!!data.genres.length && (
+              <div className="mt-2">
+                <div className="mb-1 text-xs text-muted-foreground">類別</div>
+                <div className="flex flex-wrap gap-1">
+                  {data.genres.map((g) =>
+                    g.id ? (
+                      <Link
+                        key={g.name}
+                        href={`/genre/${encodeURIComponent(g.id)}`}
+                        className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80 transition hover:border-primary hover:text-primary"
+                      >
+                        {g.name}
+                      </Link>
+                    ) : (
+                      <span
+                        key={g.name}
+                        className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
+                      >
+                        {g.name}
+                      </span>
+                    )
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           {!!data.actresses.length && (
             <div className="flex flex-wrap gap-1">
               {data.actresses.map((a) =>
@@ -255,28 +310,6 @@ export default function MoviePage({ params }: { params: { code: string } }) {
                     className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
                   >
                     {a.name}
-                  </span>
-                )
-              )}
-            </div>
-          )}
-          {!!data.genres.length && (
-            <div className="flex flex-wrap gap-1">
-              {data.genres.map((g) =>
-                g.id ? (
-                  <Link
-                    key={g.name}
-                    href={`/genre/${encodeURIComponent(g.id)}`}
-                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80 transition hover:border-primary hover:text-primary"
-                  >
-                    {g.name}
-                  </Link>
-                ) : (
-                  <span
-                    key={g.name}
-                    className="rounded border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground/80"
-                  >
-                    {g.name}
                   </span>
                 )
               )}
@@ -351,32 +384,33 @@ function Info({ k, v }: { k: string; v: string }) {
   );
 }
 
-function RefInfo({
+function MetaItem({
+  icon: Icon,
   k,
   kind,
-  ref,
+  refv,
 }: {
+  icon: LucideIcon;
   k: string;
   kind: "studio" | "label" | "series" | "director";
-  ref: { name: string; id: string } | null;
+  refv: { name: string; id: string } | null;
 }) {
-  if (!ref || !ref.name) return null;
+  if (!refv || !refv.name) return null;
   return (
-    <>
-      <dt className="text-muted-foreground">{k}</dt>
-      <dd className="text-foreground/80">
-        {ref.id ? (
-          <Link
-            href={`/${kind}/${encodeURIComponent(ref.id)}`}
-            className="hover:text-primary hover:underline"
-          >
-            {ref.name}
-          </Link>
-        ) : (
-          ref.name
-        )}
-      </dd>
-    </>
+    <div className="flex items-center gap-2 text-foreground/80">
+      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="text-muted-foreground">{k}</span>
+      {refv.id ? (
+        <Link
+          href={`/${kind}/${encodeURIComponent(refv.id)}`}
+          className="truncate hover:text-primary hover:underline"
+        >
+          {refv.name}
+        </Link>
+      ) : (
+        <span className="truncate">{refv.name}</span>
+      )}
+    </div>
   );
 }
 

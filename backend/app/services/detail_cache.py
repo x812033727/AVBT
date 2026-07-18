@@ -12,6 +12,8 @@ break scraping.
 import logging
 from datetime import datetime, timedelta
 
+from sqlalchemy import select
+
 from ..config import settings
 from ..database import SessionLocal
 from ..models import MovieDetailCache
@@ -51,6 +53,46 @@ async def get(code: str) -> MovieDetail | None:
     except Exception as exc:  # noqa: BLE001 — cache failure = cache miss
         logger.warning("detail cache read failed for %s: %s", code, exc)
         return None
+
+
+async def get_many_lite(codes: list[str]) -> dict[str, dict]:
+    """Batch-read {studio, series, genres} for browse-card enrichment.
+
+    Deliberately ignores the TTL that ``get()`` enforces: identity fields
+    (studio/series/genre) don't change after release the way duration and
+    the magnet list do, so a "stale" row is still an honest answer for
+    this projection — the freshness cost the TTL protects against
+    (a growing magnet list) doesn't apply here. One SELECT for the whole
+    batch; a code with no row, or a row whose JSON fails to parse, is
+    simply omitted (module convention: cache failure = miss). Never
+    touches the network — this is a cache-join only, no scraper fallback.
+    """
+    if not settings.javbus_persist_cache_enabled or not codes:
+        return {}
+    try:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(MovieDetailCache).where(MovieDetailCache.code.in_(codes))
+                )
+            ).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — cache failure = cache miss
+        logger.warning("detail cache batch read failed: %s", exc)
+        return {}
+
+    out: dict[str, dict] = {}
+    for row in rows:
+        try:
+            detail = MovieDetail.model_validate_json(row.detail)
+        except Exception as exc:  # noqa: BLE001 — bad row = skip that code
+            logger.warning("detail cache batch parse failed for %s: %s", row.code, exc)
+            continue
+        out[row.code] = {
+            "studio": detail.studio.model_dump() if detail.studio else None,
+            "series": detail.series.model_dump() if detail.series else None,
+            "genres": [g.name for g in detail.genres[:4]],
+        }
+    return out
 
 
 async def put(code: str, detail: MovieDetail) -> None:

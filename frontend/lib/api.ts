@@ -220,6 +220,14 @@ export type ActressRef = { name: string; id: string };
 export type GenreRef = { name: string; id: string };
 export type LinkRef = { name: string; id: string };
 
+/** Cache-join-only browse-card metadata (POST /api/javbus/details/cached). */
+export type CachedDetailLite = {
+  code: string;
+  studio: LinkRef | null;
+  series: LinkRef | null;
+  genres: string[];
+};
+
 export type StarProfile = {
   id: string;
   name: string;

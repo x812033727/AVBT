@@ -39,7 +39,9 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
     by_phase = dict(
         (
             await session.execute(
-                select(OfflineTaskLog.phase, func.count()).group_by(OfflineTaskLog.phase)
+                select(OfflineTaskLog.phase, func.count())
+                .where(OfflineTaskLog.abandoned.is_(False))
+                .group_by(OfflineTaskLog.phase)
             )
         ).all()
     )
@@ -51,9 +53,16 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
     ).scalar_one()
     # Rate against rows that actually produced a file — pure failures
     # (no file_id) can never be archived and would just dilute the rate.
+    # Abandoned rows are excluded too: post-#203 a dead-lettered row can
+    # carry a stale nonempty file_id that will never be archived.
     with_file = (
         await session.execute(
-            select(func.count()).select_from(OfflineTaskLog).where(OfflineTaskLog.file_id != "")
+            select(func.count())
+            .select_from(OfflineTaskLog)
+            .where(
+                OfflineTaskLog.file_id != "",
+                OfflineTaskLog.abandoned.is_(False),
+            )
         )
     ).scalar_one()
     archive_rate = archived_count / with_file if with_file else 0.0
@@ -65,7 +74,10 @@ async def dashboard(session: AsyncSession = Depends(get_session)) -> DashboardSt
         (
             await session.execute(
                 select(func.date(OfflineTaskLog.created_at), func.count())
-                .where(OfflineTaskLog.created_at >= cutoff)
+                .where(
+                    OfflineTaskLog.created_at >= cutoff,
+                    OfflineTaskLog.abandoned.is_(False),
+                )
                 .group_by(func.date(OfflineTaskLog.created_at))
             )
         ).all()

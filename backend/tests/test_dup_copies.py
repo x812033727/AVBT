@@ -50,6 +50,18 @@ def test_biggest_wins_and_the_rest_are_trashed():
     assert rename is None          # rename waits for the trash to settle
 
 
+def test_none_size_copy_defers_never_trashes():
+    # PikPak can list a real file with size=None (#220/#225). Collapsing
+    # it to 0 made it a guaranteed size-contest loser → the real upgrade
+    # got trashed and the stale small copy renamed over it. A group with
+    # any unknown size must defer: trash nothing this pass.
+    known = _f("SONE-092.mp4", 8 * GB, "known")
+    unknown = _f("SONE-092(1).mp4", None, "unknown")
+    losers, rename = plan_group([known, unknown])
+    assert losers == []
+    assert rename is None
+
+
 def test_identical_copies_still_lose_one():
     a = _f("ABF-010.mp4", 7 * GB, "a")
     b = _f("ABF-010(1).mp4", 7 * GB, "b")

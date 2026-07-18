@@ -1425,8 +1425,12 @@ class PikPakService:
                         # Same canonical, multiple files: real parts
                         # if ALL ≥ 500MB; otherwise treat smaller ones
                         # as resolution dups / leftover ads and drop.
+                        # None size → assume legit (#225): PikPak lists
+                        # real files with a missing size, and collapsing
+                        # that to 0 dropped a genuine disc from the set.
                         all_substantial = all(
-                            (v.size or 0) >= PART_MIN_BYTES for v in vids
+                            v.size is None or v.size >= PART_MIN_BYTES
+                            for v in vids
                         )
                         if all_substantial:
                             # Stray whole-film rips must not claim slots.

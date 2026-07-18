@@ -579,7 +579,9 @@ async def _resolve_folder_winner(
         groups.setdefault(_canonical_video_name(v.name), []).append(v)
     keepers: list[tuple[str, Any]] = []
     for canon, vids in sorted(groups.items()):
-        if len(vids) >= 2 and all((v.size or 0) >= PART_MIN for v in vids):
+        if len(vids) >= 2 and all(
+            v.size is None or v.size >= PART_MIN for v in vids
+        ):
             # A stray low-res whole-film rip must not claim a slot.
             vids, _outliers = _split_size_outliers(vids, canon)
             # Part order comes from the marker (-1/-2/CD2/B), not size —

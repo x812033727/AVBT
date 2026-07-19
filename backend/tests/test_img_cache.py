@@ -31,6 +31,38 @@ async def test_store_lookup_roundtrip(tmp_path, monkeypatch):
     assert await ic.lookup(url + "?s=1") is None
 
 
+async def test_concurrent_stores_of_same_url_do_not_collide(tmp_path, monkeypatch):
+    # Same-URL writers used to share one <key>.tmp path: the loser's
+    # os.replace raised ENOENT ("img cache store failed" noise) and could
+    # even publish a half-written file. Unique temp names fix both.
+    import threading
+
+    _use_tmp_cache(tmp_path, monkeypatch)
+    url = "https://www.javbus.com/pics/cover/race.jpg"
+    barrier = threading.Barrier(8)
+    errors = []
+
+    def write():
+        barrier.wait()
+        try:
+            ic._store_sync(url, b"racebytes", ".jpg")
+        except Exception as exc:  # noqa: BLE001 — collected for the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    cache_dir = tmp_path / "img_cache"
+    assert [p.name for p in cache_dir.iterdir() if p.name.endswith(".tmp")] == []
+    hit = await ic.lookup(url)
+    assert hit is not None
+    assert hit[0].read_bytes() == b"racebytes"
+
+
 async def test_unknown_type_and_empty_not_stored(tmp_path, monkeypatch):
     _use_tmp_cache(tmp_path, monkeypatch)
     await ic.store("https://www.javbus.com/a.bmp", b"x", "image/bmp")

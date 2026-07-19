@@ -278,3 +278,72 @@ async def test_evacuated_shell_waits_for_gate(monkeypatch):
     assert result == {"action": "skip", "target": "DVDMS-129",
                       "reason": "move_settling"}
     assert svc.trashed == []
+
+
+async def test_ad_video_plus_iso_keeps_container(monkeypatch):
+    """Live 2026-07-19 (AP-491/AP-488): wrapper = 40MB ad mp4 + 3.7GB
+    ISO + covers. The any-size fallback crowns the ad as keeper; the
+    ISO must ride along to the series folder (container-swap's food),
+    not be trashed as wrapper junk."""
+    svc = StubSvc([
+        _file("AP-491.mp4", "ad", 40),
+        _file("AP491.ISO", "iso", 3700),
+        _file("2ap491pl.jpg", "j", 1),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "AP-491", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "iso" in moved
+    assert "iso" not in svc.trashed
+    assert "j" in svc.trashed
+    # The container keeps its own name — no rename.
+    assert all(fid != "iso" for fid, _n in svc.renamed)
+
+
+async def test_credible_video_still_retires_container(monkeypatch):
+    """A substantial video ≥25% of the container's size fulfils the
+    container's purpose — the ISO goes to trash as before."""
+    svc = StubSvc([
+        _file("MIDV-002.mp4", "vid", 4000),
+        _file("MIDV002.ISO", "iso", 4200),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-002", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert moved == ["vid"]
+    assert "iso" in svc.trashed
+
+
+async def test_archive_volume_set_rides_along_whole(monkeypatch):
+    """rar volume pieces are never individually retired — a size
+    contest against one piece is meaningless (mirrors phase-2 #240)."""
+    svc = StubSvc([
+        _file("SNIS-494.mp4", "ad", 40),
+        _file("snis494.part1.rar", "r1", 2000),
+        _file("snis494.part2.rar", "r2", 1400),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "SNIS-494", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "r1" in moved and "r2" in moved
+    assert "r1" not in svc.trashed and "r2" not in svc.trashed
+
+
+async def test_tiny_stray_archive_still_junked(monkeypatch):
+    """A sub-300MB zip beside a real video is junk, not a container
+    worth feeding to the swap flow."""
+    svc = StubSvc([
+        _file("MIDV-003.mp4", "vid", 6000),
+        _file("字幕包.zip", "z", 5),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-003", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    assert "z" in svc.trashed

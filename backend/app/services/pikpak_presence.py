@@ -308,7 +308,24 @@ class PikPakPresenceIndex:
         code, and only an unrelated full walk ever cleared it). Naming
         the ids makes the update deterministic instead of a race.
         """
-        wanted = [c for c in {normalize_code(c) or c for c in codes} if c]
+        # Index keys are normalized (prefix-stripped) codes, but the dir
+        # resolution inside _live_paths_for reads the JavBus detail cache,
+        # which is keyed by the FULL submitted code ("200GANA-3078"). Keep
+        # the raw spellings alongside each normalized key so the studio/
+        # series dir still resolves — normalizing first made every
+        # prefixed code a permanent cache miss: the loose GANA-3078.mp4
+        # was never indexed and its task row churned 找不到歸檔資料夾
+        # forever (live 2026-07-19: 200GANA-3040/3061/3072/3078,
+        # 300NTK-831).
+        raw_by_norm: dict[str, set[str]] = {}
+        for c in codes:
+            if not c:
+                continue
+            norm = normalize_code(c) or c
+            bucket = raw_by_norm.setdefault(norm, set())
+            if c != norm:
+                bucket.add(c)
+        wanted = list(raw_by_norm)
         if not wanted:
             return 0
         if self._codes is None:
@@ -321,7 +338,10 @@ class PikPakPresenceIndex:
             async with sem:
                 try:
                     return code, await self._live_paths_for(
-                        code, exclude_ids=gone, memo=memo
+                        code,
+                        raw_codes=tuple(raw_by_norm.get(code, ())),
+                        exclude_ids=gone,
+                        memo=memo,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("presence refresh %s failed: %s", code, exc)
@@ -354,6 +374,7 @@ class PikPakPresenceIndex:
         self,
         code: str,
         *,
+        raw_codes: tuple[str, ...] = (),
         exclude_ids: frozenset[str] = frozenset(),
         memo: _ListingMemo | None = None,
     ) -> list[str]:
@@ -362,7 +383,10 @@ class PikPakPresenceIndex:
         Looks in the code's resolved 製作商/<studio>/<series> folder (both
         layouts: a ``CODE`` folder leaf and loose ``CODE*.ext`` videos)
         and the legacy archive folder. Returns [] when the code isn't
-        there any more (caller drops it from the index). ``exclude_ids``
+        there any more (caller drops it from the index). ``raw_codes`` are
+        the caller's un-normalized spellings ("200GANA-3078" for key
+        "GANA-3078") — the detail cache behind the dir resolution is keyed
+        by them, so each one gets its own resolution attempt. ``exclude_ids``
         skips entries the caller deleted but the listing may still
         return — see :meth:`refresh_codes`."""
         from .archiver import studio_series_dir_for_code  # avoid cycle
@@ -371,12 +395,15 @@ class PikPakPresenceIndex:
         dirs: list[str] = []
         # Where the archiver would put it (detail cache only — a miss
         # must not become a JavBus fetch on this per-code hot path).
-        try:
-            nested = await studio_series_dir_for_code(code, allow_fetch=False)
-        except Exception:  # noqa: BLE001
-            nested = None
-        if nested:
-            dirs.append(nested)
+        for lookup in (code, *raw_codes):
+            try:
+                nested = await studio_series_dir_for_code(
+                    lookup, allow_fetch=False
+                )
+            except Exception:  # noqa: BLE001
+                nested = None
+            if nested and nested not in dirs:
+                dirs.append(nested)
         # Where we last saw it: catches codes whose detail isn't cached
         # and codes that moved out (the re-list then returns nothing and
         # the caller drops the entry).

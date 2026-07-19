@@ -44,7 +44,14 @@ from ..config import (
 from ..database import SessionLocal
 from ..models import OfflineTaskLog, TrackedListing
 from .archiver import _resolve_archive_path_by_code, _safe_code, _safe_name
-from .jav_code import KIND_LABELS_CH, ext_of, extract_jav_code, is_video
+from .jav_code import (
+    CONTAINER_EXTS,
+    KIND_LABELS_CH,
+    ext_of,
+    extract_jav_code,
+    is_archive_volume,
+    is_video,
+)
 from .pikpak import (
     _build_video_rename_plan,
     _uniquify_target,
@@ -55,6 +62,7 @@ from .rename_plan import (
     _part_marker_index,
     _split_size_outliers,
 )
+from .series_junk import MIN_REPLACEMENT_FRACTION as _MIN_REPLACEMENT_FRACTION
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +96,28 @@ async def _item_size(item) -> int:
                 int(d.size or 0) for d in deeper if d.kind != "drive#folder"
             )
     return total
+
+
+async def _folder_has_video(item) -> bool:
+    """Whether a folder holds any playable video, peeking one nested
+    level like ``_item_size`` does. Used by the phase-2 dedupe to rank a
+    wrapper that carries the actual film above a bare container file."""
+    try:
+        inner = await pikpak_service.list_files(item.id, size=100)
+    except Exception:  # noqa: BLE001
+        return False
+    if any(c.kind != "drive#folder" and is_video(c.name) for c in inner):
+        return True
+    for sub in inner:
+        if sub.kind != "drive#folder":
+            continue
+        try:
+            deeper = await pikpak_service.list_files(sub.id, size=50)
+        except Exception:  # noqa: BLE001
+            continue
+        if any(d.kind != "drive#folder" and is_video(d.name) for d in deeper):
+            return True
+    return False
 
 
 def _canonical_name(child, code: str) -> str:
@@ -818,19 +848,62 @@ async def _phase2_cleanup_target(
         groups.setdefault(code, []).append(c)
 
     # Pick winner per group (largest payload; ties broken by preferring
-    # bare files over folders since they play directly).
+    # bare files over folders since they play directly). A container
+    # never outranks a playable candidate: a disc image carries the film
+    # uncompressed, so the replacement video the container swap lands is
+    # legitimately smaller — a pure size contest crowns the container
+    # and trashes the real video as a "duplicate", once per swap attempt
+    # (live 2026-07-18: OAE-173.rar 4.6GB outlived three landed
+    # replacements). That is the swap's contract inverted — a landed
+    # video is supposed to retire the container (series_junk's tail).
     winner_ids: dict[str, str] = {}
+    # Losers that must be KEPT, not trashed: a container whose
+    # replacement is below the credibility bar (or a multi-volume
+    # piece), and every member of a container-only group. Same bar as
+    # series_junk — below it both copies stay and a human decides.
+    keep_ids: dict[str, set[str]] = {}
     for code, items in groups.items():
         if len(items) == 1:
             winner_ids[code] = items[0].id
             continue
-        ranked: list[tuple[int, int, object]] = []
+        ranked: list[tuple[bool, int, int, object]] = []
         for it in items:
             size = await _item_size(it)
+            if it.kind == "drive#folder":
+                playable = await _folder_has_video(it)
+            else:
+                playable = is_video(it.name)
             file_bias = 0 if it.kind == "drive#folder" else 1
-            ranked.append((size, file_bias, it))
-        ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        winner_ids[code] = ranked[0][2].id
+            ranked.append((playable, size, file_bias, it))
+        ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        playable_win, win_size, _bias, top = ranked[0]
+        winner_ids[code] = top.id
+        if not playable_win:
+            # Container-only group (rar volume set, iso beside zip…):
+            # a size contest between containers can shred a volume set,
+            # and renaming the "winner" piece to the bare canonical name
+            # destroys its volume index. No dedupe, no rename — the
+            # whole group stays; series_junk / a human owns their fate.
+            keep_ids[code] = {it.id for it in items}
+            continue
+        # A half-written winner has an unfinished size — it must not
+        # retire a container on the strength of a number still growing.
+        win_ready = (getattr(top, "phase", "") or "") in (
+            "", "PHASE_TYPE_COMPLETE")
+        kept: set[str] = set()
+        for playable, size, _b, it in ranked[1:]:
+            if playable or it.kind == "drive#folder":
+                continue  # video/folder losers: normal dedupe applies
+            if ext_of(it.name) not in CONTAINER_EXTS:
+                continue  # code-named txt/jpg junk: trash as before
+            if (
+                not win_ready
+                or is_archive_volume(it.name)
+                or win_size < size * _MIN_REPLACEMENT_FRACTION
+            ):
+                kept.add(it.id)
+        if kept:
+            keep_ids[code] = kept
 
     # Build the plan. plan items: (child, phase, target_name, reason, code)
     # phase ∈ {"skip", "dedupe", "rename", "winner_folder"}
@@ -839,7 +912,11 @@ async def _phase2_cleanup_target(
         plan.append((c, "skip", None, "no_code", None))
 
     for code, items in groups.items():
+        kept = keep_ids.get(code, set())
         for c in items:
+            if c.id in kept:
+                plan.append((c, "skip", None, "container_kept", code))
+                continue
             if c.id != winner_ids[code]:
                 # Loser — trash regardless of kind.
                 plan.append(

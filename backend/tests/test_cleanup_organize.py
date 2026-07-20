@@ -464,3 +464,81 @@ def test_zero_padded_twin_is_not_a_disc():
         500 * 1024 * 1024, is_video, require_marker=True,
     )
     assert plan == {} and members == set()
+
+
+async def test_flatten_keeps_small_marked_part(tmp_path, monkeypatch):
+    """A file with an explicit ``_NN`` part marker is a real part even
+    below the 500MB substantial bar.
+
+    Live case ([吾爱GIGA]TRE-76): a genuine ``_01…_04`` episode set with
+    ``_02`` at 426MB failed ``all_substantial``, so the flatten elected
+    ``_03`` (825MB) the sole winner and reported the other three real
+    episodes as 低解析重複 — ffprobe put their runtimes at 25.8/21.1/
+    40.6/25.9 min, four different slices of one film."""
+    engine = await _db(
+        tmp_path, monkeypatch,
+        [_cache_row("TRE-76", ("GIGA", "eh"), ("ヒロイン陵辱", "606"))],
+    )
+    path_ids = {
+        "AVBT": "root", "AVBT/已完成": "legacy", "AVBT/製作商": "kStudio",
+        "AVBT/製作商/GIGA/ヒロイン陵辱": "series",
+    }
+    graph = {
+        "kStudio": [_folder("GIGA", "studio")],
+        "studio": [_folder("ヒロイン陵辱", "series")],
+        "series": [_folder("[吾爱GIGA]TRE-76", "wrap")],
+        "wrap": [
+            _file("TRE-76_01.mkv", "p1", size_mb=508),
+            _file("TRE-76_02.mkv", "p2", size_mb=407),  # < 500MB, marked
+            _file("TRE-76_03.mkv", "p3", size_mb=787),
+            _file("TRE-76_04.mkv", "p4", size_mb=502),
+        ],
+    }
+    svc = FakeSvc(path_ids, graph)
+    events = await _run(svc, "kStudio", dry_run=False)
+
+    flat = [e for e in events if e.get("action") == "flatten"]
+    assert flat, f"no flatten; actions={[e.get('action') for e in events]}"
+    assert not any(
+        "低解析重複" in (e.get("reason") or "") for e in flat
+    ), f"reasons={[e.get('reason') for e in flat]}"
+    renames = dict(svc.renamed)
+    assert renames.get("p1") == "TRE-76_1.mkv"
+    assert renames.get("p2") == "TRE-76_2.mkv"
+    assert renames.get("p3") == "TRE-76_3.mkv"
+    assert renames.get("p4") == "TRE-76_4.mkv"
+    moved_ids = {i for ids, dest in svc.moved if dest == "series" for i in ids}
+    assert moved_ids == {"p1", "p2", "p3", "p4"}
+    await engine.dispose()
+
+
+async def test_flatten_still_drops_unmarked_lowres_dup(tmp_path, monkeypatch):
+    """The bare-name guard: ``TRE-76.mkv``'s own trailing digits read as
+    a dash marker (``_part_marker_index`` → 76), which must NOT exempt a
+    markerless low-res rip from the resolution-dup collapse."""
+    engine = await _db(
+        tmp_path, monkeypatch,
+        [_cache_row("MIDV-009", ("プレステージ", "75"), ("回胴録", "11pb"))],
+    )
+    path_ids = {
+        "AVBT": "root", "AVBT/已完成": "legacy", "AVBT/製作商": "kStudio",
+        "AVBT/製作商/プレステージ/回胴録": "series",
+    }
+    graph = {
+        "kStudio": [_folder("プレステージ", "studio")],
+        "studio": [_folder("回胴録", "series")],
+        "series": [_folder("MIDV-009", "wrap")],
+        "wrap": [
+            _file("MIDV-009.mp4", "big", size_mb=900),
+            _file("MIDV-009 (2).mp4", "small", size_mb=350),  # no marker
+        ],
+    }
+    svc = FakeSvc(path_ids, graph)
+    events = await _run(svc, "kStudio", dry_run=False)
+
+    flat = [e for e in events if e.get("action") == "flatten"]
+    assert flat, f"no flatten; actions={[e.get('action') for e in events]}"
+    assert any("低解析重複" in (e.get("reason") or "") for e in flat)
+    moved_ids = {i for ids, dest in svc.moved if dest == "series" for i in ids}
+    assert moved_ids == {"big"}
+    await engine.dispose()

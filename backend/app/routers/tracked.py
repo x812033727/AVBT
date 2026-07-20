@@ -308,7 +308,11 @@ async def upsert_tracked(
         await listing_catalog.delete_listing(kind, slug)
 
     # The tracked-listing set changed (or its display name did); drop
-    # the cached aggregate so the next /missing-summary rebuilds.
+    # the cached aggregate so the next /missing-summary rebuilds — and
+    # the archiver's tracked-name cache (600s TTL), or a studio tracked
+    # seconds ago keeps archiving into 其他製作商 for up to 10 minutes.
+    from ..services import archiver as archiver_svc
+    archiver_svc._tracked_name_cache.clear()
     missing_svc.invalidate_all_caches()
     return _to_out(row)
 
@@ -366,6 +370,8 @@ async def untrack(
     await session.delete(row)
     await session.commit()
     await listing_catalog.delete_listing(kind, slug)
+    from ..services import archiver as archiver_svc
+    archiver_svc._tracked_name_cache.clear()
     missing_svc.invalidate_all_caches()
     return {"ok": True}
 

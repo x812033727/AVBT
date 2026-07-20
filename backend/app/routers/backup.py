@@ -216,4 +216,8 @@ async def import_backup(
         stats["history"]["added"] += 1
 
     await session.commit()
+    # Restored rows can change which studios count as tracked — the
+    # archiver's tracked-name cache must not keep routing on the old set.
+    from ..services import archiver as archiver_svc
+    archiver_svc._tracked_name_cache.clear()
     return {"ok": True, "stats": stats}

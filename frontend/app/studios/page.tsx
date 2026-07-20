@@ -171,11 +171,19 @@ export default function StudiosPage() {
       {list.length === 0 ? (
         <EmptyState
           icon={Building2}
-          title={query ? "沒有符合的製作商" : "還沒有製作商資料"}
+          title={
+            query
+              ? "沒有符合的製作商"
+              : scope === "tracked" && data.studios.length > 0
+                ? "沒有追蹤中的製作商"
+                : "還沒有製作商資料"
+          }
           hint={
             query
               ? undefined
-              : "背景建檔會逐步從已下載作品的詳情整理出製作商名單,稍後再回來看看"
+              : scope === "tracked" && data.studios.length > 0
+                ? "切到「全部」可看所有已下載作品的製作商"
+                : "背景建檔會逐步從已下載作品的詳情整理出製作商名單,稍後再回來看看"
           }
         />
       ) : (

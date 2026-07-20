@@ -77,6 +77,16 @@ async def test_resolver_full_path_follows_tracking(tmp_path, monkeypatch):
     await engine.dispose()
 
 
+async def test_tracked_row_with_empty_name_still_main_tree(tmp_path, monkeypatch):
+    """Tracked-ness keys on row existence, not name truthiness: a backup
+    restore can write a tracked row with name='' and that studio must
+    NOT be routed into 其他製作商 while /api/studios calls it tracked."""
+    engine = await _db(tmp_path, monkeypatch, [_tracked_row("75", "")])
+    path = await arch._studio_series_dir(_detail("X-1", "75", "プレステージ"))
+    assert path == "AVBT/製作商/プレステージ/某系列"
+    await engine.dispose()
+
+
 def test_studio_scan_bases_covers_both_roots():
     bases = studio_scan_bases()
     assert bases[0].endswith("製作商")

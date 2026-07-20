@@ -1063,6 +1063,10 @@ _FINALIZE_PASS_BUDGET = 900.0
 # whole loop.
 _FINALIZE_ROW_TIMEOUT = 300
 _PRESENCE_TIMEOUT = 600
+# The flattened layout is AVBT/製作商root/<studio>/<series>/CODE.ext —
+# exactly 5 path segments. A presence path deeper than this means the
+# video still sits inside a wrapper folder within the series folder.
+_FLATTENED_PATH_SEGMENTS = 5
 # Orphan reap only looks at rows from the current pipeline; older rows
 # predate the finalized column and are not operationally pending.
 _REAP_WINDOW = timedelta(days=7)
@@ -1501,6 +1505,19 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
         # OYCVR-058, stamped finalized while fbfb.me@….part1-3.mp4 sat
         # unarchived in the task area). Not flattened — keep waiting
         # for the sweep.
+        return False
+    if not any(
+        (f.get("path") or "").count("/") == _FLATTENED_PATH_SEGMENTS - 1
+        for f in result["files"]
+    ):
+        # Presence found the video, but only nested INSIDE a wrapper
+        # folder sitting in the series folder — not loose at the
+        # flattened depth (AVBT/製作商root/studio/series/CODE.ext). The
+        # sweep never actually flattened this code, so stamping here
+        # would make the wrapper (and its non-canonical file name)
+        # permanent (live: EKDV-039, stamped while EKDV039.avi sat in
+        # (TVBOXNOW)_EKDV_038+039 inside the series folder). Keep the
+        # row retrying instead.
         return False
     # The loose files exist, but their NAMES may still carry BT noise:
     # the sweep's phase-2 rename queue lives in memory only, so a

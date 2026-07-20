@@ -132,3 +132,34 @@ async def test_presence_source_listing_is_flattened(monkeypatch):
                    "path": "AVBT/製作商/S/系列/OYCVR-058_1.mp4"}],
         "source": "presence",
     }) is True
+
+
+async def test_wrapper_nested_presence_path_is_not_flattened(monkeypatch):
+    """presence indexed the video INSIDE a wrapper folder sitting in the
+    series folder — the sweep never flattened it, so the row must keep
+    retrying instead of being stamped (live: EKDV-039, stamped while
+    EKDV039.avi sat in (TVBOXNOW)_EKDV_038+039 six levels deep)."""
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [{
+            "id": "f1", "name": "EKDV039.avi",
+            "path": "AVBT/製作商/クリスタル映像/INSTANTLOVE/"
+                    "(TVBOXNOW)_EKDV_038+039/EKDV039.avi",
+        }],
+        "source": "presence",
+    }) is False
+
+
+async def test_mixed_depths_with_one_flattened_copy_still_stamps(monkeypatch):
+    """A loose copy at the flattened depth qualifies even when a deeper
+    wrapper duplicate lingers — the junk sweep owns the leftover."""
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [
+            {"id": "f1", "name": "OYCVR-058.mp4",
+             "path": "AVBT/其他製作商/S/系列/OYCVR-058.mp4"},
+            {"id": "f2", "name": "oycvr058.mp4",
+             "path": "AVBT/其他製作商/S/系列/wrap/oycvr058.mp4"},
+        ],
+        "source": "presence",
+    }) is True

@@ -743,7 +743,7 @@ async def test_flattened_check_true_for_loose_video(monkeypatch):
         return "AVBT/製作商/SOD/系/SDMM-053"
 
     async def fake_files(code):
-        return {"ok": True, "files": [{"name": "SDMM-053.mp4"}]}
+        return {"ok": True, "files": [{"name": "SDMM-053.mp4", "path": loose}]}
 
     import app.services.video_count as vc
     monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)

@@ -8,7 +8,10 @@ same backfill status the actress page exposes.
 """
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
 
+from ..database import SessionLocal
+from ..models import TrackedListing
 from ..schemas import (
     ActressBackfillStatus,
     StudioIndexItem,
@@ -22,9 +25,18 @@ from ..services import detail_backfill, studio_index
 router = APIRouter(prefix="/api/studios", tags=["studios"])
 
 
+async def _tracked_studio_ids() -> set[str]:
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(TrackedListing.id).where(TrackedListing.kind == "studio")
+        )
+        return {r[0] for r in rows}
+
+
 @router.get("", response_model=StudioIndexOut)
 async def studio_list():
     agg = await studio_index.get()
+    tracked_ids = await _tracked_studio_ids()
     return StudioIndexOut(
         studios=[
             StudioIndexItem(
@@ -33,6 +45,7 @@ async def studio_list():
                 sample_cover=e.sample_cover,
                 series_count=len(e.series),
                 work_count=e.work_count,
+                tracked=e.id in tracked_ids,
             )
             for e in agg.studios.values()
         ],

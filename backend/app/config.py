@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     pikpak_label_folder: str = ""
     pikpak_director_folder: str = ""
     pikpak_genre_folder: str = ""
+    # Works whose JavBus studio is NOT in the tracked list archive under
+    # this sibling tree instead of the main 製作商 tree, so the main tree
+    # stays aligned with what the user actually follows. Empty = derived
+    # as ``<pikpak_download_folder>/其他製作商``.
+    pikpak_untracked_studio_folder: str = ""
 
     # Listing tracker: every N seconds, check JavBus for new works of
     # every TrackedListing row.
@@ -371,6 +376,27 @@ def kind_base_path(kind: str) -> str:
 def all_kind_paths() -> list[tuple[str, str]]:
     """[(kind, path), ...] for every tracked kind."""
     return [(k, kind_base_path(k)) for k in _TRACKED_KINDS]
+
+
+def untracked_studio_base_path() -> str:
+    """Sibling of the 製作商 tree for works whose JavBus studio the user
+    does not track (歸檔規則 2026-07-20: main tree = tracked studios
+    only). Kept OUT of ``all_kind_paths`` on purpose — callers that walk
+    studio trees must use ``studio_scan_bases`` so both roots are seen,
+    while reorganize's tracked-listing migrations never touch it."""
+    explicit = (settings.pikpak_untracked_studio_folder or "").strip().strip("/")
+    if explicit:
+        return explicit
+    download = (settings.pikpak_download_folder or "AVBT").strip().strip("/")
+    return f"{download}/其他製作商"
+
+
+def studio_scan_bases() -> list[str]:
+    """Both studio archive roots: the tracked 製作商 tree and the
+    untracked sibling. Every scanner that walks studio/series layout
+    (presence rebuild, series_junk, dup_copies, folder_twins, cleanup's
+    protect set) iterates these."""
+    return [kind_base_path("studio"), untracked_studio_base_path()]
 
 
 def task_folder_path() -> str:

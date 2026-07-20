@@ -21,7 +21,10 @@ def _detail(code, studio=None, series=None):
 
 
 async def test_studio_series_path_nested(tmp_path, monkeypatch):
-    await _seed(tmp_path, monkeypatch, [])
+    from app.models import TrackedListing
+    await _seed(tmp_path, monkeypatch, [
+        TrackedListing(kind="studio", id="75", name="PrestigeStudio"),
+    ])
     arch._tracked_name_cache.clear()
     d = _detail("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g"))
     p = await arch._studio_series_path(d, "YRK-288")
@@ -29,7 +32,10 @@ async def test_studio_series_path_nested(tmp_path, monkeypatch):
 
 
 async def test_studio_series_path_no_series_bucket(tmp_path, monkeypatch):
-    await _seed(tmp_path, monkeypatch, [])
+    from app.models import TrackedListing
+    await _seed(tmp_path, monkeypatch, [
+        TrackedListing(kind="studio", id="75", name="PrestigeStudio"),
+    ])
     arch._tracked_name_cache.clear()
     d = _detail("ABF-001", studio=("PrestigeStudio", "75"), series=None)
     p = await arch._studio_series_path(d, "ABF-001")
@@ -63,11 +69,12 @@ async def test_studio_series_path_prefers_tracked_spelling(tmp_path, monkeypatch
         "AVBT/製作商/エスワンナンバーワンスタイル/"
         "交わる体液、濃密セックス/OFJE-296"
     )
-    # Untracked studio keeps the detail spelling untouched.
+    # Untracked studio keeps the detail spelling untouched — and lands
+    # in the untracked sibling tree (2026-07-20 alignment rule).
     arch._tracked_name_cache.clear()
     d2 = _detail("XYZ-1", studio=("SomeStudio", "zz"), series=None)
     assert await arch._studio_series_path(d2, "XYZ-1") == (
-        "AVBT/製作商/SomeStudio/未分類/XYZ-1"
+        "AVBT/其他製作商/SomeStudio/未分類/XYZ-1"
     )
 
 
@@ -89,6 +96,7 @@ async def _seed(tmp_path, monkeypatch, rows):
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)
+    arch._tracked_name_cache.clear()
     async with maker() as session:
         session.add_all(rows)
         await session.commit()
@@ -96,9 +104,13 @@ async def _seed(tmp_path, monkeypatch, rows):
 
 
 async def test_resolve_by_code_uses_cache_row(tmp_path, monkeypatch):
+    from app.models import TrackedListing
     engine = await _seed(
         tmp_path, monkeypatch,
-        [_cache_row("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g"))],
+        [
+            _cache_row("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g")),
+            TrackedListing(kind="studio", id="75", name="PrestigeStudio"),
+        ],
     )
     # Guard: must NOT hit the network when the cache row exists.
     async def boom(*a, **k):
@@ -119,7 +131,7 @@ async def test_resolve_by_code_fetches_when_uncached(tmp_path, monkeypatch):
 
     path = await arch._resolve_archive_path_by_code("MIDE-999")
     await engine.dispose()
-    assert path == "AVBT/製作商/Moodyz/未分類/MIDE-999"
+    assert path == "AVBT/其他製作商/Moodyz/未分類/MIDE-999"
 
 
 async def test_resolve_by_code_no_studio_falls_back_to_archive_folder(tmp_path, monkeypatch):
@@ -157,4 +169,4 @@ async def test_studio_name_alias_covers_untracked_twin(tmp_path, monkeypatch):
     arch._tracked_name_cache.clear()
     d = _detail("RCTD-726", studio=("ロケット", "3p9"), series=None)
     p = await arch._studio_series_path(d, "RCTD-726")
-    assert p == "AVBT/製作商/ROCKET/未分類/RCTD-726"
+    assert p == "AVBT/其他製作商/ROCKET/未分類/RCTD-726"

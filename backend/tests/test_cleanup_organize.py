@@ -549,3 +549,47 @@ async def test_flatten_still_drops_unmarked_lowres_dup(tmp_path, monkeypatch):
     moved_ids = {i for ids, dest in svc.moved if dest == "series" for i in ids}
     assert moved_ids == {"big"}
     await engine.dispose()
+
+
+def test_planner_keeps_small_marked_part_slots():
+    """Twin of the #245 flatten bug, in the rename PLANNER: a marked
+    part under the 500MB bar failed the group's all-substantial gate,
+    demoting every member to the singleton default — which collapses a
+    real ``_1…_4`` set into ``CODE.mkv`` + ``(2)/(3)/(4)`` collision
+    names that the dup sweep then trashes (live dry-run: TRE-76's 426MB
+    ``_2`` beside three bigger parts, caught 2026-07-20)."""
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan
+
+    parts = [
+        _vid("TRE-76_1.mkv", 0.53),
+        _vid("TRE-76_2.mkv", 0.43),   # < 500MB, explicit marker
+        _vid("TRE-76_3.mkv", 0.83),
+        _vid("TRE-76_4.mkv", 0.53),
+    ]
+    plan, members = _build_video_rename_plan(
+        parts, 500 * 1024 * 1024, is_video, require_marker=True
+    )
+    assert plan == {}, plan  # already in canonical slots — nothing to do
+    assert members == {p.name for p in parts}
+
+
+def test_planner_bare_name_does_not_fake_a_marker():
+    """The bare-name guard: ``TRE-76.mkv``'s own trailing digits read as
+    a dash marker; a markerless low-res copy must still fail the gate
+    and stay out of multipart naming."""
+    from app.services.jav_code import is_video
+    from app.services.rename_plan import _build_video_rename_plan, has_part_marker
+
+    assert has_part_marker("TRE-76_2.mkv", "TRE-76") is True
+    assert has_part_marker("TRE-76.mkv", "TRE-76") is False
+
+    pair = [
+        _vid("MIDV-009.mp4", 0.9),
+        _vid("MIDV-009 (2).mp4", 0.35),   # markerless collision copy
+    ]
+    plan, members = _build_video_rename_plan(
+        pair, 500 * 1024 * 1024, is_video, require_marker=True
+    )
+    assert members == set()               # not promoted to a part set
+    assert "MIDV-009 (2).mp4" not in plan

@@ -41,6 +41,7 @@ from .rename_plan import (  # noqa: F401
     _part_marker_index,
     _split_size_outliers,
     _uniquify_target,
+    has_part_marker,
 )
 
 # How long a resolved (or absent) folder-name twin stays memoised. Folder
@@ -1445,16 +1446,9 @@ class PikPakService:
                         # never reaches here, so the exemption only spares
                         # 300-500MB marked files — and the duration-gated
                         # dup pass still judges any false keep later.
-                        def _marked_part(v: PikPakFile, canon: str = canon) -> bool:
-                            ext = ext_of(v.name)
-                            stem = v.name[: -len(ext)] if ext else v.name
-                            if stem.strip().upper() == canon.upper():
-                                return False
-                            return _part_marker_index(v.name, canon) > 0
-
                         all_substantial = all(
                             v.size is None or v.size >= PART_MIN_BYTES
-                            or _marked_part(v)
+                            or has_part_marker(v.name, canon)
                             for v in vids
                         )
                         if all_substantial:

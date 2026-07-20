@@ -96,3 +96,50 @@ def test_prefer_max_size_is_soft_cap():
 
 def test_empty_input():
     assert pick_best_magnet([], hd_only=False) is None
+
+
+# --- _dedupe_by_code: JavBus double-registered codes ------------------------
+
+from app.schemas import MovieListItem  # noqa: E402
+from app.scrapers.javbus import _dedupe_by_code  # noqa: E402
+
+BASE = "https://www.javbus.com"
+
+
+def item(code, url_tail, title="t"):
+    return MovieListItem(
+        code=code,
+        title=title,
+        cover="",
+        detail_url=f"{BASE}/{url_tail}",
+        date="2022-08-25",
+    )
+
+
+def test_dedupe_prefers_bare_url_entry():
+    # bare first, dated twin second → bare survives
+    bare = item("SVDVD-939", "SVDVD-939", "bare")
+    dated = item("SVDVD-939", "SVDVD-939_2022-08-25", "dated")
+    got = _dedupe_by_code([bare, dated])
+    assert [it.title for it in got] == ["bare"]
+    # dated first, bare second → bare still wins, at the first position
+    other = item("SVDVD-931", "SVDVD-931_2022-07-07", "other")
+    got = _dedupe_by_code([dated, other, bare])
+    assert [(it.code, it.title) for it in got] == [
+        ("SVDVD-939", "bare"),
+        ("SVDVD-931", "other"),
+    ]
+
+
+def test_dedupe_keeps_first_when_no_bare_entry():
+    a = item("SVDVD-930", "SVDVD-930_2022-06-23", "first")
+    b = item("SVDVD-930", "SVDVD-930_2022-06-24", "second")
+    got = _dedupe_by_code([a, b])
+    assert [it.title for it in got] == ["first"]
+
+
+def test_dedupe_passthrough_when_unique():
+    a = item("AAA-001", "AAA-001")
+    b = item("BBB-002", "BBB-002_2020-01-01")
+    got = _dedupe_by_code([a, b])
+    assert got == [a, b]

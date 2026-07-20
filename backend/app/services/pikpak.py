@@ -1428,8 +1428,29 @@ class PikPakService:
                         # None size → assume legit (#225): PikPak lists
                         # real files with a missing size, and collapsing
                         # that to 0 dropped a genuine disc from the set.
+                        # A file carrying an explicit part marker is a
+                        # part regardless of size — a disc can run short
+                        # (live case: [吾爱GIGA]TRE-76's _02 was 426MB in
+                        # a real _01…_04 set; this branch elected _03 the
+                        # sole winner and called three genuine episodes
+                        # "低解析重複"). Bare-guard first: on a stem that
+                        # IS the canonical, _part_marker_index reads the
+                        # code's own trailing digits as a dash marker
+                        # (TRE-76.mkv → 76), and that must not exempt a
+                        # markerless low-res rip. Junk below _JUNK_BYTES
+                        # never reaches here, so the exemption only spares
+                        # 300-500MB marked files — and the duration-gated
+                        # dup pass still judges any false keep later.
+                        def _marked_part(v: PikPakFile, canon: str = canon) -> bool:
+                            ext = ext_of(v.name)
+                            stem = v.name[: -len(ext)] if ext else v.name
+                            if stem.strip().upper() == canon.upper():
+                                return False
+                            return _part_marker_index(v.name, canon) > 0
+
                         all_substantial = all(
                             v.size is None or v.size >= PART_MIN_BYTES
+                            or _marked_part(v)
                             for v in vids
                         )
                         if all_substantial:

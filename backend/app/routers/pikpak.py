@@ -272,6 +272,30 @@ async def move_files(
     return resp
 
 
+@router.post("/files/mkdir")
+async def make_folder_path(path: str = Body(..., embed=True)):
+    """Resolve-or-create a nested folder path (e.g. ``AVBT/製作商/GIGA/
+    ヒロイン陵辱``) on the server's persistent login and return its id.
+
+    Exists because the cleanup misplacement pass deliberately never
+    creates folders (a missing target reads as not-misplaced), so a
+    misfiled 番號 whose correct 製作商 folder doesn't exist yet is
+    unreachable by every existing endpoint (live case: KK-078 stuck in
+    SODクリエイト because グローリークエスト had no folder). Reuses
+    ``folder_id`` — twin-aware via folder_key and serialised under the
+    create lock, so it cannot fork duplicate folders."""
+    cleaned = path.strip().strip("/")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="缺少 path")
+    try:
+        folder_id = await pikpak_service.folder_id(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+    if not folder_id:
+        raise HTTPException(status_code=502, detail="建立資料夾失敗")
+    return {"id": folder_id, "path": cleaned}
+
+
 @router.get("/files/stats")
 async def folder_stats(parent_id: str = ""):
     """Aggregate stats for the direct children of ``parent_id``.

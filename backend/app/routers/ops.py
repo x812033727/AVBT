@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from ..schemas import OpsReport, OpsReports
-from ..services import log_reconcile
+from ..services import hygiene, log_reconcile
 
 router = APIRouter(prefix="/api/ops", tags=["ops"])
 
@@ -69,6 +69,14 @@ async def ops_reports(limit: int = Query(30, ge=1, le=200)):
     return OpsReports(
         reports=blocks[:limit], total=len(blocks), updated_at=mtime
     )
+
+
+@router.get("/hygiene")
+async def hygiene_scan():
+    """Presence-index hygiene: unflattened wrapper folders indexed as
+    works + filenames the sweep will never normalise. DB only — safe to
+    call every 輪值 round."""
+    return await hygiene.scan()
 
 
 @router.post("/reconcile-fossils")

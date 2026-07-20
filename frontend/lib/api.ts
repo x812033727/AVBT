@@ -592,6 +592,7 @@ export type StudioIndexItem = {
   sample_cover: string;
   series_count: number;
   work_count: number;
+  tracked: boolean;
 };
 
 export type StudioIndexOut = {

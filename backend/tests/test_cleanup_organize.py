@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.services.archiver as arch
 import app.services.pikpak as pk
 from app.database import Base
-from app.models import MovieDetailCache
+from app.models import MovieDetailCache, TrackedListing
 
 MB = 1024 * 1024
 
@@ -112,6 +112,7 @@ async def _db(tmp_path, monkeypatch, rows):
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)  # _resolve reads cache
+    arch._tracked_name_cache.clear()
     async with maker() as s:
         s.add_all(rows)
         await s.commit()
@@ -166,7 +167,10 @@ async def test_descend_two_levels_to_code_leaf(tmp_path, monkeypatch):
 async def test_move_misplaced_loose_file(tmp_path, monkeypatch):
     engine = await _db(
         tmp_path, monkeypatch,
-        [_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb"))],
+        [
+            _cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")),
+            TrackedListing(kind="studio", id="75", name="プレステージ"),
+        ],
     )
     # A loose file sitting in the WRONG series folder.
     path_ids = {
@@ -255,7 +259,10 @@ async def test_dry_run_zero_mutations(tmp_path, monkeypatch):
 async def test_empty_grouping_folder_trashed_but_not_kind_base(tmp_path, monkeypatch):
     engine = await _db(
         tmp_path, monkeypatch,
-        [_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb"))],
+        [
+            _cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")),
+            TrackedListing(kind="studio", id="75", name="プレステージ"),
+        ],
     )
     # Wrapper in the WRONG series → its video leaves → both the wrapper and
     # the emptied wrong-series folder get trashed; the studio empties too.

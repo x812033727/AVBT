@@ -424,6 +424,7 @@ class StudioIndexItem(BaseModel):
     sample_cover: str = ""
     series_count: int = 0
     work_count: int = 0
+    tracked: bool = False
 
 
 class StudioIndexOut(BaseModel):

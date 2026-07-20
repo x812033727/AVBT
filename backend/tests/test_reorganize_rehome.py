@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.services.archiver as arch
 import app.services.reorganize as reorg
 from app.database import Base
-from app.models import MovieDetailCache
+from app.models import MovieDetailCache, TrackedListing
 
 
 def _node(name, id, folder=True):
@@ -70,8 +70,10 @@ async def test_rehome_moves_flat_series_code_to_nested(tmp_path, monkeypatch):
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)     # detail-cache read
     monkeypatch.setattr(reorg, "SessionLocal", maker)    # tracked-listing read
+    arch._tracked_name_cache.clear()
     async with maker() as s:
         s.add(_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")))
+        s.add(TrackedListing(kind="studio", id="75", name="プレステージ"))
         await s.commit()
 
     # Fake PikPak: AVBT/系列/回胴録/MIDV-001 exists (flat legacy layout).
@@ -114,6 +116,7 @@ async def test_rehome_off_by_default_no_kind_move(tmp_path, monkeypatch):
     monkeypatch.setattr(reorg, "SessionLocal", maker)
     async with maker() as s:
         s.add(_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")))
+        s.add(TrackedListing(kind="studio", id="75", name="プレステージ"))
         await s.commit()
 
     path_ids = {
@@ -200,6 +203,7 @@ async def test_rehome_live_records_move_source_and_defers_shell_trash(
     monkeypatch.setattr(reorg, "SessionLocal", maker)
     async with maker() as s:
         s.add(_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")))
+        s.add(TrackedListing(kind="studio", id="75", name="プレステージ"))
         await s.commit()
 
     path_ids = {
@@ -254,6 +258,7 @@ async def test_rehome_migrates_loose_file_at_kind_base(tmp_path, monkeypatch):
     monkeypatch.setattr(reorg, "SessionLocal", maker)
     async with maker() as s:
         s.add(_cache_row("MIDV-001", ("プレステージ", "75"), ("回胴録", "11pb")))
+        s.add(TrackedListing(kind="studio", id="75", name="プレステージ"))
         await s.commit()
 
     path_ids = {

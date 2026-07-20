@@ -24,7 +24,12 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from ..config import kind_base_path, settings, task_folder_path
+from ..config import (
+    kind_base_path,
+    settings,
+    task_folder_path,
+    untracked_studio_base_path,
+)
 from ..database import SessionLocal
 from ..models import MovieDetailCache, OfflineTaskLog, TrackedListing
 from ..schemas import MovieDetail
@@ -290,10 +295,8 @@ async def _studio_series_dir(detail: MovieDetail) -> str | None:
     studio_id = getattr(studio, "id", "") or ""
     studio_id = _STUDIO_ID_ALIASES.get(studio_id, studio_id)
     raw_name = studio.name or ""
-    studio_name = (
-        await _tracked_listing_name("studio", studio_id)
-        or _STUDIO_NAME_ALIASES.get(raw_name, raw_name)
-    )
+    tracked_name = await _tracked_listing_name("studio", studio_id)
+    studio_name = tracked_name or _STUDIO_NAME_ALIASES.get(raw_name, raw_name)
     studio_safe = _safe_name(
         studio_name, fallback=_safe_name(studio_id, fallback="unknown")
     )
@@ -310,7 +313,17 @@ async def _studio_series_dir(detail: MovieDetail) -> str | None:
         )
     else:
         series_safe = _NO_SERIES_FOLDER
-    return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}"
+    # 2026-07-20 alignment rule: the main 製作商 tree holds ONLY studios
+    # the user tracks; everything else nests under the untracked sibling
+    # so the folder count mirrors the tracked list. Tracking a studio
+    # later flips this resolver, and a scoped cleanup on the untracked
+    # folder promotes its works into the main tree.
+    base = (
+        kind_base_path("studio")
+        if tracked_name
+        else untracked_studio_base_path()
+    )
+    return f"{base}/{studio_safe}/{series_safe}"
 
 
 async def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:

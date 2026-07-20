@@ -1178,13 +1178,17 @@ class PikPakService:
         # and every kind base (e.g. ``AVBT/製作商``). Built once at the
         # top level via a no-create lookup so it's dry-run safe.
         if _protect_ids is None:
-            from ..config import all_kind_paths
+            from ..config import all_kind_paths, studio_scan_bases
             protect: set[str] = {folder_id}
             for p in ("AVBT", settings.pikpak_archive_folder or "AVBT/已完成"):
                 pid = await self.lookup_folder_id(p)
                 if pid:
                     protect.add(pid)
-            for _k, kp in all_kind_paths():
+            kind_bases = [kp for _k, kp in all_kind_paths()]
+            for extra in studio_scan_bases():
+                if extra not in kind_bases:
+                    kind_bases.append(extra)
+            for kp in kind_bases:
                 kid = await self.lookup_folder_id(kp)
                 if kid:
                     protect.add(kid)

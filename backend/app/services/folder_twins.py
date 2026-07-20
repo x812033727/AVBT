@@ -35,7 +35,7 @@ import unicodedata
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ..config import all_kind_paths
+from ..config import studio_scan_bases
 from .jav_code import folder_key
 
 logger = logging.getLogger(__name__)
@@ -80,14 +80,19 @@ async def merge_folder_twins_stream(
     svc, *, dry_run: bool = True
 ) -> AsyncIterator[dict[str, Any]]:
     """Walk 製作商/<studio>, merge each group of twin series folders."""
-    studio_path = next((p for k, p in all_kind_paths() if k == "studio"), "")
-    root_id = ""
-    if studio_path:
+    roots: list[tuple[str, str]] = []  # (base path, folder id)
+    for studio_path in studio_scan_bases():
         try:
             root_id = await svc.lookup_folder_id(studio_path)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "error", "message": f"解析 {studio_path} 失敗: {exc}"}
-    if not root_id:
+            continue
+        if root_id and root_id not in {rid for _p, rid in roots}:
+            # Dedupe by folder id: a custom PIKPAK_*_FOLDER override can
+            # point both bases at the same folder, and scanning it twice
+            # would double-count (and double-judge) every file.
+            roots.append((studio_path, root_id))
+    if not roots:
         yield {"type": "done", "result": {"groups": 0, "moved": 0, "skipped": 0,
                                           "shells": 0, "errors": 0,
                                           "dry_run": dry_run}}
@@ -105,9 +110,12 @@ async def merge_folder_twins_stream(
                 return []
 
     groups = moved = skipped = shells = errors = 0
-    for studio in await ls(root_id):
-        if studio.kind != "drive#folder":
-            continue
+    studio_dirs: list[tuple[str, Any]] = []  # (base path, studio folder)
+    for studio_path, root_id in roots:
+        for studio in await ls(root_id):
+            if studio.kind == "drive#folder":
+                studio_dirs.append((studio_path, studio))
+    for studio_path, studio in studio_dirs:
         by_key: dict[str, list] = {}
         for series in await ls(studio.id):
             if series.kind == "drive#folder":

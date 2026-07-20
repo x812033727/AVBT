@@ -33,7 +33,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from ..config import all_kind_paths, settings
+from ..config import all_kind_paths, settings, studio_scan_bases
 from ..database import SessionLocal
 from ..models import AppMeta, PresenceEntry
 from .jav_code import normalize_code
@@ -455,10 +455,16 @@ class PikPakPresenceIndex:
         codes: set[str] = set()
 
         # Walk each configured kind base path. lookup_folder_id avoids
-        # creating side-effect empty folders for unused kinds.
-        kind_jobs = [
-            self._scan_kind_path(path) for _kind, path in all_kind_paths()
-        ]
+        # creating side-effect empty folders for unused kinds. The
+        # untracked-studio sibling (其他製作商) is not a kind, so it is
+        # added explicitly — omitting it would make every work archived
+        # there invisible to the full rebuild while per-code refresh
+        # (which follows the resolver) still sees it.
+        kind_paths = [path for _kind, path in all_kind_paths()]
+        for extra in studio_scan_bases():
+            if extra not in kind_paths:
+                kind_paths.append(extra)
+        kind_jobs = [self._scan_kind_path(path) for path in kind_paths]
         legacy_path = (
             settings.pikpak_archive_folder or "AVBT/已完成"
         ).strip().strip("/")

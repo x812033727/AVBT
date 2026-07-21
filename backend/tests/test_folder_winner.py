@@ -278,3 +278,140 @@ async def test_evacuated_shell_waits_for_gate(monkeypatch):
     assert result == {"action": "skip", "target": "DVDMS-129",
                       "reason": "move_settling"}
     assert svc.trashed == []
+
+
+async def test_ad_video_plus_iso_keeps_container(monkeypatch):
+    """Live 2026-07-19 (AP-491/AP-488): wrapper = 40MB ad mp4 + 3.7GB
+    ISO + covers. The any-size fallback crowns the ad as keeper; the
+    ISO must ride along to the series folder (container-swap's food),
+    not be trashed as wrapper junk."""
+    svc = StubSvc([
+        _file("AP-491.mp4", "ad", 40),
+        _file("AP491.ISO", "iso", 3700),
+        _file("2ap491pl.jpg", "j", 1),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "AP-491", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "iso" in moved
+    assert "iso" not in svc.trashed
+    assert "j" in svc.trashed
+    # The container keeps its own name — no rename.
+    assert all(fid != "iso" for fid, _n in svc.renamed)
+
+
+async def test_credible_video_still_retires_container(monkeypatch):
+    """A substantial video ≥25% of the container's size fulfils the
+    container's purpose — the ISO goes to trash as before."""
+    svc = StubSvc([
+        _file("MIDV-002.mp4", "vid", 4000),
+        _file("MIDV002.ISO", "iso", 4200),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-002", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert moved == ["vid"]
+    assert "iso" in svc.trashed
+
+
+async def test_archive_volume_set_rides_along_whole(monkeypatch):
+    """rar volume pieces are never individually retired — a size
+    contest against one piece is meaningless (mirrors phase-2 #240)."""
+    svc = StubSvc([
+        _file("SNIS-494.mp4", "ad", 40),
+        _file("snis494.part1.rar", "r1", 2000),
+        _file("snis494.part2.rar", "r2", 1400),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "SNIS-494", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "r1" in moved and "r2" in moved
+    assert "r1" not in svc.trashed and "r2" not in svc.trashed
+
+
+async def test_tiny_stray_archive_still_junked(monkeypatch):
+    """A sub-300MB zip beside a real video is junk, not a container
+    worth feeding to the swap flow."""
+    svc = StubSvc([
+        _file("MIDV-003.mp4", "vid", 6000),
+        _file("字幕包.zip", "z", 5),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-003", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    assert "z" in svc.trashed
+
+
+async def test_rar_body_volumes_ride_along(monkeypatch):
+    """.r00/.r01 body pieces are not CONTAINER_EXTS — the volume check
+    must run before the ext gate or the head rides along while the body
+    is trashed, shredding the set."""
+    svc = StubSvc([
+        _file("SNIS-494.mp4", "ad", 40),
+        _file("snis494.rar", "head", 2000),
+        _file("snis494.r00", "r0", 2000),
+        _file("snis494.r01", "r1", 1400),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "SNIS-494", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert {"head", "r0", "r1"} <= set(moved)
+    assert not {"head", "r0", "r1"} & set(svc.trashed)
+
+
+async def test_split_archive_001_rides_along(monkeypatch):
+    """.001/.002 split pieces are volume pieces, not junk — trashing
+    them replays the AP-491 loss with a different naming scheme."""
+    svc = StubSvc([
+        _file("HODV-100.mp4", "ad", 40),
+        _file("hodv100.iso.001", "p1", 1800),
+        _file("hodv100.iso.002", "p2", 1800),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "HODV-100", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "p1" in moved and "p2" in moved
+    assert not {"p1", "p2"} & set(svc.trashed)
+
+
+async def test_size_none_container_kept(monkeypatch):
+    """PikPak can list a real file with size=None (metadata lag) — it
+    must ride along, not collapse to 0 bytes and be junked (#220)."""
+    from types import SimpleNamespace
+    iso = SimpleNamespace(name="MIDV-004.iso", id="iso", size=None,
+                          kind="drive#file", phase="PHASE_TYPE_COMPLETE")
+    svc = StubSvc([_file("MIDV-004.mp4", "ad", 40), iso])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-004", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "iso" in moved
+    assert "iso" not in svc.trashed
+
+
+async def test_small_iso_survives_ad_keeper(monkeypatch):
+    """A sub-300MB ISO (VCD-era rip) beside an ad-sized keeper: the 25%
+    bar must be the only judge — no tiny-gate short-circuit."""
+    svc = StubSvc([
+        _file("MIDV-005.mp4", "ad", 40),
+        _file("MIDV005.ISO", "iso", 280),
+    ])
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+    result = await reorg._resolve_folder_winner(
+        _wrap(), "MIDV-005", "series", dry_run=False)
+    assert result["action"] == "flatten"
+    moved = [i for ids, _p in svc.moved for i in ids]
+    assert "iso" in moved
+    assert "iso" not in svc.trashed

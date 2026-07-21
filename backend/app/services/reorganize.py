@@ -731,7 +731,37 @@ async def _resolve_folder_winner(
         plan.append((video, target))
 
     keeper_ids = {v.id for _c, v in keepers}
-    trash_ids = [i.id for i in inner if i.id not in keeper_ids]
+    # A substantial container (disc image / archive) is the payload the
+    # container-swap flow feeds on (#173): it rides along to the series
+    # folder unless a credible video keeper retires it — same bar as
+    # phase-2 dedupe / series_junk. Trashed here it never reaches
+    # /container-only, the code's row stays open, and the dead-code
+    # rescan resubmits the same magnet forever (live 2026-07-19:
+    # AP-491/AP-488 ISO trashed twice in one day after a 40MB ad rode
+    # the any-size fallback into the keeper slot).
+    best_keeper = max((int(v.size or 0) for _c, v in keepers), default=0)
+    container_keeps: list = []
+    for it in inner:
+        if it.kind == "drive#folder" or it.id in keeper_ids:
+            continue
+        if is_archive_volume(it.name):
+            # Must come before the ext gate: body volumes (.r00/.z01/
+            # .001) are not CONTAINER_EXTS and would fall through to
+            # trash, shredding the set whose head piece rides along.
+            container_keeps.append(it)
+            continue
+        if ext_of(it.name) not in CONTAINER_EXTS:
+            continue
+        # The credibility bar is the only judge — a tiny-size gate here
+        # would let an ad-sized keeper retire a sub-300MB ISO, and
+        # size=None is metadata lag on a legit file, not junk (#220).
+        if it.size is None or best_keeper < int(it.size) * _MIN_REPLACEMENT_FRACTION:
+            container_keeps.append(it)
+    container_ids = {c.id for c in container_keeps}
+    trash_ids = [
+        i.id for i in inner
+        if i.id not in keeper_ids and i.id not in container_ids
+    ]
     canonical_file = plan[0][1]
 
     if not dry_run:
@@ -747,6 +777,12 @@ async def _resolve_folder_winner(
                             "rename keeper %s → %s failed: %s",
                             video.name, target, exc,
                         )
+            # Containers ride along under their own name — renaming to
+            # the bare canonical would shred a volume set's index, and
+            # phase-2 (#240) already knows to leave them alone.
+            for cont in container_keeps:
+                await pikpak_service.move_files([cont.id], parent_id)
+                pikpak_service.record_move_source(folder.id)
             # Dup/junk files are safe to trash — they were never moved.
             if trash_ids:
                 try:
@@ -775,6 +811,8 @@ async def _resolve_folder_winner(
     bits = []
     if len(plan) > 1:
         bits.append(f"分集 {len(plan)} 部")
+    if container_keeps:
+        bits.append(f"容器保留 {len(container_keeps)} 個")
     bits.append(f"取出主檔，清掉 {extras} 個垃圾/額外檔" if extras else "取出主檔")
     return {"action": "flatten",
             "target": "、".join(t for _v, t in plan),
@@ -894,11 +932,17 @@ async def _phase2_cleanup_target(
         for playable, size, _b, it in ranked[1:]:
             if playable or it.kind == "drive#folder":
                 continue  # video/folder losers: normal dedupe applies
+            if is_archive_volume(it.name):
+                # Must come before the ext gate: body volumes (.r00/
+                # .z01/.001) are not CONTAINER_EXTS and would fall
+                # through to the loser trash, shredding the set.
+                kept.add(it.id)
+                continue
             if ext_of(it.name) not in CONTAINER_EXTS:
                 continue  # code-named txt/jpg junk: trash as before
             if (
                 not win_ready
-                or is_archive_volume(it.name)
+                or it.size is None
                 or win_size < size * _MIN_REPLACEMENT_FRACTION
             ):
                 kept.add(it.id)

@@ -132,3 +132,21 @@ async def test_wrapper_folder_with_video_beats_container(monkeypatch):
     # the point of this test is only that the video-bearing wrapper is
     # never the trash-loser to a bare container.
     assert "d-wrap" not in svc.trashed
+
+
+async def test_volume_body_piece_never_a_trash_loser(monkeypatch):
+    """.r00 is not CONTAINER_EXTS — the volume check must run before
+    the ext gate or the body piece is trashed as a plain loser."""
+    mp4 = _file("ABC-123.mp4", "f-mp4", 4 * GB)
+    r00 = _file("abc123.r00", "f-r00", 2 * GB)
+    svc, _ = await _run([mp4, r00], monkeypatch)
+    assert "f-r00" not in svc.trashed
+
+
+async def test_size_none_container_loser_kept(monkeypatch):
+    """A container listed with size=None must not collapse to 0 and
+    lose the credibility contest (#220)."""
+    mp4 = _file("ABC-124.mp4", "f-mp4", 4 * GB)
+    iso = _file("ABC-124.iso", "f-iso", None)
+    svc, _ = await _run([mp4, iso], monkeypatch)
+    assert "f-iso" not in svc.trashed

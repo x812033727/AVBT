@@ -308,7 +308,18 @@ class PikPakPresenceIndex:
         code, and only an unrelated full walk ever cleared it). Naming
         the ids makes the update deterministic instead of a race.
         """
-        wanted = [c for c in {normalize_code(c) or c for c in codes} if c]
+        # Index keys are normalized codes, but the detail cache (which
+        # locates the studio/series folder) is keyed by the code as
+        # submitted — with the numeric prefix still on (``300MIUM-1147``,
+        # ``3DSVR-1981``). Keep the raw spelling alongside the normalized
+        # key so ``_live_paths_for`` can hit the detail row; normalizing
+        # first stranded every prefixed code whose path wasn't already
+        # indexed (presence stayed empty, finalize looped forever).
+        wanted: dict[str, str] = {}
+        for c in codes:
+            key = normalize_code(c) or c
+            if key and key not in wanted:
+                wanted[key] = c
         if not wanted:
             return 0
         if self._codes is None:
@@ -317,17 +328,19 @@ class PikPakPresenceIndex:
         gone = frozenset(exclude_ids or ())
         memo = _ListingMemo(self._list_uncached)
 
-        async def one(code: str) -> tuple[str, list[str]] | None:
+        async def one(code: str, raw: str) -> tuple[str, list[str]] | None:
             async with sem:
                 try:
                     return code, await self._live_paths_for(
-                        code, exclude_ids=gone, memo=memo
+                        code, raw_code=raw, exclude_ids=gone, memo=memo
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("presence refresh %s failed: %s", code, exc)
                     return None
 
-        results = await asyncio.gather(*[one(c) for c in wanted])
+        results = await asyncio.gather(
+            *[one(c, raw) for c, raw in wanted.items()]
+        )
         changed = 0
         for res in results:
             if res is None:
@@ -354,6 +367,7 @@ class PikPakPresenceIndex:
         self,
         code: str,
         *,
+        raw_code: str | None = None,
         exclude_ids: frozenset[str] = frozenset(),
         memo: _ListingMemo | None = None,
     ) -> list[str]:
@@ -371,10 +385,19 @@ class PikPakPresenceIndex:
         dirs: list[str] = []
         # Where the archiver would put it (detail cache only — a miss
         # must not become a JavBus fetch on this per-code hot path).
-        try:
-            nested = await studio_series_dir_for_code(code, allow_fetch=False)
-        except Exception:  # noqa: BLE001
-            nested = None
+        # The detail row is keyed by the raw submitted code (numeric
+        # prefix intact), so try that spelling first; fall back to the
+        # normalized key for callers that only have it.
+        nested = None
+        for lookup in dict.fromkeys((raw_code or code, code)):
+            try:
+                nested = await studio_series_dir_for_code(
+                    lookup, allow_fetch=False
+                )
+            except Exception:  # noqa: BLE001
+                nested = None
+            if nested:
+                break
         if nested:
             dirs.append(nested)
         # Where we last saw it: catches codes whose detail isn't cached

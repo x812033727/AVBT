@@ -744,12 +744,18 @@ async def _resolve_folder_winner(
     for it in inner:
         if it.kind == "drive#folder" or it.id in keeper_ids:
             continue
+        if is_archive_volume(it.name):
+            # Must come before the ext gate: body volumes (.r00/.z01/
+            # .001) are not CONTAINER_EXTS and would fall through to
+            # trash, shredding the set whose head piece rides along.
+            container_keeps.append(it)
+            continue
         if ext_of(it.name) not in CONTAINER_EXTS:
             continue
-        csize = int(it.size or 0)
-        if csize < _JUNK_BYTES and not is_archive_volume(it.name):
-            continue  # tiny stray archive: junk as before
-        if is_archive_volume(it.name) or best_keeper < csize * _MIN_REPLACEMENT_FRACTION:
+        # The credibility bar is the only judge — a tiny-size gate here
+        # would let an ad-sized keeper retire a sub-300MB ISO, and
+        # size=None is metadata lag on a legit file, not junk (#220).
+        if it.size is None or best_keeper < int(it.size) * _MIN_REPLACEMENT_FRACTION:
             container_keeps.append(it)
     container_ids = {c.id for c in container_keeps}
     trash_ids = [
@@ -926,11 +932,17 @@ async def _phase2_cleanup_target(
         for playable, size, _b, it in ranked[1:]:
             if playable or it.kind == "drive#folder":
                 continue  # video/folder losers: normal dedupe applies
+            if is_archive_volume(it.name):
+                # Must come before the ext gate: body volumes (.r00/
+                # .z01/.001) are not CONTAINER_EXTS and would fall
+                # through to the loser trash, shredding the set.
+                kept.add(it.id)
+                continue
             if ext_of(it.name) not in CONTAINER_EXTS:
                 continue  # code-named txt/jpg junk: trash as before
             if (
                 not win_ready
-                or is_archive_volume(it.name)
+                or it.size is None
                 or win_size < size * _MIN_REPLACEMENT_FRACTION
             ):
                 kept.add(it.id)

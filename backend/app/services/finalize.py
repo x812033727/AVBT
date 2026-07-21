@@ -419,6 +419,63 @@ async def _parent_has_code_video(svc, parent_id: str, code: str) -> bool:
     )
 
 
+async def _canonicalize_parent_code_videos(
+    svc, parent_id: str, code: str, *, dry_run: bool
+) -> int:
+    """The evacuated-shell verdict rests on ``code``'s video sitting
+    loose in the 系列 folder — but that file can still carry its BT
+    name: the sweep's flatten moves first and renames best-effort, and
+    the post-move cleanup can list the folder before the async move
+    materialises. Once the shell path lets run_finalize succeed, the
+    row is stamped finalized and nothing ever revisits the name (live
+    2026-07-19: seven HUNTC codes sealed as
+    ``489155.com@HUNTC-nnn.mp4``). Canonicalize the code's own loose
+    videos before that stamp makes the residue permanent.
+
+    Guards: only files whose extracted code matches ``code``; nothing
+    is touched while any of them is still transferring (renaming an
+    in-flight file kills the transfer) or the listing is partial;
+    collisions go through ``_uniquify_target``; best-effort — a
+    failure never blocks the finalize, the next retry pass re-runs it.
+    ``require_marker=True`` because this is a 系列 folder: bare
+    same-canonical files there are copies for the dedup, not discs."""
+    renamed = 0
+    try:
+        kids, partial = await svc.list_all_files(parent_id)
+        want = (extract_jav_code(code) or code).upper()
+        mine = [
+            k for k in kids
+            if not _is_folder(k)
+            and is_video(k.name)
+            and (extract_jav_code(k.name) or "").upper() == want
+        ]
+        if partial or not mine or any(_is_transferring(k) for k in mine):
+            return 0
+        plan, _members = _build_video_rename_plan(
+            mine, PART_MIN_BYTES, is_video, require_marker=True
+        )
+        if not plan:
+            return 0
+        taken = {k.name for k in kids}
+        for k in mine:
+            target = plan.get(k.name)
+            if not target or target == k.name:
+                continue
+            target = _uniquify_target(target, taken)
+            if target == k.name:
+                continue
+            taken.add(target)
+            if not dry_run:
+                await _retry_transient(
+                    lambda k=k, t=target: svc.rename_file(k.id, t))
+            renamed += 1
+            logger.info(
+                "finalize %s: 系列夾散檔正名 %s → %s", code, k.name, target)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("finalize %s: 系列夾散檔正名失敗: %s", code, exc)
+    return renamed
+
+
 async def finalize_code_folder_stream(
     svc,
     code: str,
@@ -509,6 +566,12 @@ async def finalize_code_folder_stream(
 
     if plan.no_video:
         if flatten and await _parent_has_code_video(svc, parent_id, code):
+            # The loose video this verdict rests on may still wear its
+            # BT name — normalise it NOW: succeeding here stamps the row
+            # finalized and no later pass ever revisits the name.
+            await _canonicalize_parent_code_videos(
+                svc, parent_id, code, dry_run=dry_run
+            )
             # Evacuated shell from an earlier settle-gated run: the
             # videos are confirmed loose at the parent, so everything
             # still in here is junk. Re-plan as deletion-only and let

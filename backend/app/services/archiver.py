@@ -1063,6 +1063,27 @@ _FINALIZE_PASS_BUDGET = 900.0
 # whole loop.
 _FINALIZE_ROW_TIMEOUT = 300
 _PRESENCE_TIMEOUT = 600
+def _flattened_file_depths() -> set[int]:
+    """Path depths (count of ``/``) at which a loose flattened file can
+    legitimately sit — derived from the same bases the presence rebuild
+    walks, because every one of them is a flatten destination: studio
+    trees hold base/<studio>/<series>/file, the other kind trees hold
+    base/<name>/file, and the legacy done folder holds base/file. A
+    hard-coded depth would reject codes archived in the no-studio
+    fallback trees (系列/女優/…/已完成) as "never flattened" and spin
+    their rows in the retry pass forever."""
+    from ..config import all_kind_paths, studio_scan_bases
+
+    studio_bases = {b.strip("/") for b in studio_scan_bases()}
+    depths: set[int] = set()
+    for _kind, base in all_kind_paths():
+        b = base.strip("/")
+        depths.add(b.count("/") + (3 if b in studio_bases else 2))
+    for b in studio_bases:
+        depths.add(b.count("/") + 3)
+    legacy = (settings.pikpak_archive_folder or "AVBT/已完成").strip().strip("/")
+    depths.add(legacy.count("/") + 1)
+    return depths
 # Orphan reap only looks at rows from the current pipeline; older rows
 # predate the finalized column and are not operationally pending.
 _REAP_WINDOW = timedelta(days=7)
@@ -1501,6 +1522,19 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
         # OYCVR-058, stamped finalized while fbfb.me@….part1-3.mp4 sat
         # unarchived in the task area). Not flattened — keep waiting
         # for the sweep.
+        return False
+    if not any(
+        (f.get("path") or "").count("/") in _flattened_file_depths()
+        for f in result["files"]
+    ):
+        # Presence found the video, but only nested INSIDE a wrapper
+        # folder sitting in the series folder — not loose at the
+        # flattened depth (AVBT/製作商root/studio/series/CODE.ext). The
+        # sweep never actually flattened this code, so stamping here
+        # would make the wrapper (and its non-canonical file name)
+        # permanent (live: EKDV-039, stamped while EKDV039.avi sat in
+        # (TVBOXNOW)_EKDV_038+039 inside the series folder). Keep the
+        # row retrying instead.
         return False
     # The loose files exist, but their NAMES may still carry BT noise:
     # the sweep's phase-2 rename queue lives in memory only, so a

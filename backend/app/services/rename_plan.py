@@ -307,6 +307,19 @@ def _part_marker_index(name: str, code: str) -> int:
     return 0
 
 
+def has_part_marker(name: str, canon: str) -> bool:
+    """Explicit part marker on ``name`` relative to ``canon``, guarded
+    against the bare-name false positive: on a stem that IS the
+    canonical, ``_part_marker_index`` reads the code's own trailing
+    digits as a dash marker (``TRE-76.mkv`` → 76), and a markerless file
+    must not pass a marker test on that technicality."""
+    ext = ext_of(name)
+    stem = name[: -len(ext)] if ext else name
+    if stem.strip().upper() == canon.upper():
+        return False
+    return _part_marker_index(name, canon) > 0
+
+
 def _dup_sort_index(name: str) -> int:
     """Extract the PikPak ``(N)`` suffix as an int; "no suffix" = 0.
     Used to order files within a multi-part group so the bare-name one
@@ -523,8 +536,21 @@ def _build_video_rename_plan(
             if target != c.name:
                 plan[c.name] = target
             continue
-        # Multi-file group: multipart naming if all substantial.
-        if not all(f.size is None or f.size >= min_size for f in files):
+        # Multi-file group: multipart naming if all substantial. A file
+        # carrying an explicit part marker counts regardless of size —
+        # a disc can run short, and failing the whole group here demotes
+        # every member to the caller's singleton default, which collapses
+        # real parts into ``CODE.mp4`` + ``(2)/(3)…`` collision names the
+        # dup sweep then trashes (twin of the #245 flatten bug; live
+        # trigger: TRE-76's 426MB ``_2`` beside three bigger parts). The
+        # fake-marker dedup below (runtime + quality-tag gates) still
+        # judges anything the exemption lets through.
+        if not all(
+            f.size is None
+            or f.size >= min_size
+            or has_part_marker(f.name, canon)
+            for f in files
+        ):
             continue
         if require_marker and not any(
             _part_marker_index(f.name, canon) > 0 for f in files

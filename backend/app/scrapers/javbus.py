@@ -477,6 +477,25 @@ def _text(node) -> str:
 _NEXT_TEXT_RE = re.compile(r"下一頁|next|»|>$", re.I)
 
 
+def _dedupe_by_code(items: list[MovieListItem]) -> list[MovieListItem]:
+    """JavBus sometimes registers the same code twice — a bare ``/CODE``
+    page and a dated ``/CODE_YYYY-MM-DD`` twin (same film, slightly
+    different title/cover), both of which can carry magnets and so
+    survive the ``existmag=mag`` filter. Keep one card per code at its
+    first listing position, preferring the bare-URL entry so the card
+    matches what ``/movie/{code}`` (which fetches the bare page) shows."""
+    by_code: dict[str, int] = {}
+    out: list[MovieListItem] = []
+    for it in items:
+        idx = by_code.get(it.code)
+        if idx is None:
+            by_code[it.code] = len(out)
+            out.append(it)
+        elif it.detail_url.rstrip("/").rsplit("/", 1)[-1] == it.code:
+            out[idx] = it
+    return out
+
+
 def _parse_listing(html: str, page: int) -> SearchResult:
     soup = BeautifulSoup(html, "lxml")
     items: list[MovieListItem] = []
@@ -493,6 +512,7 @@ def _parse_listing(html: str, page: int) -> SearchResult:
         items.append(
             MovieListItem(code=code, title=title, cover=cover, detail_url=href, date=date)
         )
+    items = _dedupe_by_code(items)
 
     # JavBus paginates in a couple of slightly different shapes depending
     # on which listing page you're on (search vs. star vs. series etc.).

@@ -24,7 +24,12 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from ..config import kind_base_path, settings, task_folder_path
+from ..config import (
+    kind_base_path,
+    settings,
+    task_folder_path,
+    untracked_studio_base_path,
+)
 from ..database import SessionLocal
 from ..models import MovieDetailCache, OfflineTaskLog, TrackedListing
 from ..schemas import MovieDetail
@@ -234,7 +239,7 @@ async def _detail_for_archive(
 # (live mess: three S1 studio folders, 2026-07-15). The tracked listing
 # name is refreshed from the listing page and is the single spelling the
 # user actually sees, so it wins whenever the ids match.
-_tracked_name_cache: dict[tuple[str, str], tuple[str, float]] = {}
+_tracked_name_cache: dict[tuple[str, str], tuple[str, bool, float]] = {}
 _TRACKED_NAME_TTL = 600.0
 
 # JavBus also runs OUTRIGHT DUPLICATE maker pages for the same studio —
@@ -252,26 +257,42 @@ _STUDIO_NAME_ALIASES: dict[str, str] = {
 }
 
 
-async def _tracked_listing_name(kind: str, listing_id: str) -> str:
-    """Current TrackedListing name for ``(kind, listing_id)``, '' when the
-    listing isn't tracked. Cached briefly — archive passes resolve the
-    same studio hundreds of times in a row."""
+async def _tracked_listing_info(kind: str, listing_id: str) -> tuple[str, bool]:
+    """(current TrackedListing name, row exists) for ``(kind,
+    listing_id)``. Cached briefly — archive passes resolve the same
+    studio hundreds of times in a row.
+
+    Existence is carried separately from the name: a tracked row CAN
+    have an empty name (``POST /api/backup/restore`` writes
+    ``name=item.get("name") or ""``), and keying tracked-ness off name
+    truthiness would silently route a tracked studio's downloads into
+    the untracked tree while /api/studios (row-existence check) shows
+    it as tracked."""
     if not listing_id:
-        return ""
+        return "", False
     key = (kind, listing_id)
     now = asyncio.get_event_loop().time()
     hit = _tracked_name_cache.get(key)
-    if hit is not None and now - hit[1] < _TRACKED_NAME_TTL:
-        return hit[0]
+    if hit is not None and now - hit[2] < _TRACKED_NAME_TTL:
+        return hit[0], hit[1]
     name = ""
+    exists = False
     try:
         async with SessionLocal() as session:
             row = await session.get(TrackedListing, key)
             if row is not None:
+                exists = True
                 name = row.name or ""
     except Exception:  # noqa: BLE001 — resolver must never fail the archive
-        name = ""
-    _tracked_name_cache[key] = (name, now)
+        name, exists = "", False
+    _tracked_name_cache[key] = (name, exists, now)
+    return name, exists
+
+
+async def _tracked_listing_name(kind: str, listing_id: str) -> str:
+    """Current TrackedListing name for ``(kind, listing_id)``, '' when the
+    listing isn't tracked (or tracked with no stored name)."""
+    name, _exists = await _tracked_listing_info(kind, listing_id)
     return name
 
 
@@ -290,10 +311,8 @@ async def _studio_series_dir(detail: MovieDetail) -> str | None:
     studio_id = getattr(studio, "id", "") or ""
     studio_id = _STUDIO_ID_ALIASES.get(studio_id, studio_id)
     raw_name = studio.name or ""
-    studio_name = (
-        await _tracked_listing_name("studio", studio_id)
-        or _STUDIO_NAME_ALIASES.get(raw_name, raw_name)
-    )
+    tracked_name, is_tracked = await _tracked_listing_info("studio", studio_id)
+    studio_name = tracked_name or _STUDIO_NAME_ALIASES.get(raw_name, raw_name)
     studio_safe = _safe_name(
         studio_name, fallback=_safe_name(studio_id, fallback="unknown")
     )
@@ -310,7 +329,20 @@ async def _studio_series_dir(detail: MovieDetail) -> str | None:
         )
     else:
         series_safe = _NO_SERIES_FOLDER
-    return f"{kind_base_path('studio')}/{studio_safe}/{series_safe}"
+    # 2026-07-20 alignment rule: the main 製作商 tree holds ONLY studios
+    # the user tracks; everything else nests under the untracked sibling
+    # so the folder count mirrors the tracked list. Tracking a studio
+    # later flips this resolver immediately (upsert/untrack clear the
+    # cache above); promoting the studio's EXISTING works = create the
+    # main-tree target folders (POST /files/mkdir), then run a scoped
+    # cleanup on its 其他製作商 folder — cleanup treats a missing target
+    # as not-misplaced, so the mkdir comes first.
+    base = (
+        kind_base_path("studio")
+        if is_tracked
+        else untracked_studio_base_path()
+    )
+    return f"{base}/{studio_safe}/{series_safe}"
 
 
 async def _studio_series_path(detail: MovieDetail, safe_code: str) -> str | None:

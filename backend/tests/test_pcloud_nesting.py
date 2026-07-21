@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.services.archiver as arch
 from app.database import Base
-from app.models import MovieDetailCache
+from app.models import MovieDetailCache, TrackedListing
 from app.schemas import LinkRef, MovieDetail
 from app.services.pcloud_organize import PCloudOrganizeMixin
 
@@ -24,10 +24,12 @@ async def test_studio_series_dir_and_path(tmp_path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/pn.db", future=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    monkeypatch.setattr(
-        arch, "SessionLocal", async_sessionmaker(engine, expire_on_commit=False)
-    )
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(arch, "SessionLocal", maker)
     arch._tracked_name_cache.clear()
+    async with maker() as s:
+        s.add(TrackedListing(kind="studio", id="75", name="PrestigeStudio"))
+        await s.commit()
     d = _detail("YRK-288", studio=("PrestigeStudio", "75"), series=("TowerSeries", "u0g"))
     assert await arch._studio_series_dir(d) == "AVBT/製作商/PrestigeStudio/TowerSeries"
     assert await arch._studio_series_path(d, "YRK-288") == \
@@ -58,8 +60,10 @@ async def test_nested_or_kind_target_prefers_studio(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(arch, "SessionLocal", maker)
+    arch._tracked_name_cache.clear()
     async with maker() as s:
         s.add(_cache_row("YRK-288", ("PrestigeStudio", "75"), ("TowerSeries", "u0g")))
+        s.add(TrackedListing(kind="studio", id="75", name="PrestigeStudio"))
         await s.commit()
 
     class Dummy(PCloudOrganizeMixin):

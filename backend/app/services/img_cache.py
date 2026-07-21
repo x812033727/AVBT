@@ -12,9 +12,11 @@ live proxy fetch, never to a broken image.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -73,10 +75,18 @@ def _store_sync(url: str, content: bytes, ext: str) -> None:
     directory = _cache_dir()
     directory.mkdir(parents=True, exist_ok=True)
     final = directory / f"{_key(url)}{ext}"
-    tmp = final.with_suffix(final.suffix + ".tmp")
-    tmp.write_bytes(content)
-    # Atomic move; concurrent writers of the same URL race harmlessly.
-    os.replace(tmp, final)
+    # Per-writer temp file: concurrent stores of the same URL must not share
+    # a temp path, or the loser's os.replace hits ENOENT after the winner's
+    # rename (and a rename can even publish a half-written file).
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+        os.replace(tmp, final)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 async def store(url: str, content: bytes, content_type: str) -> None:

@@ -15,6 +15,9 @@ import {
 } from "@/lib/api";
 
 type SortKey = "name" | "count";
+type Scope = "tracked" | "all";
+
+const SCOPE_STORAGE_KEY = "studios.scope";
 
 // 已下載作品的製作商索引。資料 = PikPak 已下載番號 ∩ detail 快取,依製作商聚合。
 // 與女優頁共用同一個背景建檔工作,橫幅顯示進度,邊建邊可用。
@@ -23,7 +26,18 @@ export default function StudiosPage() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("count");
+  const [scope, setScope] = useState<Scope>("tracked");
   const [toggling, setToggling] = useState(false);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(SCOPE_STORAGE_KEY);
+    if (saved === "all" || saved === "tracked") setScope(saved);
+  }, []);
+
+  function switchScope(next: Scope) {
+    setScope(next);
+    window.localStorage.setItem(SCOPE_STORAGE_KEY, next);
+  }
 
   async function load() {
     setError(null);
@@ -54,18 +68,27 @@ export default function StudiosPage() {
     }
   }
 
+  const trackedCount = useMemo(
+    () => (data ? data.studios.filter((s) => s.tracked).length : 0),
+    [data]
+  );
+
   const list = useMemo(() => {
     if (!data) return [];
     const q = query.trim().toLowerCase();
+    const scoped =
+      scope === "tracked"
+        ? data.studios.filter((s) => s.tracked)
+        : data.studios;
     const filtered = q
-      ? data.studios.filter((s) => s.name.toLowerCase().includes(q))
-      : data.studios;
+      ? scoped.filter((s) => s.name.toLowerCase().includes(q))
+      : scoped;
     return [...filtered].sort((a, b) =>
       sort === "count"
         ? b.work_count - a.work_count || a.name.localeCompare(b.name, "ja")
         : a.name.localeCompare(b.name, "ja")
     );
-  }, [data, query, sort]);
+  }, [data, query, sort, scope]);
 
   if (error) return <ErrorBox message={error} />;
   if (!data) {
@@ -86,9 +109,26 @@ export default function StudiosPage() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">製作商</h1>
         <span className="text-sm text-muted-foreground">
-          {data.studios.length} 家・已下載 {data.downloaded_total} 部
+          {scope === "tracked"
+            ? `追蹤中 ${trackedCount} 家(全部 ${data.studios.length} 家)`
+            : `${data.studios.length} 家`}
+          ・已下載 {data.downloaded_total} 部
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {(["tracked", "all"] as Scope[]).map((k) => (
+            <button
+              key={k}
+              onClick={() => switchScope(k)}
+              className={
+                "rounded-full border px-3 py-1 text-xs transition " +
+                (scope === k
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:text-foreground")
+              }
+            >
+              {k === "tracked" ? "追蹤中" : "全部"}
+            </button>
+          ))}
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -131,11 +171,19 @@ export default function StudiosPage() {
       {list.length === 0 ? (
         <EmptyState
           icon={Building2}
-          title={query ? "沒有符合的製作商" : "還沒有製作商資料"}
+          title={
+            query
+              ? "沒有符合的製作商"
+              : scope === "tracked" && data.studios.length > 0
+                ? "沒有追蹤中的製作商"
+                : "還沒有製作商資料"
+          }
           hint={
             query
               ? undefined
-              : "背景建檔會逐步從已下載作品的詳情整理出製作商名單,稍後再回來看看"
+              : scope === "tracked" && data.studios.length > 0
+                ? "切到「全部」可看所有已下載作品的製作商"
+                : "背景建檔會逐步從已下載作品的詳情整理出製作商名單,稍後再回來看看"
           }
         />
       ) : (

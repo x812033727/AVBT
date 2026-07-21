@@ -35,7 +35,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from ..config import all_kind_paths
+from ..config import studio_scan_bases
 from .jav_code import (
     CONTAINER_EXTS,
     ext_of,
@@ -121,17 +121,19 @@ async def purge_series_junk_stream(
 ) -> AsyncIterator[dict[str, Any]]:
     """Walk 製作商/<studio>/<series> and trash the junk sitting loose in
     each series folder. Yields one ``progress`` per hit, then ``done``."""
-    studio_path = next((p for k, p in all_kind_paths() if k == "studio"), "")
-    if not studio_path:
-        yield {"type": "done",
-               "result": {"scanned": 0, "trashed": 0, "dry_run": dry_run}}
-        return
-    try:
-        root_id = await svc.lookup_folder_id(studio_path)
-    except Exception as exc:  # noqa: BLE001
-        yield {"type": "error", "message": f"解析 {studio_path} 失敗: {exc}"}
-        root_id = ""
-    if not root_id:
+    roots: list[tuple[str, str]] = []  # (base path, folder id)
+    for studio_path in studio_scan_bases():
+        try:
+            root_id = await svc.lookup_folder_id(studio_path)
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": f"解析 {studio_path} 失敗: {exc}"}
+            continue
+        if root_id and root_id not in {rid for _p, rid in roots}:
+            # Dedupe by folder id: a custom PIKPAK_*_FOLDER override can
+            # point both bases at the same folder, and scanning it twice
+            # would double-count (and double-judge) every file.
+            roots.append((studio_path, root_id))
+    if not roots:
         yield {"type": "done",
                "result": {"scanned": 0, "trashed": 0, "dry_run": dry_run}}
         return
@@ -154,17 +156,18 @@ async def purge_series_junk_stream(
     # so a per-folder answer would keep every drifted container forever.
     # The walk already reads every file — decide against all of them.
     collected: list[tuple[Any, str]] = []  # (entry, display path)
-    for studio in await ls(root_id):
-        if studio.kind != "drive#folder":
-            continue
-        for series in await ls(studio.id):
-            if series.kind != "drive#folder":
+    for studio_path, root_id in roots:
+        for studio in await ls(root_id):
+            if studio.kind != "drive#folder":
                 continue
-            for f in await ls(series.id):
-                if f.kind == "drive#folder":
+            for series in await ls(studio.id):
+                if series.kind != "drive#folder":
                     continue
-                collected.append(
-                    (f, f"{studio_path}/{studio.name}/{series.name}/{f.name}"))
+                for f in await ls(series.id):
+                    if f.kind == "drive#folder":
+                        continue
+                    collected.append(
+                        (f, f"{studio_path}/{studio.name}/{series.name}/{f.name}"))
 
     playable = _codes_with_video([e for e, _p in collected])
     hits: list[tuple[str, str]] = []  # (file id, display path)

@@ -41,6 +41,7 @@ from .rename_plan import (  # noqa: F401
     _part_marker_index,
     _split_size_outliers,
     _uniquify_target,
+    has_part_marker,
 )
 
 # How long a resolved (or absent) folder-name twin stays memoised. Folder
@@ -1178,13 +1179,17 @@ class PikPakService:
         # and every kind base (e.g. ``AVBT/製作商``). Built once at the
         # top level via a no-create lookup so it's dry-run safe.
         if _protect_ids is None:
-            from ..config import all_kind_paths
+            from ..config import all_kind_paths, studio_scan_bases
             protect: set[str] = {folder_id}
             for p in ("AVBT", settings.pikpak_archive_folder or "AVBT/已完成"):
                 pid = await self.lookup_folder_id(p)
                 if pid:
                     protect.add(pid)
-            for _k, kp in all_kind_paths():
+            kind_bases = [kp for _k, kp in all_kind_paths()]
+            for extra in studio_scan_bases():
+                if extra not in kind_bases:
+                    kind_bases.append(extra)
+            for kp in kind_bases:
                 kid = await self.lookup_folder_id(kp)
                 if kid:
                     protect.add(kid)
@@ -1428,8 +1433,22 @@ class PikPakService:
                         # None size → assume legit (#225): PikPak lists
                         # real files with a missing size, and collapsing
                         # that to 0 dropped a genuine disc from the set.
+                        # A file carrying an explicit part marker is a
+                        # part regardless of size — a disc can run short
+                        # (live case: [吾爱GIGA]TRE-76's _02 was 426MB in
+                        # a real _01…_04 set; this branch elected _03 the
+                        # sole winner and called three genuine episodes
+                        # "低解析重複"). Bare-guard first: on a stem that
+                        # IS the canonical, _part_marker_index reads the
+                        # code's own trailing digits as a dash marker
+                        # (TRE-76.mkv → 76), and that must not exempt a
+                        # markerless low-res rip. Junk below _JUNK_BYTES
+                        # never reaches here, so the exemption only spares
+                        # 300-500MB marked files — and the duration-gated
+                        # dup pass still judges any false keep later.
                         all_substantial = all(
                             v.size is None or v.size >= PART_MIN_BYTES
+                            or has_part_marker(v.name, canon)
                             for v in vids
                         )
                         if all_substantial:

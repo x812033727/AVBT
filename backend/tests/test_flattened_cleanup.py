@@ -163,3 +163,27 @@ async def test_mixed_depths_with_one_flattened_copy_still_stamps(monkeypatch):
         ],
         "source": "presence",
     }) is True
+
+
+async def test_kind_tree_flattened_file_still_stamps(monkeypatch):
+    """Codes with no studio flatten into the kind fallback trees
+    (AVBT/系列|女優/<name>/CODE.ext, 4 segments) — a hard-coded studio
+    depth rejected these as never-flattened and spun their rows in the
+    retry pass forever."""
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [{"id": "f1", "name": "HODV-084.mp4",
+                   "path": "AVBT/系列/回胴錄/HODV-084.mp4"}],
+        "source": "presence",
+    }) is True
+
+
+async def test_legacy_done_flattened_file_still_stamps(monkeypatch):
+    """The ultimate fallback is AVBT/已完成/CODE.ext (3 segments) —
+    also a legitimate flatten destination."""
+    assert await _flattened_with_result(monkeypatch, {
+        "ok": True,
+        "files": [{"id": "f1", "name": "HODV-084.mp4",
+                   "path": "AVBT/已完成/HODV-084.mp4"}],
+        "source": "presence",
+    }) is True

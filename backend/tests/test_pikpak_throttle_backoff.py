@@ -139,3 +139,24 @@ async def test_throttle_counters_track_backoff_and_exhaustion(service, no_sleep)
     with pytest.raises(PikPakError):
         await service._call(hopeless)
     assert service.throttle_exhausted_total == 1   # ran out of retries
+
+
+async def test_stale_captcha_token_relogins_once(service, no_sleep, monkeypatch):
+    # PikPak rejects every call with "Verification code is invalid" once the
+    # client's X-Captcha-Token goes stale; only a fresh client heals it, so
+    # the message must route through the relogin path (case-insensitive).
+    async def noop_drop(c):
+        return None
+
+    monkeypatch.setattr(service, "_drop_for_relogin", noop_drop)
+    calls = {"n": 0}
+
+    async def op(client):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PikPakError("PikPak 錯誤: Verification code is invalid")
+        return "ok"
+
+    assert await service._call(op) == "ok"
+    assert calls["n"] == 2          # one relogin retry
+    assert no_sleep == []           # relogin path does not throttle-backoff

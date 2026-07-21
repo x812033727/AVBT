@@ -62,12 +62,18 @@ TOKEN_FILE = Path("data/pikpak_token.txt")
 # in PikPak's server response. The exact message has shifted over time so
 # we match on stable fragments: the literal "refresh" + "redis" pair only
 # appears on this specific class of error.
+# "verification code is invalid": every request carries the client's
+# X-Captcha-Token; once it goes stale the server rejects ALL calls with
+# this message and pikpakapi keeps resending the same stale token, so the
+# session never heals without a fresh client (2026-07-21: 50-min pipeline
+# outage). Re-login re-inits the captcha token.
 _INVALID_TOKEN_MARKERS = (
     "invalid refresh token",
     "refreshed by other process",
     "invalid_grant",
     "captcha_invalid",
     "token has been disabled",
+    "verification code is invalid",
 )
 
 

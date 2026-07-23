@@ -1421,9 +1421,23 @@ async def _reap_orphan_rows() -> int:
                         # positive check confirms the code has NOTHING on
                         # PikPak. strict=True → a check error raises into
                         # the except below (skip + cooldown), never abandons.
+                        # No ``not row.archived`` gate: a sweep-archived
+                        # row whose files later evaporated is just as dead
+                        # as a Collecting one, and gating on it left those
+                        # rows in permanent limbo — abandon blocked by the
+                        # flag, close blocked by _already_flattened being
+                        # False — so they never left the pending set and
+                        # silently inflated the "landed >2h, unfinalised"
+                        # SLA metric forever (live 2026-07-23: 13 of 20
+                        # residual rows — TRE-076, OAE-134, AP-491/488 x2,
+                        # LXV-017, AP-463/465/467/470, STAR-264 x2 — all
+                        # archived=1, presence empty, task gone for days).
+                        # The selection above only admits archived rows
+                        # past ``retry_cutoff``, so the retry pass has
+                        # already given up on them; _orphan_has_nothing_
+                        # landed(strict=True) remains the real gate.
                         if (
-                            not row.archived
-                            and row.created_at
+                            row.created_at
                             < datetime.utcnow() - _ABANDON_GRACE
                             and await _orphan_has_nothing_landed(
                                 row.code, strict=True
@@ -1550,9 +1564,10 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
 
 
 async def _orphan_has_nothing_landed(code: str, *, strict: bool = False) -> bool:
-    """True only when ``code`` has NOTHING on PikPak: no per-code archive
-    folder (canonical path or BT-named) and no video files anywhere (not
-    flattened in the 系列 folder, not sitting in the download wrapper).
+    """True only when ``code`` has NOTHING on PikPak: presence knows no
+    path for it, no per-code archive folder (canonical path or BT-named),
+    and no video files anywhere (not flattened in the 系列 folder, not
+    sitting in the download wrapper).
 
     This is the ONLY orphan state that is safe to dead-letter. A per-code
     folder (junk run_finalize cannot clean — MUDR-349/358) or files still
@@ -1567,9 +1582,23 @@ async def _orphan_has_nothing_landed(code: str, *, strict: bool = False) -> bool
     ``strict`` re-raises a check error so the caller skips the row rather
     than making a terminal abandon decision on unreliable data."""
     from .finalize import presence_code_folders  # avoid cycle
+    from .jav_code import normalize_code  # avoid cycle
+    from .pikpak_presence import presence_index  # avoid cycle
     from .video_count import files_for_code  # avoid cycle
 
     try:
+        # Presence knows of SOMETHING under this code → not "nothing".
+        # files_for_code below only resolves *playable* files, so a code
+        # whose only landing is a disc image (IPTD-770.iso, MAS-096.iso —
+        # the container-only population #173 tracks) would otherwise read
+        # as empty and get dead-lettered while 23GB sits on PikPak. Any
+        # presence path also covers the nested/wrapper cases the two
+        # folder lookups above can miss. Reaching here at all means
+        # _already_flattened was False, so a genuinely-flattened video
+        # never takes this branch.
+        await presence_index.get()
+        if presence_index.paths_for(normalize_code(code) or code):
+            return False
         path = await _resolve_archive_path_by_code(code)
         if await pikpak_service.lookup_folder_id(path):
             return False  # per-code folder exists → needs finalize

@@ -2,8 +2,11 @@
 stops re-listing them every ~10 min for the 7-day reap window.
 
 A row is abandoned only when the code has nothing on PikPak
-(_orphan_has_nothing_landed), the task is gone from PikPak, the row is
-not yet archived, and it is older than the 24h grace. This covers both
+(_orphan_has_nothing_landed), the task is gone from PikPak, and it is
+older than the 24h grace. The row's ``archived`` flag is deliberately NOT
+part of that gate: a sweep-archived row whose files later evaporated is
+equally dead, and gating on it stranded those rows permanently (neither
+abandonable nor closeable). This covers both
 the file_id-empty Collecting orphan AND the file_id-nonempty stuck-
 "Saving" orphan (PikPak assigned a file_id but the download died) — the
 per-row nothing-landed check, not the file_id, decides dead-vs-live.
@@ -66,6 +69,17 @@ def _row(**kw):
     )
     base.update(kw)
     return OfflineTaskLog(**base)
+
+
+def _stub_presence(monkeypatch, mapping):
+    """Presence index without PikPak: ``mapping`` is code -> [paths]."""
+    async def _get():
+        return None
+
+    monkeypatch.setattr(pp.presence_index, "get", _get)
+    monkeypatch.setattr(
+        pp.presence_index, "paths_for", lambda code: mapping.get(code, [])
+    )
 
 
 async def test_dead_orphan_is_abandoned(maker):
@@ -235,6 +249,7 @@ async def test_orphan_has_nothing_landed_real_paths(monkeypatch):
         return "fid-123"
 
     monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", has_folder)
+    _stub_presence(monkeypatch, {})
     assert await archiver._orphan_has_nothing_landed("PERCODE-001") is False
 
     async def boom(path):
@@ -287,6 +302,7 @@ async def test_reaper_abandons_via_real_predicate(tmp_path, monkeypatch):
         "app.services.finalize.presence_code_folders", no_bt_folders
     )
     monkeypatch.setattr("app.services.video_count.files_for_code", no_files)
+    _stub_presence(monkeypatch, {})
 
     async with m() as s:
         s.add(_row(code="REALDEAD-001"))
@@ -299,3 +315,76 @@ async def test_reaper_abandons_via_real_predicate(tmp_path, monkeypatch):
         assert row.abandoned is True     # real predicate → real abandon
         assert row.finalized is False
     await engine.dispose()
+
+
+async def test_archived_orphan_with_nothing_landed_is_abandoned(maker):
+    # The limbo the reaper used to leave behind: the sweep stamped
+    # archived (it moved a wrapper), the download then died and the task
+    # vanished, so nothing is flattened and nothing is left on PikPak.
+    # Abandon used to be gated on ``not row.archived`` and close on
+    # _already_flattened, so neither fired and the row stayed pending
+    # forever (live 2026-07-23: TRE-076, AP-491, STAR-264, …).
+    async with maker() as s:
+        s.add(_row(
+            code="ZOMBIE-001",
+            archived=True,
+            archived_at=datetime.utcnow() - timedelta(hours=48),
+            created_at=datetime.utcnow() - timedelta(hours=72),
+        ))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with maker() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "ZOMBIE-001")
+        )).scalar_one()
+        assert row.abandoned is True
+        assert row.finalized is False
+
+
+async def test_archived_orphan_inside_retry_window_is_left(maker):
+    # Still inside the finalize retry window → that pass owns the row;
+    # the reaper must not select (nor abandon) it.
+    async with maker() as s:
+        s.add(_row(
+            code="FRESHARCH-001",
+            archived=True,
+            archived_at=datetime.utcnow() - timedelta(hours=2),
+            created_at=datetime.utcnow() - timedelta(hours=30),
+        ))
+        await s.commit()
+    await archiver._reap_orphan_rows()
+    async with maker() as s:
+        row = (await s.execute(
+            select(OfflineTaskLog).where(OfflineTaskLog.code == "FRESHARCH-001")
+        )).scalar_one()
+        assert row.abandoned is False
+
+
+async def test_container_only_code_is_not_abandoned(monkeypatch):
+    # A code whose only landing is a disc image: files_for_code resolves
+    # PLAYABLE files only, so it reads empty — but 23GB really is on
+    # PikPak and #173's container-swap still owns the code. Presence
+    # knows the path, so "nothing landed" must be False.
+    async def resolve(code):
+        return "AVBT/製作商/S/Ser/" + code
+
+    async def no_folder(path):
+        return None
+
+    async def no_bt_folders(svc, code):
+        return []
+
+    async def no_files(code):
+        return {"ok": False}
+
+    monkeypatch.setattr(archiver, "_resolve_archive_path_by_code", resolve)
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", no_folder)
+    monkeypatch.setattr(
+        "app.services.finalize.presence_code_folders", no_bt_folders
+    )
+    monkeypatch.setattr("app.services.video_count.files_for_code", no_files)
+
+    _stub_presence(monkeypatch, {"IPTD-770": ["AVBT/製作商/S/Ser/IPTD-770.iso"]})
+    assert await archiver._orphan_has_nothing_landed("IPTD-770") is False
+    # …while a code presence has never heard of stays abandon-eligible.
+    assert await archiver._orphan_has_nothing_landed("TRE-076") is True

@@ -804,6 +804,23 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("collect tracked targets failed: %s", exc)
 
+    # Folders a reap auto-close landed into since the last sweep. They
+    # received their file outside this sweep's move accounting, so
+    # nothing else would ever put them in front of phase-2. Drained
+    # unconditionally (even if the lookup fails) so a folder that no
+    # longer resolves can't wedge the queue forever.
+    if _reap_cleanup_paths:
+        pending_paths = sorted(_reap_cleanup_paths)
+        _reap_cleanup_paths.clear()
+        for path in pending_paths:
+            try:
+                pid = await pikpak_service.lookup_folder_id(path)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reap cleanup lookup %s failed: %s", path, exc)
+                continue
+            if pid:
+                target_parent_ids.add(pid)
+
     # Rerun phase-2 cleanup on every target folder that received items.
     # Catches:
     #   - Wrappers whose main video finished downloading after the
@@ -1103,6 +1120,20 @@ _reap_attempts: dict[int, datetime] = {}
 # of re-tried for the whole reap window, but only after this grace so a
 # late-arriving download still gets its chance.
 _ABANDON_GRACE = timedelta(hours=24)
+
+# Series folders that a reap auto-close landed a file into, waiting for
+# the next root sweep to run phase-2 over them. Phase-2 (multipart
+# rename, BT-prefix strip) only ever visits folders that *received*
+# something during that same sweep; a reap-closed orphan was archived by
+# some earlier sweep — or by no sweep at all — so its folder never
+# enters that set and the rename pass has never once run on it (live
+# 2026-07-22: ERK-035 / HHL-043 sat in 製作商/素人ホイホイ/未分類 keeping
+# their full BT filenames). Paths, not folder ids: resolving an id costs
+# a PikPak lookup and the reaper is meant to stay pure DB bookkeeping —
+# the sweep resolves them lazily instead. Bounded so a burst of reaps
+# can't grow it without limit.
+_reap_cleanup_paths: set[str] = set()
+_REAP_CLEANUP_PATHS_MAX = 200
 
 
 async def _active_task_ids() -> set[str]:
@@ -1472,6 +1503,16 @@ async def _reap_orphan_rows() -> int:
             row.finalized_at = now
             row.message = "auto-closed: task gone, files flattened"
             done += 1
+            # Hand this code's series folder to the next sweep's phase-2
+            # pass. refresh_codes() ran above, so these paths are fresh.
+            # Only the auto-close branch queues: an abandoned row has
+            # nothing on disk, so there is no folder to normalise.
+            if len(_reap_cleanup_paths) < _REAP_CLEANUP_PATHS_MAX:
+                from .pikpak_presence import presence_index  # avoid cycle
+                for path in presence_index.paths_for(row.code):
+                    parent = path.rsplit("/", 1)[0] if "/" in path else ""
+                    if parent:
+                        _reap_cleanup_paths.add(parent)
             logger.warning(
                 "orphan reap closed %s (task %s gone, %s; files already "
                 "flattened)",

@@ -88,6 +88,18 @@ async def quota():
         raise _wrap(exc) from exc
 
 
+@router.get("/transfer-quota")
+async def transfer_quota():
+    """The cloud-download traffic budget, verbatim — separate from
+    ``/quota``'s storage space, and the one that rejects offline submits
+    ("Cloud Download Traffic 40.4 T has exceeded the limit 40 T") while
+    storage still reads healthy."""
+    try:
+        return await pikpak_service.transfer_quota()
+    except Exception as exc:  # noqa: BLE001
+        raise _wrap(exc) from exc
+
+
 @router.post("/offline", response_model=PikPakTask)
 async def offline_download(payload: OfflineSubmit):
     """Single-magnet submit. Routes through the global download queue so

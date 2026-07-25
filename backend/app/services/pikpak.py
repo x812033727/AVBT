@@ -619,6 +619,32 @@ class PikPakService:
             expire=quota.get("expires_at") or quota.get("expire"),
         )
 
+    async def transfer_quota(self) -> dict[str, Any]:
+        """Read out PikPak's *transfer* allowance — the cloud-download
+        traffic budget, which is a different budget from ``quota()``'s
+        storage space.
+
+        Since 2026-07-18 every offline submit fails with "Cloud Download
+        Traffic 40.4 T has exceeded the limit 40 T" while ``quota()`` keeps
+        reporting a healthy 81% of storage used, so nothing in the app
+        could see the number that actually blocks submits. Both endpoints
+        are undocumented and their payload shape varies by account tier, so
+        they are returned verbatim under separate keys and the caller
+        decides what is meaningful; a failing half is reported as an
+        ``error`` string instead of sinking the other.
+        """
+        out: dict[str, Any] = {}
+        for key, op in (
+            ("transfer", lambda c: c.get_transfer_quota()),
+            ("vip", lambda c: c.vip_info()),
+        ):
+            try:
+                out[key] = await self._call(op)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("PikPak %s quota read failed: %s", key, exc)
+                out[key] = {"error": str(exc)}
+        return out
+
     async def _canonical_path(self, name: str) -> str:
         """Rewrite each segment to the existing sibling folder that means
         the same thing, so a name that drifted reuses its folder instead

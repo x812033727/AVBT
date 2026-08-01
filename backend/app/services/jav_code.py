@@ -217,6 +217,30 @@ _SITE_PREFIX_DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# #170: a wrapper can glue the code STRAIGHT onto a site domain with no
+# boundary at all (live: ``HAR026Czzpp08.com@``, r367). To
+# _SITE_PREFIX_DOMAIN_RE that whole run is one domain label, so the strip
+# used to eat the code too — and the wrapper went invisible to the entire
+# pipeline (presence never indexed it, hygiene never counted it, sweep
+# never flattened it, finalize spun on "folder not found"). When the
+# domain's FIRST label is a front-anchored code + non-empty junk, the
+# code is rescued instead of stripped. ``(?![0-9])`` forbids backtracking
+# a digit run to manufacture the junk (``hjd2048`` must never split into
+# HJD-204 + "8" — that is exactly the domain-ghost this strip exists to
+# prevent), so a label fully consumed by the code shape stays a domain.
+_GLUED_CODE_PREFIX_RE = re.compile(
+    rf"^(\d{{0,4}}{_LABEL_RE}-?\d{{2,6}})(?![0-9])(?=[A-Z0-9])",
+    re.IGNORECASE,
+)
+
+# Variant-letter boundary for the rescue, case-SENSITIVE on purpose: an
+# uppercase letter followed by lowercase junk reads as the code's variant
+# suffix (``HAR026C|zzpp08`` keeps the C so extract_jav_code_full names
+# the file HAR-026C); any other case mix is indistinguishable from the
+# junk itself (``ABP123|kfa55``), so the letter stays junk and only the
+# base code is rescued.
+_GLUED_VARIANT_RE = re.compile(r"^[A-Z][a-z]")
+
 
 def _strip_site_noise(stem: str) -> str:
     """Strip a leading bare ``host.tld`` site-domain token off the FRONT
@@ -230,12 +254,29 @@ def _strip_site_noise(stem: str) -> str:
     (``CLUB-032``) is never eaten (see module comment above for the full
     corpus-evidence rationale for this narrower-than-spec scope).
 
+    A domain whose first label is code+junk (``HAR026Czzpp08.com@``) has
+    the code rescued rather than stripped — see _GLUED_CODE_PREFIX_RE.
+
     Returns *stem* unchanged when no such token is at the front.
     """
     prev = None
     while prev != stem:
         prev = stem
-        stem = _SITE_PREFIX_DOMAIN_RE.sub("", stem)
+        m = _SITE_PREFIX_DOMAIN_RE.match(stem)
+        if not m:
+            break
+        first_label = m.group(0).split(".", 1)[0]
+        gm = _GLUED_CODE_PREFIX_RE.match(first_label)
+        if gm:
+            code = gm.group(1)
+            if _GLUED_VARIANT_RE.match(first_label[gm.end():]):
+                code += first_label[gm.end()]
+            # ``@`` restores the boundary _CODE_RE needs; the rescued
+            # front can never re-match the domain regex (no dot before
+            # the ``@``), so the fixpoint loop still terminates.
+            stem = code + "@" + stem[m.end():]
+        else:
+            stem = stem[m.end():]
     return stem
 
 

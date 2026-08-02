@@ -1099,6 +1099,15 @@ _REAP_RETRY_COOLDOWN = timedelta(hours=6)
 _REAP_CHECK_LIMIT = 5
 _reap_attempts: dict[int, datetime] = {}
 
+# Last pass's per-code disposition for rows the operator is watching
+# (task gone, or in-flight but suspiciously old). Logged only on change
+# so the steady state costs one line, not one per pass. Every skip path
+# in the reaper is otherwise silent, which made "checked and refused"
+# indistinguishable from "never reached" from the outside (live
+# 2026-08-02: 300MAAN-764 sat 8h+ past its abandon grace with zero log
+# evidence of why).
+_reap_last_report: dict[str, str] = {}
+
 # A genuinely-dead orphan (no file ever landed) is dead-lettered instead
 # of re-tried for the whole reap window, but only after this grace so a
 # late-arriving download still gets its chance.
@@ -1392,12 +1401,22 @@ async def _reap_orphan_rows() -> int:
             del _reap_attempts[rid]
         checked = 0
         abandoned = 0
+        # Observation only: which disposition each watched row took this
+        # pass. Young in-flight rows are the normal bulk and stay out;
+        # everything else (task gone, or in-flight past the abandon
+        # grace) is exactly what the operator's stale-backlog SLA watches.
+        report: dict[str, str] = {}
+        stale_age_floor = datetime.utcnow() - _ABANDON_GRACE
         for row in rows:
             if row.task_id and row.task_id in active:
+                if row.created_at < stale_age_floor:
+                    report[row.code] = "in-flight(old)"
                 continue  # still downloading — not an orphan
             if row.id in _reap_attempts:
+                report[row.code] = "cooldown"
                 continue  # failed a recent check — let others have a slot
             if checked >= _REAP_CHECK_LIMIT:
+                report[row.code] = "slot-capped"
                 break  # cap the expensive flattened checks per pass
             checked += 1
             _reap_attempts[row.id] = datetime.utcnow()
@@ -1429,6 +1448,7 @@ async def _reap_orphan_rows() -> int:
                                 row.code, strict=True
                             )
                         ):
+                            report[row.code] = "abandoned"
                             row.abandoned = True
                             # No file_id gate here: a stuck-"Saving" orphan
                             # keeps its stale file_id but the file it named
@@ -1451,17 +1471,38 @@ async def _reap_orphan_rows() -> int:
                                 row.code, row.task_id or "?",
                                 int(_ABANDON_GRACE.total_seconds() // 3600),
                             )
+                        if row.code not in report:
+                            # The formerly-silent branch: not flattened
+                            # and not abandonable. Say WHY, so a row
+                            # wedged here is visible instead of looking
+                            # identical to one the pass never reached.
+                            if row.archived:
+                                why = "archived, awaiting finalize"
+                            elif row.created_at >= (
+                                datetime.utcnow() - _ABANDON_GRACE
+                            ):
+                                why = "inside abandon grace"
+                            else:
+                                why = "files still on PikPak"
+                            report[row.code] = f"kept({why})"
+                            logger.info(
+                                "orphan reap kept %s: not flattened, %s",
+                                row.code, why,
+                            )
                         continue  # not flattened → abandoned or needs finalize
             except TimeoutError:
+                report[row.code] = "check-timeout"
                 logger.warning(
                     "orphan reap %s timed out after %ss",
                     row.code, _FINALIZE_ROW_TIMEOUT,
                 )
                 continue
             except Exception as exc:  # noqa: BLE001
+                report[row.code] = "check-failed"
                 logger.warning("orphan reap %s failed: %s", row.code, exc)
                 continue
             now = datetime.utcnow()
+            report[row.code] = "closed"
             was_archived = bool(row.archived)
             row.archived = True
             # Keep the original archive time on rows the sweep already
@@ -1479,6 +1520,15 @@ async def _reap_orphan_rows() -> int:
                 "archived but finalize never landed within the retry window"
                 if was_archived else "vanished before file_id was tracked",
             )
+        if report != _reap_last_report:
+            logger.info(
+                "orphan reap watchlist: %s",
+                "; ".join(
+                    f"{code}={disp}" for code, disp in sorted(report.items())
+                ) or "empty",
+            )
+            _reap_last_report.clear()
+            _reap_last_report.update(report)
         if done or abandoned:
             await session.commit()
     return done

@@ -343,6 +343,13 @@ async def missing_codes_for(
     # listing under the global first-seen rule, matching the badge count
     # from /missing-summary. Pass ?dedup=false to see this listing's
     # full missing catalog regardless of overlap.
+    #
+    # An empty slug ("/studio//missing-codes") is never a real listing,
+    # but JavBus happily serves a listing page for the empty-slug URL, so
+    # without this guard the scan treats every held code as belonging to
+    # the phantom listing and burns up to 50 detail probes verifying them.
+    if not slug.strip("/ "):
+        raise HTTPException(status_code=404, detail="not tracked")
     row = await session.get(TrackedListing, (kind, slug))
     eff_uncensored = bool(row.uncensored) if row else uncensored
     return await missing_svc.missing_for_listing(

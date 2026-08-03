@@ -895,6 +895,13 @@ async def _phase2_cleanup_target(
     # replacements). That is the swap's contract inverted — a landed
     # video is supposed to retire the container (series_junk's tail).
     winner_ids: dict[str, str] = {}
+    # Kind of each group's winner: a FILE losing a size contest to a
+    # FOLDER means the folder still holds content — that contest is
+    # meaningless mid-flatten (see the loser guards below).
+    winner_kind: dict[str, str] = {}
+    # Loser folders that still list a video inside — trashing one
+    # destroys the files it holds.
+    folder_video_ids: set[str] = set()
     # Losers that must be KEPT, not trashed: a container whose
     # replacement is below the credibility bar (or a multi-volume
     # piece), and every member of a container-only group. Same bar as
@@ -903,12 +910,15 @@ async def _phase2_cleanup_target(
     for code, items in groups.items():
         if len(items) == 1:
             winner_ids[code] = items[0].id
+            winner_kind[code] = items[0].kind
             continue
         ranked: list[tuple[bool, int, int, object]] = []
         for it in items:
             size = await _item_size(it)
             if it.kind == "drive#folder":
                 playable = await _folder_has_video(it)
+                if playable:
+                    folder_video_ids.add(it.id)
             else:
                 playable = is_video(it.name)
             file_bias = 0 if it.kind == "drive#folder" else 1
@@ -916,6 +926,7 @@ async def _phase2_cleanup_target(
         ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
         playable_win, win_size, _bias, top = ranked[0]
         winner_ids[code] = top.id
+        winner_kind[code] = top.kind
         if not playable_win:
             # Container-only group (rar volume set, iso beside zip…):
             # a size contest between containers can shred a volume set,
@@ -962,7 +973,41 @@ async def _phase2_cleanup_target(
                 plan.append((c, "skip", None, "container_kept", code))
                 continue
             if c.id != winner_ids[code]:
-                # Loser — trash regardless of kind.
+                # A loser folder still holding video is a wrapper whose
+                # flatten hasn't finished (or a twin holding real
+                # parts) — trashing it takes those files with it. Leave
+                # it; flatten / hygiene owns its fate.
+                if c.id in folder_video_ids:
+                    plan.append(
+                        (c, "skip", None, "loser_folder_has_video", code)
+                    )
+                    continue
+                # A folder that lists empty may just be mid-move-out —
+                # listings are optimistic, so the settle gate (#140) is
+                # the only proof it's safe to trash.
+                if (
+                    c.kind == "drive#folder"
+                    and not pikpak_service.move_settled(c.id)
+                ):
+                    plan.append((c, "skip", None, "move_settling", code))
+                    continue
+                # A substantial video losing to a FOLDER is a freshly
+                # flattened part whose siblings still list inside the
+                # wrapper — the folder's summed size wins a contest
+                # that shouldn't exist, and the part is gone (live
+                # loss 2026-08-03: IPVR-326_1.mp4 trashed while -B/-C
+                # were still in flight out of the wrapper). Wait until
+                # the wrapper is resolved; file-vs-file dedupe on a
+                # later pass still retires true duplicates.
+                if (
+                    winner_kind.get(code) == "drive#folder"
+                    and c.kind != "drive#folder"
+                    and is_video(c.name)
+                    and int(c.size or 0) >= PART_MIN
+                ):
+                    plan.append((c, "skip", None, "part_vs_wrapper", code))
+                    continue
+                # Loser — trash.
                 plan.append(
                     (c, "dedupe", _canonical_name(c, code), "duplicate", code)
                 )

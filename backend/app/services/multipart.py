@@ -14,6 +14,8 @@ stored verdict, and let the /multipart page do the judging.
 Same budget rules as ``hygiene.scan``: presence table only, zero PikPak
 calls, safe to reload on every page visit. File sizes come lazily from
 ``GET /presence/codes/{code}/files`` when the operator opens a row.
+``strip_singletons`` is the one exception — it lists and renames live,
+because it runs right after the operator trashed files.
 """
 
 from __future__ import annotations
@@ -22,7 +24,9 @@ from sqlalchemy import delete, select
 
 from ..database import SessionLocal
 from ..models import MultipartReview, PresenceEntry
+from . import video_count as video_count_svc
 from .jav_code import CONTAINER_EXTS, VIDEO_EXTS, ext_of, normalize_code
+from .pikpak import pikpak_service
 from .rename_plan import has_part_marker
 
 REVIEW_STATUSES = ("confirmed_parts", "resolved_dup")
@@ -147,3 +151,50 @@ async def set_review(code: str, status: str, note: str = "") -> dict:
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             },
         }
+
+
+async def strip_singletons(codes: list[str]) -> dict:
+    """After the operator trashes duplicates, a code left with exactly
+    ONE video file that still carries a part marker (``CODE_1.mp4`` and
+    friends) violates the archive convention and falsely advertises a
+    part set. Strip it back to the bare canonical — the per-code twin of
+    ``episode_finder.process_trash_and_strip``'s ``auto_strip``, which
+    needs parent folder ids the /multipart page doesn't have.
+
+    Deliberately conservative: any listing marked partial, any count
+    other than exactly one, or an already-bare name is a skip, never a
+    rename. Returns per-code actions; the router refreshes presence for
+    the renamed codes after the settle."""
+    results: list[dict] = []
+    renamed: list[str] = []
+    for raw in codes:
+        canon = normalize_code(raw) or (raw or "").strip().upper()
+        if not canon:
+            continue
+        try:
+            info = await video_count_svc.files_for_code(canon)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"code": canon, "action": "error", "detail": str(exc)})
+            continue
+        files = info.get("files") or [] if info.get("ok") else []
+        if info.get("partial"):
+            results.append({"code": canon, "action": "skip", "detail": "listing partial"})
+            continue
+        if len(files) != 1:
+            results.append({"code": canon, "action": "skip", "detail": f"{len(files)} files"})
+            continue
+        name = files[0].get("name") or ""
+        if not has_part_marker(name, canon):
+            results.append({"code": canon, "action": "skip", "detail": "no marker"})
+            continue
+        new_name = f"{canon}{ext_of(name)}"
+        try:
+            await pikpak_service.rename_file(files[0]["id"], new_name)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"code": canon, "action": "error", "detail": str(exc)})
+            continue
+        renamed.append(canon)
+        results.append(
+            {"code": canon, "action": "renamed", "from": name, "to": new_name}
+        )
+    return {"renamed": renamed, "results": results}

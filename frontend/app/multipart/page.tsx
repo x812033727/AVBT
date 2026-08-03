@@ -206,6 +206,22 @@ export default function MultipartPage() {
         `已刪除 ${picks.length} 個檔案,但封存索引重讀失敗:${e.message} — 可稍後到設定頁重讀這些番號`
       );
     }
+    try {
+      // A lone survivor still named CODE_N falsely advertises a part
+      // set — let the backend strip it back to the bare canonical.
+      let stripped = 0;
+      for (let i = 0; i < codes.length; i += 50) {
+        const out = await api.post<{ renamed: string[] }>(
+          "/api/pikpak/multi-part/strip",
+          { codes: codes.slice(i, i + 50) }
+        );
+        stripped += out.renamed.length;
+      }
+      if (stripped > 0)
+        toast.success(`已把 ${stripped} 個僅存檔改回裸名(去掉 _N 標記)`);
+    } catch (e: any) {
+      toast.error(`裸名修正失敗:${e.message}(檔案已刪除,不影響)`);
+    }
     const removed = new Set(picks.map((p) => `${p.code}:${p.id}`));
     setFiles((f) => {
       const next = { ...f };

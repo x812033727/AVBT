@@ -72,7 +72,12 @@ export default function MultipartPage() {
     setError(null);
     api
       .get<MpScan>("/api/pikpak/multi-part")
-      .then((d) => setData(d))
+      .then((d) => {
+        setData(d);
+        // A fresh scan invalidates selection keys — a stale set could
+        // offer trash for files no longer on screen.
+        setSelected(new Set());
+      })
       .catch((e: any) => setError(e.message || "載入失敗"))
       .finally(() => setLoading(false));
   }
@@ -179,6 +184,15 @@ export default function MultipartPage() {
       await api.post("/api/pikpak/files/trash", {
         ids: picks.map((p) => p.id),
       });
+    } catch (e: any) {
+      toast.error(`刪除失敗:${e.message}`);
+      setBusy(false);
+      return;
+    }
+    // Deletion is done from here on — a refresh failure must not read
+    // as 刪除失敗, and the local prune/reload must still happen or the
+    // trashed files stay selectable and invite a confusing re-trash.
+    try {
       // Hand-trashed files leave the presence rows stale forever unless
       // the touched codes get re-read — same rule as every manual fix.
       for (let i = 0; i < codes.length; i += 50) {
@@ -187,24 +201,25 @@ export default function MultipartPage() {
         });
       }
       toast.success(`已把 ${picks.length} 個檔案移到垃圾桶`);
-      const removed = new Set(picks.map((p) => `${p.code}:${p.id}`));
-      setFiles((f) => {
-        const next = { ...f };
-        for (const code of codes) {
-          if (next[code])
-            next[code] = next[code].filter(
-              (x) => !removed.has(`${code}:${x.id}`)
-            );
-        }
-        return next;
-      });
-      setSelected(new Set());
-      load();
     } catch (e: any) {
-      toast.error(`刪除失敗:${e.message}`);
-    } finally {
-      setBusy(false);
+      toast.error(
+        `已刪除 ${picks.length} 個檔案,但封存索引重讀失敗:${e.message} — 可稍後到設定頁重讀這些番號`
+      );
     }
+    const removed = new Set(picks.map((p) => `${p.code}:${p.id}`));
+    setFiles((f) => {
+      const next = { ...f };
+      for (const code of codes) {
+        if (next[code])
+          next[code] = next[code].filter(
+            (x) => !removed.has(`${code}:${x.id}`)
+          );
+      }
+      return next;
+    });
+    setSelected(new Set());
+    setBusy(false);
+    load();
   }
 
   return (
@@ -488,7 +503,7 @@ function CodeRow({
             </ul>
           ) : (
             <div className="text-xs text-muted-foreground">
-              沒有讀到可播放的檔案(索引可能過期,可到設定頁重讀該番號)
+              沒有讀到可播放的檔案(讀取失敗或索引過期;收合後重新展開可重試)
             </div>
           )}
         </div>

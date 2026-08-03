@@ -1526,3 +1526,174 @@ def test_plan_lone_keeper_code_anchored_tail_not_clobbered():
     v = _file("MIDV-001 making-of.mp4", "v", 2048)
     plan = build_finalize_plan("MIDV-001", [(v, "root")], "root")
     assert plan.keep[0][1].startswith("MIDV-001 MAKING-OF")
+
+
+async def test_reap_autoclose_queues_parent_for_phase2(tmp_path, monkeypatch):
+    """A reap auto-close must hand its code's series folder to the next
+    sweep's phase-2 pass.
+
+    Live 2026-07-22 (ERK-035 / HHL-043): both landed loose in
+    ``製作商/素人ホイホイ/未分類`` keeping their original long BT
+    filename. Phase-2 renaming only runs over folders in
+    ``target_parent_ids`` — folders that *received* something during
+    that sweep — and a reap-closed orphan never puts its parent there,
+    so the rename pass had never once run on them. The rename logic
+    itself is fine: a scoped cleanup dry-run over that folder planned
+    exactly the two renames. This is a coverage gap, not a rename bug."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="ERK-035", magnet="m", task_id="t-gone",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=30)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code, **kw):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    from app.services.pikpak_presence import presence_index
+
+    async def fake_refresh(codes):
+        return None
+
+    monkeypatch.setattr(presence_index, "refresh_codes", fake_refresh)
+    monkeypatch.setattr(
+        presence_index, "paths_for",
+        lambda code: ["AVBT/製作商/素人ホイホイ/未分類/ERK-035 はなちゃん(25).mp4"],
+    )
+    arch._reap_cleanup_paths.clear()
+
+    assert await arch._reap_orphan_rows() == 1
+    assert arch._reap_cleanup_paths == {"AVBT/製作商/素人ホイホイ/未分類"}
+    await engine.dispose()
+
+
+async def test_reap_abandon_does_not_queue_parent(tmp_path, monkeypatch):
+    """A dead-lettered orphan has no landed file, so it must not queue
+    any folder for phase-2 — cleanup is only ever scoped to folders we
+    know received something."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="DEAD-001", magnet="m", task_id="t-gone",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=30)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def not_flattened(code, **kw):
+        return False
+
+    async def nothing_landed(code, **kw):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", not_flattened)
+    monkeypatch.setattr(arch, "_orphan_has_nothing_landed", nothing_landed)
+
+    from app.services.pikpak_presence import presence_index
+
+    async def fake_refresh(codes):
+        return None
+
+    monkeypatch.setattr(presence_index, "refresh_codes", fake_refresh)
+    monkeypatch.setattr(presence_index, "paths_for", lambda code: [])
+    arch._reap_cleanup_paths.clear()
+
+    assert await arch._reap_orphan_rows() == 0
+    assert arch._reap_cleanup_paths == set()
+    await engine.dispose()
+
+
+async def test_reap_autoclose_never_queues_legacy_archive(tmp_path, monkeypatch):
+    """A code whose only copy lives under the legacy archive
+    (``AVBT/已完成``) must NOT drag that shared bucket into phase-2:
+    winner-pick dedupes and wrapper flattens there would rip apart
+    user-kept wrappers the legacy sweep deliberately leaves alone
+    (see _sweep_legacy_archive_stream). Kind-tree parents still queue."""
+    now = datetime.utcnow()
+    engine, maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code="ERK-035", magnet="m", task_id="t-gone",
+                       file_id="", archived=False, finalized=False,
+                       created_at=now - timedelta(hours=30)),
+    ])
+
+    async def no_active():
+        return set()
+
+    async def flattened(code, **kw):
+        return True
+
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    monkeypatch.setattr(arch, "_already_flattened", flattened)
+    from app.services.pikpak_presence import presence_index
+
+    async def fake_refresh(codes):
+        return None
+
+    monkeypatch.setattr(presence_index, "refresh_codes", fake_refresh)
+    legacy = (arch.settings.pikpak_archive_folder or "AVBT/已完成").strip("/")
+    monkeypatch.setattr(
+        presence_index, "paths_for",
+        lambda code: [
+            f"{legacy}/ERK-035.mp4",
+            f"{legacy}/some-wrapper/ERK-035 (2).mp4",
+            "AVBT/製作商/素人ホイホイ/未分類/ERK-035 はなちゃん(25).mp4",
+        ],
+    )
+    arch._reap_cleanup_paths.clear()
+
+    assert await arch._reap_orphan_rows() == 1
+    assert arch._reap_cleanup_paths == {"AVBT/製作商/素人ホイホイ/未分類"}
+    await engine.dispose()
+
+
+async def test_sweep_drains_reap_queue_into_phase2(monkeypatch):
+    """The sweep side of the reap hand-off: queued parents must be
+    resolved to folder ids, passed to _cleanup_target_parents, and the
+    queue emptied — deleting the drain block silently disables the whole
+    fix (queue fills to its cap, phase-2 never sees the folders)."""
+    from app.services import dup_copies, reorganize, series_junk
+
+    async def no_phase1(*, dry_run, idx_start, source_path=None):
+        if False:  # pragma: no cover - empty async generator
+            yield {}
+
+    monkeypatch.setattr(reorganize, "_phase1_migrate_root", no_phase1)
+    monkeypatch.setattr(arch.settings, "pikpak_sweep_fallback_root", False)
+
+    looked_up: list[str] = []
+
+    async def fake_lookup(path):
+        looked_up.append(path)
+        return "pid-" + path.rsplit("/", 1)[-1]
+
+    monkeypatch.setattr(arch.pikpak_service, "lookup_folder_id", fake_lookup)
+
+    cleaned_with: list[set[str]] = []
+
+    async def fake_cleanup(parent_ids):
+        cleaned_with.append(set(parent_ids))
+        return 0
+
+    monkeypatch.setattr(arch, "_cleanup_target_parents", fake_cleanup)
+
+    async def no_junk(service, dry_run):
+        return {}
+
+    monkeypatch.setattr(series_junk, "purge_series_junk", no_junk)
+    monkeypatch.setattr(dup_copies, "sweep_dup_copies", no_junk)
+
+    arch._reap_cleanup_paths.clear()
+    arch._reap_cleanup_paths.add("AVBT/製作商/素人ホイホイ/未分類")
+
+    await arch._sweep_root_once()
+
+    assert looked_up == ["AVBT/製作商/素人ホイホイ/未分類"]
+    assert cleaned_with == [{"pid-未分類"}]
+    assert arch._reap_cleanup_paths == set()

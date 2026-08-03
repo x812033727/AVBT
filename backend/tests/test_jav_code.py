@@ -198,6 +198,53 @@ def test_extract_jav_code_domain_only_is_none(name):
     assert extract_jav_code_full(name) is None
 
 
+# #170 canonical blind spot: the code GLUED straight onto a site domain
+# with no boundary at all (live wrapper ``HAR026Czzpp08.com@``, r367).
+# The leading-domain strip used to eat the whole run as one domain label,
+# leaving ``@`` → None → the wrapper was invisible to the entire pipeline
+# (presence never indexed it, hygiene never counted it, sweep never
+# flattened it, finalize spun on "folder not found" every 5-10 minutes).
+# The rescue keeps the front-anchored code when the domain's first label
+# is code + NON-EMPTY junk starting with a letter.
+@pytest.mark.parametrize(
+    ("name", "want_base", "want_full"),
+    [
+        ("HAR026Czzpp08.com@", "HAR-026", "HAR-026C"),
+        ("HAR026Czzpp08.com", "HAR-026", "HAR-026C"),
+        ("ABP123kfa55.com@", "ABP-123", "ABP-123"),
+    ],
+)
+def test_extract_jav_code_glued_tail_domain_rescued(name, want_base, want_full):
+    assert extract_jav_code(name) == want_base
+    assert extract_jav_code_full(name) == want_full
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # The rescue must NOT regress ghost prevention: a label whose
+        # digits+letters are consumed entirely by the code shape is a
+        # domain, not code+junk — and the regex may not backtrack the
+        # digit run to manufacture leftover junk (hjd2048 must never
+        # split into HJD-204 + "8").
+        "hjd2048.com",
+        "zzpp08.com",
+        "zzpp08.com@",
+        "kan224.com",
+    ],
+)
+def test_glued_tail_rescue_never_mints_domain_ghosts(name):
+    assert extract_jav_code(name) is None
+    assert extract_jav_code_full(name) is None
+
+
+def test_glued_tail_rescue_keeps_later_real_code_priority():
+    # A rescued front token must not outrank a real code later in the
+    # name — the scan still takes the LAST match.
+    assert extract_jav_code("zzpp08.com@EKDV243-") == "EKDV-243"
+    assert extract_jav_code("ABC123x99.com@REAL-456 title") == "REAL-456"
+
+
 # #182-class negatives: site-noise stripping must not change extraction
 # of names that already work today — byte-identical before vs after this
 # feature (values captured from the pre-change extractor).

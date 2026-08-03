@@ -78,7 +78,7 @@ async def test_refresh_codes_lists_shared_folder_once(monkeypatch):
 
     monkeypatch.setattr(archiver_mod, "studio_series_dir_for_code", no_nested)
 
-    async def fake_lookup(path):
+    async def fake_lookup(path, *, strict=False):
         return "leg" if path.strip("/") == "AVBT/已完成" else None
 
     list_calls = {"leg": 0}

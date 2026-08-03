@@ -1436,6 +1436,13 @@ async def _reap_orphan_rows() -> int:
                         # past ``retry_cutoff``, so the retry pass has
                         # already given up on them; _orphan_has_nothing_
                         # landed(strict=True) remains the real gate.
+                        # NOTE: those 13 named rows themselves are already
+                        # outside the 7-day candidate window and will
+                        # never be selected here — they need a one-off
+                        # scripted close (review 2026-08-03). This gate
+                        # only stops the population from GROWING; widening
+                        # the window instead would re-litigate #151's
+                        # historical-backfill stampede.
                         if (
                             row.created_at
                             < datetime.utcnow() - _ABANDON_GRACE
@@ -1605,13 +1612,33 @@ async def _orphan_has_nothing_landed(code: str, *, strict: bool = False) -> bool
         if await presence_code_folders(pikpak_service, code):
             return False  # BT-named per-code folder → needs finalize
         result = await files_for_code(code)
+        if result.get("ok") and result.get("files"):
+            # Files anywhere (flattened OR in the task wrapper) → not
+            # nothing.
+            return False
+        if strict:
+            # Everything above infers absence through lookups that
+            # collapse API errors into "not found" (lookup_folder_id
+            # swallows to "", files_for_code's task fallback turns a
+            # listing error into ok:False) — fine for opportunistic
+            # readers, lethal here: one transient flake, or a code
+            # presence never indexed (raw-code cache miss, 07-19
+            # 200GANA), would dead-letter a row whose file is sitting
+            # in its series folder right now. A terminal abandon
+            # requires POSITIVE confirmation: every candidate dir
+            # conclusively listed (or its full path conclusively
+            # absent). live_paths_checked raises on anything less and
+            # the raise lands in the except below → skip + cooldown,
+            # never abandon.
+            live = await presence_index.live_paths_checked(code)
+            if live:
+                return False
     except Exception as exc:  # noqa: BLE001
         logger.debug("nothing-landed check %s failed: %s", code, exc)
         if strict:
             raise
         return False  # unknown → not confirmed-empty → don't abandon
-    # Files anywhere (flattened OR in the task wrapper) → not nothing.
-    return not (result.get("ok") and result.get("files"))
+    return True
 
 
 async def _cleanup_loose_parents_if_dirty(files: list[dict]) -> None:

@@ -50,7 +50,7 @@ class FakeSvc(PikPakService):
     async def _call(self, fn):
         return []      # path_to_id finds nothing by exact name
 
-    async def lookup_folder_id(self, name):
+    async def lookup_folder_id(self, name, *, strict=False):
         return self._path_ids.get(name, "")
 
 

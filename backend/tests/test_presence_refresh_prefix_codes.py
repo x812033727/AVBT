@@ -36,7 +36,7 @@ def _wire_series_fs(monkeypatch, *, detail_keys):
     async def fake_nested(code, *, allow_fetch=False):
         return SERIES if code in detail_keys else None
 
-    async def fake_lookup(path):
+    async def fake_lookup(path, *, strict=False):
         return "series" if path.strip("/") == SERIES else None
 
     async def fake_list_all(parent_id, *, cap):

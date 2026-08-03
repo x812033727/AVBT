@@ -1507,12 +1507,24 @@ async def _reap_orphan_rows() -> int:
             # pass. refresh_codes() ran above, so these paths are fresh.
             # Only the auto-close branch queues: an abandoned row has
             # nothing on disk, so there is no folder to normalise.
+            # Legacy-archive parents (``AVBT/已完成``) are NEVER queued:
+            # phase-2 winner-picks and flattens whole folders, and the
+            # legacy sweep deliberately leaves user-kept wrappers alone
+            # (see _sweep_legacy_archive_stream) — a code whose only copy
+            # lives there must not drag the shared bucket into a rename/
+            # dedupe pass it was never designed to survive.
             if len(_reap_cleanup_paths) < _REAP_CLEANUP_PATHS_MAX:
                 from .pikpak_presence import presence_index  # avoid cycle
+                legacy = (
+                    settings.pikpak_archive_folder or "AVBT/已完成"
+                ).strip().strip("/")
                 for path in presence_index.paths_for(row.code):
                     parent = path.rsplit("/", 1)[0] if "/" in path else ""
-                    if parent:
-                        _reap_cleanup_paths.add(parent)
+                    if not parent:
+                        continue
+                    if parent == legacy or parent.startswith(legacy + "/"):
+                        continue
+                    _reap_cleanup_paths.add(parent)
             logger.warning(
                 "orphan reap closed %s (task %s gone, %s; files already "
                 "flattened)",

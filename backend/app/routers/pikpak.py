@@ -588,6 +588,25 @@ async def multi_part_review(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/multi-part/strip")
+async def multi_part_strip(codes: list[str] = Body(..., embed=True)):
+    """For each code, if exactly one video file remains and it still
+    carries a part marker, rename it back to the bare canonical
+    (``DSVR-1921_1.mp4`` → ``DSVR-1921.mp4``). The /multipart page calls
+    this right after a trash so a survivor doesn't keep advertising a
+    part set. Conservative by design — anything ambiguous is a skip."""
+    if not codes:
+        raise HTTPException(status_code=400, detail="codes must not be empty")
+    if len(codes) > 50:
+        raise HTTPException(status_code=400, detail="at most 50 codes per call")
+    result = await multipart_svc.strip_singletons(codes)
+    # Renames leave those codes' presence rows pointing at the old
+    # names; re-read them after the same settle the manual rename uses.
+    for code in result["renamed"]:
+        asyncio.create_task(_refresh_presence_after_rename(code))
+    return result
+
+
 @router.get("/presence/status", response_model=PresenceStatus)
 async def presence_status():
     return PresenceStatus(**presence_index.status())

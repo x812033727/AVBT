@@ -332,7 +332,15 @@ class PikPakPresenceIndex:
             await self._load_from_db()
         sem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
         gone = frozenset(exclude_ids or ())
-        memo = _ListingMemo(self._list_uncached)
+        # Strict loader: a listing failure must surface as an exception,
+        # not an empty [] — _live_paths_for otherwise reads the swallowed
+        # error as "folder empty", returns no paths, and this method then
+        # DELETES the code's entry (memory + DB). One transient PikPak
+        # flake during a refresh permanently poisoned the index that every
+        # "does this code have files?" decision reads.
+        memo = _ListingMemo(
+            lambda pid: self._list_uncached(pid, strict=True)
+        )
 
         async def one(code: str) -> tuple[str, list[str]] | None:
             async with sem:
@@ -377,6 +385,8 @@ class PikPakPresenceIndex:
         raw_codes: tuple[str, ...] = (),
         exclude_ids: frozenset[str] = frozenset(),
         memo: _ListingMemo | None = None,
+        allow_fetch: bool = False,
+        require_resolved: bool = False,
     ) -> list[str]:
         """Current archive paths for one code, read live from PikPak.
 
@@ -388,22 +398,35 @@ class PikPakPresenceIndex:
         "GANA-3078") — the detail cache behind the dir resolution is keyed
         by them, so each one gets its own resolution attempt. ``exclude_ids``
         skips entries the caller deleted but the listing may still
-        return — see :meth:`refresh_codes`."""
+        return — see :meth:`refresh_codes`.
+
+        Empty is a CLAIM, not a default: when nothing was found but any
+        candidate dir could not be conclusively checked (lookup/listing
+        error, truncation), this raises instead of returning [] — the
+        caller must treat the code as unknown, never as gone. With
+        ``require_resolved`` the same applies when the series dir cannot
+        be resolved at all (the search would silently narrow to the
+        legacy folder and miss the real landing spot); ``allow_fetch``
+        lets the dir resolution hit JavBus on a cache miss — only
+        terminal-decision callers (orphan reap) should pay that."""
         from .archiver import studio_series_dir_for_code  # avoid cycle
 
         found: list[str] = []
         dirs: list[str] = []
-        # Where the archiver would put it (detail cache only — a miss
-        # must not become a JavBus fetch on this per-code hot path).
+        resolved_nested = False
+        # Where the archiver would put it (detail cache only on the
+        # refresh hot path — a miss must not become a JavBus fetch).
         for lookup in (code, *raw_codes):
             try:
                 nested = await studio_series_dir_for_code(
-                    lookup, allow_fetch=False
+                    lookup, allow_fetch=allow_fetch
                 )
             except Exception:  # noqa: BLE001
                 nested = None
-            if nested and nested not in dirs:
-                dirs.append(nested)
+            if nested:
+                resolved_nested = True
+                if nested not in dirs:
+                    dirs.append(nested)
         # Where we last saw it: catches codes whose detail isn't cached
         # and codes that moved out (the re-list then returns nothing and
         # the caller drops the entry).
@@ -414,21 +437,57 @@ class PikPakPresenceIndex:
         legacy = (settings.pikpak_archive_folder or "AVBT/已完成").strip("/")
         if legacy and legacy not in dirs:
             dirs.append(legacy)
+        unchecked: list[str] = []
         for d in dirs:
             try:
-                folder_id = await pikpak_service.lookup_folder_id(d)
+                folder_id = await pikpak_service.lookup_folder_id(
+                    d, strict=True
+                )
+                if not folder_id:
+                    continue  # full path conclusively absent
+                children = await self._list(
+                    folder_id, memo=memo, strict=True
+                )
             except Exception:  # noqa: BLE001
+                unchecked.append(d)
                 continue
-            if not folder_id:
-                continue
-            for child in await self._list(folder_id, memo=memo):
+            for child in children:
                 if child.id in exclude_ids:
                     continue
                 if normalize_code(child.name) == code:
                     path = f"{d}/{child.name}"
                     if path not in found:
                         found.append(path)
+        if not found:
+            if unchecked:
+                raise PikPakError(
+                    f"live check for {code} inconclusive: "
+                    f"{len(unchecked)} dir(s) unreachable ({unchecked[0]})"
+                )
+            if require_resolved and not resolved_nested:
+                raise PikPakError(
+                    f"live check for {code} inconclusive: "
+                    "series dir unresolvable"
+                )
         return found
+
+    async def live_paths_checked(self, code: str) -> list[str]:
+        """Fail-closed live check for terminal decisions (orphan reap's
+        dead-letter branch): returns the code's live paths, and RAISES
+        whenever "no paths" could not be positively confirmed — any
+        unreachable candidate dir, or a series dir that cannot be
+        resolved even with a JavBus fetch. Callers must skip (not
+        abandon) on the raise."""
+        norm = normalize_code(code) or code
+        raws = (code,) if code != norm else ()
+        if self._codes is None:
+            await self._load_from_db()
+        return await self._live_paths_for(
+            norm,
+            raw_codes=raws,
+            allow_fetch=True,
+            require_resolved=True,
+        )
 
     # ---------- internals ----------
 
@@ -442,13 +501,24 @@ class PikPakPresenceIndex:
         return datetime.utcnow() - self._built_at < timedelta(seconds=ttl)
 
     async def _list(
-        self, parent_id: str, *, memo: _ListingMemo | None = None
+        self,
+        parent_id: str,
+        *,
+        memo: _ListingMemo | None = None,
+        strict: bool = False,
     ) -> list:
         if memo is not None:
             return await memo.get(parent_id)
-        return await self._list_uncached(parent_id)
+        return await self._list_uncached(parent_id, strict=strict)
 
-    async def _list_uncached(self, parent_id: str) -> list:
+    async def _list_uncached(
+        self, parent_id: str, *, strict: bool = False
+    ) -> list:
+        """``strict`` re-raises listing failures (and treats a truncated
+        listing as one) instead of collapsing them into ``[]`` — an empty
+        list from a swallowed error is indistinguishable from a genuinely
+        empty folder, which is exactly the ambiguity conclusive callers
+        (:meth:`_live_paths_for`) cannot afford."""
         async with self._sem:
             try:
                 files, partial = await pikpak_service.list_all_files(
@@ -460,11 +530,19 @@ class PikPakPresenceIndex:
                         "— codes beyond the cap will look missing",
                         len(files), parent_id,
                     )
+                    if strict:
+                        raise PikPakError(
+                            f"listing truncated under {parent_id}"
+                        )
                 return files
             except PikPakError as exc:
+                if strict:
+                    raise
                 logger.debug("list_all_files(%s) failed: %s", parent_id, exc)
                 return []
             except Exception as exc:  # noqa: BLE001
+                if strict:
+                    raise
                 logger.warning("list_all_files(%s) failed: %s", parent_id, exc)
                 return []
 

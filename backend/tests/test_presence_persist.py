@@ -111,7 +111,7 @@ async def test_live_paths_never_fetch_details(tmp_path, monkeypatch):
 
     listed: list[str] = []
 
-    async def fake_lookup(path):
+    async def fake_lookup(path, *, strict=False):
         listed.append(path)
         return ""
 
@@ -166,7 +166,7 @@ async def test_refresh_codes_drops_ids_finalize_just_removed(
     monkeypatch.setattr(arch, "studio_series_dir_for_code", _no_nested)
 
     class _Svc:
-        async def lookup_folder_id(self, path):
+        async def lookup_folder_id(self, path, *, strict=False):
             return "series-id" if path == series else None
 
         async def list_all_files(self, parent_id="", cap=0):
@@ -196,3 +196,35 @@ async def test_no_missing_path_forces_a_drive_walk():
         "listing refresh must not force a presence drive walk — "
         "the index is persisted (#163) and refreshed per-code"
     )
+
+
+async def test_refresh_flake_does_not_poison_entry(tmp_path, monkeypatch):
+    """Review 2026-08-03 (Probe A): a refresh whose every dir check
+    fails must leave the entry ALONE. lookup_folder_id used to collapse
+    the failure into "", _live_paths_for read that as "folder absent",
+    returned [], and refresh_codes then deleted the entry from memory
+    AND the DB — one transient PikPak flake permanently poisoned the
+    index every "does this code have files?" decision reads."""
+    engine, maker = await _db(tmp_path, monkeypatch, "p_flake.db")
+    idx = _idx({"KEEP-003"})
+    await idx.get()
+
+    import app.services.archiver as arch
+
+    async def _no_nested(_code, allow_fetch=False):
+        return None
+
+    monkeypatch.setattr(arch, "studio_series_dir_for_code", _no_nested)
+
+    class _FlakySvc:
+        async def lookup_folder_id(self, path, *, strict=False):
+            raise RuntimeError("pikpak throttled")
+
+    monkeypatch.setattr(pres, "pikpak_service", _FlakySvc())
+
+    assert await idx.refresh_codes(["KEEP-003"]) == 0
+    assert idx.paths_for("KEEP-003") == ["AVBT/製作商/S/X/KEEP-003"]
+    async with maker() as s:
+        rows = (await s.execute(select(PresenceEntry))).scalars().all()
+    assert {r.code for r in rows} == {"KEEP-003"}
+    await engine.dispose()

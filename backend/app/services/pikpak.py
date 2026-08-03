@@ -734,9 +734,15 @@ class PikPakService:
             self._canonical_cache.clear()
             return self._folder_cache[name]
 
-    async def lookup_folder_id(self, name: str | None) -> str:
+    async def lookup_folder_id(self, name: str | None, *, strict: bool = False) -> str:
         """Like ``folder_id`` but does NOT auto-create missing segments.
         Returns ``""`` when the path doesn't exist.
+
+        ``strict`` re-raises API errors instead of collapsing them into
+        ``""`` — without it "the folder is absent" and "PikPak was down
+        for one call" are indistinguishable, which is fine for opportunistic
+        readers but lethal for terminal decisions (orphan reap almost
+        dead-lettered rows whose folder lookup merely flaked).
 
         pikpakapi's ``path_to_id(create=False)`` resolves as far as it
         can and returns the PARTIAL segment list when something in the
@@ -754,6 +760,8 @@ class PikPakService:
         try:
             result = await self._call(lambda c: c.path_to_id(path, create=False))
         except Exception:  # noqa: BLE001
+            if strict:
+                raise
             return ""
         segments = [p for p in path.split("/") if p.strip()]
         folder_id = ""
@@ -772,7 +780,7 @@ class PikPakService:
         canonical = await self._canonical_path(name)
         if canonical == name:
             return ""
-        return await self.lookup_folder_id(canonical)
+        return await self.lookup_folder_id(canonical, strict=strict)
 
     async def offline_download(self, payload: OfflineSubmit) -> PikPakTask:
         # Default to the dedicated task folder (AVBT/TASK) instead of the

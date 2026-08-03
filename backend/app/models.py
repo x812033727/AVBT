@@ -231,6 +231,24 @@ class PresenceEntry(Base):
     )
 
 
+class MultipartReview(Base):
+    """Human verdict for a code the /multipart page flagged as holding
+    more than one file. The pipeline deliberately refuses to auto-judge
+    same-size / same-runtime siblings (rename_plan.low_bitrate_copies:
+    only a human can say whether the release really is two discs) — this
+    table is where that human answer lands, so a judged code stops
+    reappearing in the queue. No row = never reviewed."""
+
+    __tablename__ = "multipart_review"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="")
+    note: Mapped[str] = mapped_column(String(512), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class ListingCatalog(Base):
     """Persisted JavBus catalog walk for one tracked listing.
 

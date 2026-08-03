@@ -29,6 +29,7 @@ from ..services import archiver, episode_finder
 from ..services import container_swap as container_swap_svc
 from ..services import dup_copies as dup_copies_svc
 from ..services import folder_twins as folder_twins_svc
+from ..services import multipart as multipart_svc
 from ..services import series_junk as series_junk_svc
 from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
@@ -561,6 +562,30 @@ async def container_only(verify: bool = Query(True)):
     candidates from PikPak so a stale row can't cost a pointless
     download. ``verify=false`` skips that (index only, no PikPak call)."""
     return await container_swap_svc.container_only_codes(verify=verify)
+
+
+@router.get("/multi-part")
+async def multi_part_scan():
+    """Codes whose presence rows hold more than one file, grouped by
+    parent folder with the operator's stored verdict attached — the
+    /multipart page's judging worklist. Presence table only, no PikPak
+    calls; per-code file sizes come from ``/presence/codes/{code}/files``
+    when a row is opened."""
+    return await multipart_svc.scan()
+
+
+@router.post("/multi-part/{code}/review")
+async def multi_part_review(
+    code: str,
+    status: str = Body(..., embed=True),
+    note: str = Body("", embed=True),
+):
+    """Store the human verdict for one multi-file code
+    (``confirmed_parts`` / ``resolved_dup``; ``pending`` 撤銷)."""
+    try:
+        return await multipart_svc.set_review(code, status, note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/presence/status", response_model=PresenceStatus)

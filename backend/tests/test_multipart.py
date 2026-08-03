@@ -131,16 +131,29 @@ async def test_endpoints_delegate(monkeypatch):
 
 # --- strip_singletons -------------------------------------------------
 
+class _Sibling:
+    def __init__(self, name):
+        self.name = name
+
+
 class _RenameRecorder:
-    def __init__(self, fail_ids=()):
+    def __init__(self, fail_ids=(), siblings_by_parent=None):
         self.calls = []
         self.fail_ids = set(fail_ids)
+        self.siblings_by_parent = siblings_by_parent or {}
 
     async def rename_file(self, file_id, new_name):
         if file_id in self.fail_ids:
             raise RuntimeError("pikpak 500")
         self.calls.append((file_id, new_name))
         return {"id": file_id, "name": new_name}
+
+    async def lookup_folder_id(self, path):
+        return f"pid:{path}"
+
+    async def list_all_files(self, parent_id):
+        parent = parent_id.removeprefix("pid:")
+        return [_Sibling(n) for n in self.siblings_by_parent.get(parent, [])], False
 
 
 def _files_stub(table):
@@ -168,13 +181,24 @@ async def test_strip_renames_marked_singleton_only(monkeypatch):
         "TRE-76": {"ok": True, "partial": True, "files": [
             {"id": "f5", "name": "TRE-76_1.mkv", "path": "AVBT/x/TRE-76_1.mkv"},
         ]},
+        # Lettered disc / hardsub tag — conforming name, must survive.
+        "KAVR-457": {"ok": True, "files": [
+            {"id": "f6", "name": "KAVR-457-A.mp4", "path": "AVBT/x/KAVR-457-A.mp4"},
+        ]},
+        # Bare name already taken by a sibling — collision, skip.
+        "GGG-333": {"ok": True, "files": [
+            {"id": "f7", "name": "GGG-333_2.mp4", "path": "AVBT/y/GGG-333_2.mp4"},
+        ]},
     }
-    rec = _RenameRecorder()
+    rec = _RenameRecorder(siblings_by_parent={
+        "AVBT/x": ["DSVR-1921_1.mp4", "unrelated.mp4"],
+        "AVBT/y": ["GGG-333_2.mp4", "ggg-333.MP4"],
+    })
     monkeypatch.setattr(multipart.video_count_svc, "files_for_code", _files_stub(table))
     monkeypatch.setattr(multipart, "pikpak_service", rec)
 
     out = await multipart.strip_singletons(
-        ["DSVR-1921", "ABF-010", "OFJE-594", "TRE-76", ""]
+        ["DSVR-1921", "ABF-010", "OFJE-594", "TRE-76", "KAVR-457", "GGG-333", ""]
     )
     assert out["renamed"] == ["DSVR-1921"]
     assert rec.calls == [("f1", "DSVR-1921.mp4")]
@@ -184,7 +208,34 @@ async def test_strip_renames_marked_singleton_only(monkeypatch):
         "ABF-010": "skip",
         "OFJE-594": "skip",
         "TRE-76": "skip",
+        "KAVR-457": "skip",
+        "GGG-333": "skip",
     }
+    details = {r["code"]: r["detail"] for r in out["results"] if r["action"] == "skip"}
+    assert details["KAVR-457"] == "no _N marker"
+    assert details["GGG-333"] == "target exists"
+
+
+async def test_strip_skips_when_target_check_unavailable(monkeypatch):
+    table = {
+        "HHH-444": {"ok": True, "files": [
+            {"id": "f8", "name": "HHH-444_1.mp4", "path": "AVBT/z/HHH-444_1.mp4"},
+        ]},
+    }
+
+    class _BlindService(_RenameRecorder):
+        async def lookup_folder_id(self, path):
+            raise RuntimeError("pikpak down")
+
+    rec = _BlindService()
+    monkeypatch.setattr(multipart.video_count_svc, "files_for_code", _files_stub(table))
+    monkeypatch.setattr(multipart, "pikpak_service", rec)
+
+    out = await multipart.strip_singletons(["HHH-444"])
+    assert out["renamed"] == []
+    assert rec.calls == []
+    assert out["results"][0]["action"] == "skip"
+    assert "target check failed" in out["results"][0]["detail"]
 
 
 async def test_strip_rename_failure_reports_and_continues(monkeypatch):

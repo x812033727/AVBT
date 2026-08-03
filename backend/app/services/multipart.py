@@ -20,6 +20,8 @@ because it runs right after the operator trashed files.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import delete, select
 
 from ..database import SessionLocal
@@ -30,6 +32,12 @@ from .pikpak import pikpak_service
 from .rename_plan import has_part_marker
 
 REVIEW_STATUSES = ("confirmed_parts", "resolved_dup")
+
+# Strip only the sweep's own numeric part suffix, mirroring
+# episode_finder._CANONICAL_PART_RE: lettered forms (``KAVR-457-A``,
+# ``-C`` hardsub tags) are conforming names per hygiene and must
+# survive a strip untouched.
+_NUMERIC_PART_RE = re.compile(r"_\d{1,2}$")
 
 
 def _verdict_hint(groups: list[dict]) -> str:
@@ -184,10 +192,28 @@ async def strip_singletons(codes: list[str]) -> dict:
             results.append({"code": canon, "action": "skip", "detail": f"{len(files)} files"})
             continue
         name = files[0].get("name") or ""
-        if not has_part_marker(name, canon):
-            results.append({"code": canon, "action": "skip", "detail": "no marker"})
+        ext = ext_of(name)
+        stem = name[: -len(ext)] if ext else name
+        if not _NUMERIC_PART_RE.search(stem):
+            results.append({"code": canon, "action": "skip", "detail": "no _N marker"})
             continue
-        new_name = f"{canon}{ext_of(name)}"
+        new_name = f"{canon}{ext}"
+        # The twin's target_exists guard: never rename onto a sibling
+        # that already owns the bare name. Any doubt (lookup or listing
+        # failure) is a skip — a missed strip is cosmetic, a collision
+        # is not.
+        parent = (files[0].get("path") or "").rsplit("/", 1)[0]
+        try:
+            parent_id = await pikpak_service.lookup_folder_id(parent)
+            if not parent_id:
+                raise RuntimeError(f"parent not resolvable: {parent}")
+            siblings, _partial = await pikpak_service.list_all_files(parent_id)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"code": canon, "action": "skip", "detail": f"target check failed: {exc}"})
+            continue
+        if any((s.name or "").upper() == new_name.upper() for s in siblings):
+            results.append({"code": canon, "action": "skip", "detail": "target exists"})
+            continue
         try:
             await pikpak_service.rename_file(files[0]["id"], new_name)
         except Exception as exc:  # noqa: BLE001

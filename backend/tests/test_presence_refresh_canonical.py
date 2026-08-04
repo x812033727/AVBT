@@ -46,7 +46,14 @@ def _wire_drifted_fs(monkeypatch, *, canonical_calls=None, listed=None):
         return ON_DISK if path.replace(" ", "") == DRIFTED else path
 
     async def fake_lookup(path, *, strict=False):
-        return "series" if path.strip("/") == ON_DISK else ""
+        # Model the REAL primitive: it follows spacing drift to the twin
+        # (pikpak.py lookup_folder_id recurses via _canonical_path), so
+        # BOTH spellings resolve. This is the mechanism the phantom bug
+        # depends on — an exact-match-only stub would make the phantom
+        # impossible and pin nothing.
+        if path.strip("/").replace(" ", "") == ON_DISK.replace(" ", ""):
+            return "series"
+        return ""
 
     async def fake_list_all(parent_id, *, cap):
         assert parent_id == "series"

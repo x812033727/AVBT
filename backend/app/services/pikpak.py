@@ -199,6 +199,7 @@ class PikPakService:
         self.throttle_backoff_total: int = 0
         self.throttle_exhausted_total: int = 0
         self._canonical_cache: dict[str, tuple[str, float]] = {}
+        self._canonical_inflight: dict[str, asyncio.Task[str]] = {}
         self._create_lock = asyncio.Lock()
         self._username: str = ""
         # Login-failure cooldown state (see module constants above).
@@ -666,9 +667,28 @@ class PikPakService:
         hit = self._canonical_cache.get(name)
         if hit and time.monotonic() - hit[1] < _CANONICAL_TTL:
             return hit[0]
-        canonical = await self._canonical_path_uncached(name)
-        self._canonical_cache[name] = (canonical, time.monotonic())
-        return canonical
+        # Coalesce concurrent misses on the same key: a bulk presence
+        # refresh fires up to _REFRESH_CONCURRENCY codes at once and the
+        # shared candidate dirs (legacy folder, twin series dirs) would
+        # otherwise each pay a duplicate root walk before the first one
+        # lands in the cache.
+        inflight = self._canonical_inflight.get(name)
+        if inflight is None:
+
+            async def _walk_and_cache() -> str:
+                canonical = await self._canonical_path_uncached(name)
+                self._canonical_cache[name] = (canonical, time.monotonic())
+                return canonical
+
+            inflight = asyncio.ensure_future(_walk_and_cache())
+            self._canonical_inflight[name] = inflight
+            inflight.add_done_callback(
+                lambda _t: self._canonical_inflight.pop(name, None)
+            )
+        # shield: one cancelled waiter must not cancel the shared walk
+        # out from under the others (each waiter still sees its own
+        # CancelledError).
+        return await asyncio.shield(inflight)
 
     async def _canonical_path_uncached(self, name: str) -> str:
         segments = [p for p in name.split("/") if p.strip()]
@@ -696,9 +716,10 @@ class PikPakService:
 
         Returns the path with each segment rewritten to the existing
         sibling folder it drifted from (see ``_canonical_path``), or the
-        input unchanged when nothing on disk matches. Best-effort: a
-        flaky listing degrades to "no twin" (input returned as-is), so
-        callers needing certainty must still resolve strictly."""
+        input unchanged when nothing on disk matches. May RAISE on
+        listing failures (the underlying walk re-raises API errors) —
+        callers must decide whether a raise means "treat spelling as
+        unknown" or abort."""
         if not name:
             return ""
         return await self._canonical_path(name)

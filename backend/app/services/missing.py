@@ -534,6 +534,12 @@ async def missing_for_listing(
     refresh: bool = False,
     dedup: bool = False,
 ) -> MissingCodesResult:
+    # A blank slug is never a real listing, but JavBus serves a generic
+    # listing page for the empty-slug URL, so letting it through walks
+    # that phantom catalog and probes every held code against it (up to
+    # 50 detail fetches). Refuse it here so every caller is covered.
+    if not slug.strip("/ "):
+        raise ValueError(f"empty slug for kind={kind!r}")
     # Pull display name (and, unless the caller overrides it, the
     # uncensored flag) from the DB row. Tracker-side callers used to
     # hardcode uncensored=False, walking the censored listing URL for

@@ -454,3 +454,53 @@ def test_plan_collapsed_group_smaller_survivor_left_alone():
     plan, members = _build_video_rename_plan(kids, 500 * 1024 ** 2, _is_video)
     assert plan == {}
     assert members == set()
+
+
+def test_plan_refill_twin_does_not_steal_missing_part_slot():
+    # Missing-part refill (live: MDVR-415 2026-08-04). Disk holds _1 and
+    # _3; the refill torrent lands PART1/PART2/PART3 where PART1/PART3
+    # are near-identical twins (4,161-byte metadata sliver) of the parts
+    # already there. Only PART2 may take a slot — and it must take _2,
+    # not skip ahead to _4 behind its twin.
+    children = [
+        _f("MDVR-415_1.mp4", 7_257_453_281),
+        _f("MDVR-415_3.mp4", 2_395_972_753),
+        _f("489155.com@MDVR-415.PART1_8K.mp4", 7_257_449_120),
+        _f("489155.com@MDVR-415.PART2_8K.mp4", 4_764_202_640),
+        _f("489155.com@MDVR-415.PART3_8K.mp4", 2_395_968_592),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["489155.com@MDVR-415.PART2_8K.mp4"] == "MDVR-415_2.mp4"
+    assert "489155.com@MDVR-415.PART1_8K.mp4" not in plan
+    assert "489155.com@MDVR-415.PART3_8K.mp4" not in plan
+
+
+def test_plan_refill_gap_fill_keeps_existing_slots():
+    # SIVR-468 shape: _2/_3 on disk, refill lands PART1/2/3. PART1 fills
+    # the empty _1; the PART2/PART3 twins claim nothing.
+    children = [
+        _f("SIVR-468_2.mp4", 8_672_752_977),
+        _f("SIVR-468_3.mp4", 7_736_696_849),
+        _f("sivr-468-1.mp4", 3_335_960_960),
+        _f("sivr-468-2.mp4", 8_672_748_816),
+        _f("sivr-468-3.mp4", 7_736_692_688),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["sivr-468-1.mp4"] == "SIVR-468_1.mp4"
+    assert "sivr-468-2.mp4" not in plan
+    assert "sivr-468-3.mp4" not in plan
+
+
+def test_plan_marker_collision_different_size_still_skips_ahead():
+    # A genuinely different rip (whole percents apart in size) colliding
+    # with an occupied slot keeps the old skip-ahead behaviour — it is
+    # not silently dropped from the plan.
+    children = [
+        _f("GDHH-167_1.mp4", 5 * GB),
+        _f("gdhh-167-1.mp4", 3 * GB),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["gdhh-167-1.mp4"] == "GDHH-167_2.mp4"

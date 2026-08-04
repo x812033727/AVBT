@@ -331,6 +331,18 @@ def _dup_sort_index(name: str) -> int:
 _PART_INDEX_RE = re.compile(r"^(.+)_(\d+)$")
 
 
+def _near_identical_size(a: int | None, b: int | None) -> bool:
+    """Two sizes close enough to call the files the same rip of the same
+    part. Different sources of one release differ by a metadata sliver
+    (live pair: 4,161 bytes on a 7.26GB part), while two genuinely
+    different rips of a part differ by whole percents. Unknown sizes
+    never match — this gate only ever *withholds* a rename, and it must
+    not do that on a guess."""
+    if not a or not b:
+        return False
+    return abs(int(a) - int(b)) <= max(16 * 1024 * 1024, int(max(a, b) * 0.01))
+
+
 def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
     """Split a same-canonical, all-substantial group into (parts,
     outliers). A stray whole-film low-res rip sitting next to real
@@ -598,13 +610,16 @@ def _build_video_rename_plan(
         for f in files:
             group_members.add(f.name)
         used_indices: set[int] = set()
+        slot_holders: dict[int, object] = {}
         unnamed: list = []
         for f in files:
             ext = ext_of(f.name)
             stem = f.name[: -len(ext)] if ext else f.name
             m = _PART_INDEX_RE.match(stem)
             if m and m.group(1).upper() == canon:
-                used_indices.add(int(m.group(2)))
+                idx = int(m.group(2))
+                used_indices.add(idx)
+                slot_holders[idx] = f
             else:
                 unnamed.append(f)
         if not unnamed:
@@ -626,7 +641,22 @@ def _build_video_rename_plan(
         for f in unnamed:
             marker = _part_marker_index(f.name, canon)
             # Marker-bearing files prefer their own index; bare ones
-            # grab the next free slot. Collisions skip ahead.
+            # grab the next free slot. Collisions skip ahead — except
+            # when the marker's own slot is held by an existing
+            # ``<canon>_N`` file of near-identical size: that is the
+            # same part landed twice from different sources (a missing-
+            # part refill whose torrent also carried the parts we
+            # already had — live case MDVR-415, where the refill's
+            # PART1 twin skipped into ``_2`` and pushed the actually
+            # missing PART2 to ``_4``). Such a twin must not claim any
+            # ``_N`` slot; leaving it unrenamed keeps it visible to
+            # hygiene/dedup instead of corrupting the part order.
+            if marker > 0:
+                holder = slot_holders.get(marker)
+                if holder is not None and _near_identical_size(
+                    getattr(holder, "size", None), f.size
+                ):
+                    continue
             n = marker if marker > 0 else 1
             while n in used_indices:
                 n += 1

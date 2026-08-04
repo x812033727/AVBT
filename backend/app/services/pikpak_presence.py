@@ -438,7 +438,25 @@ class PikPakPresenceIndex:
         if legacy and legacy not in dirs:
             dirs.append(legacy)
         unchecked: list[str] = []
+        checked: set[str] = set()
         for d in dirs:
+            # Record paths under the on-disk spelling, not the caller's.
+            # lookup_folder_id silently follows spacing drift to the twin
+            # folder, so a stale spelling in the JavBus cache or in our
+            # own known-parents list used to re-mint a phantom second row
+            # for the same physical file on every refresh (live 2026-08-04:
+            # SNIS-494 as 新人NO.1STYLE + 新人NO.1 STYLE) — and the phantom
+            # then seeded the next refresh's dirs, self-perpetuating.
+            # Best-effort by the primitive's own contract: a flaky walk
+            # falls back to the caller's spelling, which merely reproduces
+            # the pre-fix row for one cycle and heals on the next refresh.
+            try:
+                d = await pikpak_service.canonical_path(d) or d
+            except Exception:  # noqa: BLE001
+                pass
+            if d in checked:
+                continue
+            checked.add(d)
             try:
                 folder_id = await pikpak_service.lookup_folder_id(
                     d, strict=True

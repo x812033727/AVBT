@@ -691,6 +691,18 @@ class PikPakService:
             parent_id = match
         return "/".join(out)
 
+    async def canonical_path(self, name: str) -> str:
+        """Public read of the drift-canonical spelling for ``name``.
+
+        Returns the path with each segment rewritten to the existing
+        sibling folder it drifted from (see ``_canonical_path``), or the
+        input unchanged when nothing on disk matches. Best-effort: a
+        flaky listing degrades to "no twin" (input returned as-is), so
+        callers needing certainty must still resolve strictly."""
+        if not name:
+            return ""
+        return await self._canonical_path(name)
+
     async def folder_id(self, name: str | None) -> str:
         if not name:
             return ""

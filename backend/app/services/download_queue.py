@@ -321,6 +321,10 @@ class DownloadQueue:
 
         opts = job.options
         sent_hashes = await _load_sent_hashes() if opts.skip_sent else set()
+        if opts.skip_sent and _inflight_hashes:
+            # Snapshot-union, not in-place: sent_hashes may be the
+            # process-wide cache object itself.
+            sent_hashes = sent_hashes | _inflight_hashes
         best = pick_best_magnet(
             detail.magnets,
             hd_only=opts.hd_only,
@@ -338,29 +342,45 @@ class DownloadQueue:
                 return JobResult(code=job.code, status="skipped_already_sent")
             return JobResult(code=job.code, status="skipped_no_magnet")
 
+        best_hash = extract_btih(best.link) if opts.skip_sent else ""
+        if best_hash:
+            # No await between pick_best_magnet (which skipped every
+            # in-flight hash) and this add, so the claim is atomic
+            # under asyncio — no other worker can pick the same magnet
+            # in between.
+            _inflight_hashes.add(best_hash)
         try:
-            task = await pikpak_service.offline_download(
-                OfflineSubmit(magnet=best.link, code=job.code, folder=opts.folder)
-            )
-        except Exception as exc:  # noqa: BLE001
-            return JobResult(
-                code=job.code,
-                status="failed",
-                message=f"送 PikPak 失敗: {exc}",
-            )
+            try:
+                task = await pikpak_service.offline_download(
+                    OfflineSubmit(
+                        magnet=best.link, code=job.code, folder=opts.folder
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                return JobResult(
+                    code=job.code,
+                    status="failed",
+                    message=f"送 PikPak 失敗: {exc}",
+                )
 
-        await _log_offline_task(
-            code=job.code,
-            magnet=best.link,
-            task_id=task.id,
-            file_id=task.file_id or "",
-            name=task.name,
-            phase=task.phase,
-            message=task.message or "",
-            tracked_kind=job.tracked_kind,
-            tracked_slug=job.tracked_slug,
-            tracked_name=job.tracked_name,
-        )
+            await _log_offline_task(
+                code=job.code,
+                magnet=best.link,
+                task_id=task.id,
+                file_id=task.file_id or "",
+                name=task.name,
+                phase=task.phase,
+                message=task.message or "",
+                tracked_kind=job.tracked_kind,
+                tracked_slug=job.tracked_slug,
+                tracked_name=job.tracked_name,
+            )
+        finally:
+            # On success the sent-hash cache already contains the hash
+            # (_log_offline_task → _note_sent_hash); on failure the
+            # claim must lift so a later retry isn't locked out.
+            if best_hash:
+                _inflight_hashes.discard(best_hash)
 
         if job.on_sent is not None:
             try:
@@ -380,45 +400,55 @@ class DownloadQueue:
 
     async def _process_direct(self, job: Job) -> JobResult:
         h = extract_btih(job.direct_magnet)
+        claimed = False
         if not job.force and h:
             # Same btih cache the code-job path uses — saves a DB
             # round-trip per direct submit (the cache is authoritative:
-            # warmed at startup, appended on every logged send).
-            if h in await _load_sent_hashes():
+            # warmed at startup, appended on every logged send). A hash
+            # another job is mid-submit on counts as sent: the cache
+            # only gains it after that submit logs, and no await sits
+            # between these checks and the claim below.
+            if h in await _load_sent_hashes() or h in _inflight_hashes:
                 return JobResult(
                     code=job.code,
                     status="skipped_already_sent",
                     message="此磁力已經送過 PikPak（force=true 可強制再送）",
                 )
+            _inflight_hashes.add(h)
+            claimed = True
 
         try:
-            task = await pikpak_service.offline_download(
-                OfflineSubmit(
-                    magnet=job.direct_magnet,
-                    code=job.code,
-                    folder=job.folder,
-                    force=job.force,
+            try:
+                task = await pikpak_service.offline_download(
+                    OfflineSubmit(
+                        magnet=job.direct_magnet,
+                        code=job.code,
+                        folder=job.folder,
+                        force=job.force,
+                    )
                 )
-            )
-        except Exception as exc:  # noqa: BLE001
-            return JobResult(
-                code=job.code,
-                status="failed",
-                message=f"送 PikPak 失敗: {exc}",
-            )
+            except Exception as exc:  # noqa: BLE001
+                return JobResult(
+                    code=job.code,
+                    status="failed",
+                    message=f"送 PikPak 失敗: {exc}",
+                )
 
-        await _log_offline_task(
-            code=job.code,
-            magnet=job.direct_magnet,
-            task_id=task.id,
-            file_id=task.file_id or "",
-            name=task.name,
-            phase=task.phase,
-            message=task.message or "",
-            tracked_kind=job.tracked_kind,
-            tracked_slug=job.tracked_slug,
-            tracked_name=job.tracked_name,
-        )
+            await _log_offline_task(
+                code=job.code,
+                magnet=job.direct_magnet,
+                task_id=task.id,
+                file_id=task.file_id or "",
+                name=task.name,
+                phase=task.phase,
+                message=task.message or "",
+                tracked_kind=job.tracked_kind,
+                tracked_slug=job.tracked_slug,
+                tracked_name=job.tracked_name,
+            )
+        finally:
+            if claimed:
+                _inflight_hashes.discard(h)
 
         if job.on_sent is not None:
             try:
@@ -448,6 +478,16 @@ class DownloadQueue:
 # append-on-success hook is sufficient; nothing else needs invalidation.
 _sent_hashes_cache: set[str] | None = None
 _sent_hashes_lock = asyncio.Lock()
+
+# btihs currently mid-submit (between magnet pick and the DB log that
+# feeds ``_note_sent_hash``). The sent-hash cache only gains an entry
+# after a successful submit, so two jobs resolving to the same magnet
+# concurrently would both pass the skip_sent filter — and queue-level
+# coalescing can't catch them when their dedup keys differ (two
+# spellings of one work: NHDTC-3603 / NHDTC-03603 double-submitted the
+# same btih 0.5ms apart, 2026-08-04). Call sites keep membership tests
+# and inserts await-free, so claims are atomic under asyncio.
+_inflight_hashes: set[str] = set()
 
 
 async def _load_sent_hashes() -> set[str]:

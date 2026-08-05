@@ -333,6 +333,18 @@ async def _list_subtree(
     return out, folder_depth, partial_any, depth_truncated
 
 
+def _sight_is_stale(svc) -> bool:
+    """Whether ``svc`` is inside a PikPak-visibility blackout, so no
+    shell verdict may condemn a folder (see
+    ``PikPakService.sight_is_stale``).
+
+    Absent on the SimpleNamespace fakes the unit tests build, which
+    exercise listing shapes rather than outage behaviour; those are
+    never blind, so a missing attribute reads as "sighted"."""
+    probe = getattr(svc, "sight_is_stale", None)
+    return bool(probe()) if callable(probe) else False
+
+
 async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
     """True when a wrapper folder verifiably holds files but not one
     video or container — an ad shell.
@@ -350,8 +362,14 @@ async def wrapper_is_ad_shell(svc, folder_id: str) -> bool:
     - empty listing → PikPak's optimistic listings show freshly moved
       folders as empty while files are still in flight (#140);
     - any file still transferring → judge again once it lands.
+    - the service has not watched PikPak continuously for a grace window
+      (``sight_is_stale``) → an outage hides in-flight writes exactly
+      like the transferring case, and unlike it, leaves no trace in the
+      listing to notice.
     A file id (non-folder) yields an empty listing and lands on the
     empty case, so callers need not pre-check the kind."""
+    if _sight_is_stale(svc):
+        return False
     entries, _folders, partial, depth_truncated = await _list_subtree(
         svc, folder_id
     )
@@ -646,9 +664,14 @@ async def finalize_code_folder_stream(
             # is_ad_shell lacked this gate — an aged ad-shell verdict on
             # an in-flight wrapper trashed the video with it (2026-07-18
             # integration audit). Query once, share both verdicts.
+            # The move-settle stamp is a wall-clock age, so an outage
+            # expires it for the entire backlog at once while telling us
+            # nothing about what PikPak wrote meanwhile. Require live
+            # sight on top of it (see PikPakService.sight_is_stale).
             shell_settled = (
                 allow_shell_trash
                 and not depth_truncated
+                and not _sight_is_stale(svc)
                 and svc.move_settled(folder_id)
             )
             trashed = 0

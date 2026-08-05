@@ -87,6 +87,19 @@ def test_continuous_watching_clears_the_gate(monkeypatch):
     assert svc.sight_is_stale() is False
 
 
+def test_repeated_sightings_do_not_re_arm_the_grace(monkeypatch):
+    """The gate must actually open again, driven only through the public
+    stamp. A ``_note_sight`` that re-armed ``_sight_regained_at`` on
+    every call would wedge shell cleanup shut forever while every other
+    test here stayed green — they all back-date the fields by hand."""
+    svc = _svc(monkeypatch)
+    svc._note_sight()
+    svc._sight_regained_at -= SIGHT_STALE_SECONDS + 1
+    # A second call moments later: still watching, nothing to re-arm.
+    svc._note_sight()
+    assert svc.sight_is_stale() is False
+
+
 def test_outage_re_arms_the_grace(monkeypatch):
     svc = _svc(monkeypatch)
     now = time.time()

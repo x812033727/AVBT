@@ -1608,13 +1608,40 @@ async def _reap_orphan_rows() -> int:
     return done
 
 
+async def _code_folders_hold_work(code: str) -> bool:
+    """True when some per-code folder for ``code`` still holds something
+    finalize has to organize.
+
+    An EMPTY per-code folder holds nothing — yet its bare existence used
+    to veto the flattened stamp, and when TWO of them exist run_finalize
+    refuses to act at all ("N 個候選資料夾,無法確定要整理哪一個"). Both
+    doors shut and the row re-runs every 60s forever (live 2026-08-06:
+    SVDVD-691 ×2 and CAWD-749 spinning since 08-05, with the canonical
+    CODE.mp4 long since loose in the 系列 folder). Ignoring empty shells
+    lets the flattened stamp close those rows.
+
+    This only decides whether the row gets STAMPED — the empty shells
+    themselves are left untouched for the normal shell-reaping path.
+
+    Everything we cannot read as definitely-empty counts as holding
+    work: a ``partial`` listing, and a listing taken while the
+    move-settle gate is still closed ("lists empty" is not proof while
+    an async move is in flight — #140)."""
+    from .finalize import presence_code_folders  # avoid cycle
+
+    for fid, _leaf, _path in await presence_code_folders(pikpak_service, code):
+        kids, partial = await pikpak_service.list_all_files(fid)
+        if kids or partial or not pikpak_service.move_settled(fid):
+            return True
+    return False
+
+
 async def _already_flattened(code: str, *, strict: bool = False) -> bool:
     """True when ``code``'s video exists on PikPak even though it has no
     per-code archive folder — the sweep's flatten put ``CODE.ext``
     straight into the 製作商/<studio>/<系列> folder. Nothing per-code is
     left for finalize to do, so the row can be marked finalized instead
     of spinning in the retry window."""
-    from .finalize import presence_code_folders  # avoid cycle
     from .video_count import files_for_code  # avoid cycle
 
     try:
@@ -1626,8 +1653,9 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
             return False
         # The sweep keeps a wrapper's BT name ([Thz.la]dvdms-129), so the
         # canonical path can miss while a per-code folder still exists —
-        # that folder needs finalize, not a flattened stamp.
-        if await presence_code_folders(pikpak_service, code):
+        # that folder needs finalize, not a flattened stamp. An EMPTY
+        # per-code folder is the exception: it holds nothing to organize.
+        if await _code_folders_hold_work(code):
             return False
         result = await files_for_code(code)
     except Exception as exc:  # noqa: BLE001

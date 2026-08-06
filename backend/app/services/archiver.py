@@ -871,6 +871,33 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("dup copies sweep failed: %s", exc)
 
+    # Collect the shells a previous flatten emptied but had to leave
+    # behind with the settle gate shut. Deliberately OUTSIDE the
+    # ``target_parent_ids`` block above: that block only fires for
+    # folders this sweep moved something into, and a shell's own folder
+    # typically never receives anything again — which is exactly why
+    # these shells accumulated (live 2026-08-06: 67 wild wrappers, none
+    # collected in 24h). ``_trash_if_empty`` re-lists and re-checks the
+    # settle gate itself, so a wrapper that still holds leftover junk,
+    # or whose listing fails, is left alone.
+    try:
+        due_shells = pikpak_service.take_due_shells()
+    except Exception as exc:  # noqa: BLE001
+        due_shells = []
+        logger.warning("deferred shell drain failed: %s", exc)
+    if due_shells:
+        collected = 0
+        for shell_id in due_shells:
+            try:
+                if await pikpak_service._trash_if_empty(shell_id):
+                    collected += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("shell collect %s failed: %s", shell_id, exc)
+        logger.info(
+            "deferred shells: collected %d of %d due",
+            collected, len(due_shells),
+        )
+
     # Stop the DB-driven pass from re-moving what we just moved. Without
     # this, every loop iteration retries the move (PikPak rejects it
     # because the file's no longer a child of AVBT root) and the log

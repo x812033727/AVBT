@@ -125,6 +125,95 @@ async def test_sweep_drains_deferred_shells_with_nothing_moved(monkeypatch):
     assert svc.trashed == [["shell"]]
 
 
+class FlattenSvc(Svc):
+    """Svc plus the calls the flatten path itself makes."""
+
+    async def list_files(self, parent_id, size=200):
+        return list(self._graph.get(parent_id, []))
+
+    async def move_files(self, ids, target_id):
+        for nid in ids:
+            for pid, kids in self._graph.items():
+                self._graph[pid] = [k for k in kids if k.id != nid]
+        return {}
+
+    async def rename_file(self, file_id, name):
+        return {}
+
+
+async def test_scheduled_flatten_defers_the_shell_it_empties(monkeypatch):
+    """The live gap (2026-08-06). ``cleanup_folder_stream`` is the BUTTON
+    path; the background sweep flattens through
+    ``_resolve_folder_winner``, which leaves its own emptied wrapper
+    behind on every single flatten — ``record_move_source`` is stamped
+    for each keeper and ``move_settled`` tested in the same breath, so
+    that test can never be True here. Without this hand-off the shell is
+    never seen again: sweep only re-runs phase-2 on folders it moved
+    something INTO, and the shell's parent gets nothing more.
+    """
+    import app.services.offline_tasks as ot
+    import app.services.reorganize as reorg
+
+    video = SimpleNamespace(
+        name="ABC-123.mp4", id="v1", kind="drive#file",
+        size=2000 * MB, phase="PHASE_TYPE_COMPLETE",
+    )
+    svc = FlattenSvc({"wrap": [video], "series": []})
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+
+    async def _not_settling(_fid):
+        return False
+
+    monkeypatch.setattr(ot, "is_settling", _not_settling)
+    monkeypatch.setattr(ot, "recently_created", lambda _items: False)
+
+    folder = SimpleNamespace(
+        id="wrap", name="[btsow]ABC-123", kind="drive#folder", size=None
+    )
+    result = await reorg._resolve_folder_winner(
+        folder, "ABC-123", "series", dry_run=False
+    )
+
+    assert result["action"] == "flatten"
+    # The wrapper is (correctly) NOT trashed — the gate is shut because
+    # we just moved out of it. #129/#140 stay intact.
+    assert svc.trashed == []
+    assert not svc.move_settled("wrap")
+    # …but it is now owned by somebody: the sweep will collect it once
+    # the gate opens. This assertion is the whole fix.
+    assert list(svc._deferred_shells) == ["wrap"]
+
+
+async def test_dry_run_flatten_defers_nothing(monkeypatch):
+    """A preview must not enqueue real work — the wrapper was never
+    emptied, so there is no shell to collect."""
+    import app.services.offline_tasks as ot
+    import app.services.reorganize as reorg
+
+    video = SimpleNamespace(
+        name="ABC-123.mp4", id="v1", kind="drive#file",
+        size=2000 * MB, phase="PHASE_TYPE_COMPLETE",
+    )
+    svc = FlattenSvc({"wrap": [video], "series": []})
+    monkeypatch.setattr(reorg, "pikpak_service", svc)
+
+    async def _not_settling(_fid):
+        return False
+
+    monkeypatch.setattr(ot, "is_settling", _not_settling)
+    monkeypatch.setattr(ot, "recently_created", lambda _items: False)
+
+    folder = SimpleNamespace(
+        id="wrap", name="[btsow]ABC-123", kind="drive#folder", size=None
+    )
+    result = await reorg._resolve_folder_winner(
+        folder, "ABC-123", "series", dry_run=True
+    )
+
+    assert result["action"] == "flatten"
+    assert svc._deferred_shells == {}
+
+
 def test_defer_shell_ignores_empty_id():
     svc = Svc()
     svc.defer_shell("")

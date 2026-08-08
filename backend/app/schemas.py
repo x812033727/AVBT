@@ -214,6 +214,7 @@ class SendAllResult(BaseModel):
     sent: int = 0
     skipped_no_magnet: int = 0
     skipped_already_sent: int = 0
+    skipped_traffic_gate: int = 0
     failed: int = 0
     errors: list[str] = Field(default_factory=list)
 

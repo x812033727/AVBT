@@ -410,9 +410,15 @@ def normalize_code(s: str) -> str:
 # anchored letter rule skips C entirely and subtitle tokens are stripped
 # before matching.
 
+# ``CD``/``DISC`` take the same separator class as ``PART``: releases
+# write ``DISC-2`` / ``CD-2`` / ``DISC.1`` as often as ``DISC2``, and a
+# space-only rule read those as single-file (live: the ``SDCA-014
+# DISC-2`` magnet family). VOL keeps its narrow rule on purpose — the
+# comment below says why, and widening a knowingly-weak pattern would
+# pull compilations in.
 _PART_GENERIC_RES = (
-    re.compile(r"\b(CD ?\d{1,2})\b"),
-    re.compile(r"\b(DIS[CK] ?\d{1,2})\b"),
+    re.compile(r"\b(CD[ ._-]?\d{1,2})\b"),
+    re.compile(r"\b(DIS[CK][ ._-]?\d{1,2})\b"),
     re.compile(r"\b(P(?:AR)?T[ ._-]?\d{1,2})\b"),
     re.compile(r"\b(VOL(?:UME)?\.? ?\d{1,3})\b"),  # weak: compilations also use Vol.N
 )

@@ -1622,6 +1622,48 @@ async def _reap_orphan_rows() -> int:
                                 row.code, row.task_id or "?",
                                 int(_ABANDON_GRACE.total_seconds() // 3600),
                             )
+                        if row.code not in report and row.archived:
+                            # Aged past _FINALIZE_RETRY_WINDOW (the
+                            # selection above only admits archived rows
+                            # once archived_at < retry_cutoff), so the
+                            # retry pass can never select this row again
+                            # and this reaper is "the only backstop left".
+                            # But the backstop only had two exits — close
+                            # (already flattened) and abandon (nothing on
+                            # PikPak) — and a row whose wrapper is still
+                            # sitting UNFLATTENED in the 系列 folder is
+                            # neither. It logged kept(awaiting finalize)
+                            # and waited for a pass that structurally
+                            # never comes (live 2026-08-05: OAE-044,
+                            # NHDTA-152 x2, KAVR-415 x2, NHDTA-326,
+                            # PRVR-081 — archived 08-03, unfinalized 44h
+                            # later, BT-named wrappers still in-folder,
+                            # inflating both the >2h SLA metric and the
+                            # hygiene wild-wrapper count every round).
+                            # Run the finalize here instead. Same call and
+                            # same age gate _finalize_retry_pass used
+                            # inside the window; bounded by
+                            # _REAP_CHECK_LIMIT per pass and the reap
+                            # cooldown, and presence for this code was
+                            # just refreshed above.
+                            from .finalize import run_finalize  # avoid cycle
+
+                            if await run_finalize(
+                                pikpak_service, row.code,
+                                allow_shell_trash=(
+                                    (row.archived_at or row.created_at)
+                                    < datetime.utcnow() - _ABANDON_GRACE
+                                ),
+                            ):
+                                report[row.code] = "finalized"
+                                row.finalized = True
+                                row.finalized_at = datetime.utcnow()
+                                done += 1
+                                logger.info(
+                                    "orphan reap finalized %s (aged past "
+                                    "the finalize retry window)", row.code,
+                                )
+                                continue
                         if row.code not in report:
                             # The formerly-silent branch: not flattened
                             # and not abandonable. Say WHY, so a row

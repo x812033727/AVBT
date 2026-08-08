@@ -8,6 +8,7 @@ line per pass carrying stage timings and the PikPak round-trip count —
 so the next regression is diagnosable from the log alone.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -200,4 +201,43 @@ async def test_summary_reports_presence_skip_as_its_own_outcome(
     summary = [r for r in caplog.records if "finalize pass:" in r.getMessage()]
     assert len(summary) == 1
     assert "aborted=presence" in summary[0].getMessage()
+    await engine.dispose()
+
+
+async def test_budget_exhausted_pass_still_reports_row_time(
+    tmp_path, monkeypatch, caplog
+):
+    """The pass that spends its whole budget and breaks mid-loop is the
+    one most worth measuring — ``rows=`` must not read 0.0 there."""
+    now = datetime.utcnow()
+    engine, _maker = await _retry_db(tmp_path, monkeypatch, [
+        OfflineTaskLog(code=f"MIDV-{i:03d}", magnet="m", archived=True,
+                       archived_at=now, finalized=False,
+                       created_at=now - timedelta(hours=1))
+        for i in range(3)
+    ])
+
+    async def slow_finalize(svc, code, *, folder_id=None, **_kw):
+        await asyncio.sleep(0.2)
+        return {"errors": 0}
+
+    async def no_active():
+        return set()
+
+    monkeypatch.setattr(fin, "run_finalize", slow_finalize)
+    monkeypatch.setattr(arch, "_active_task_ids", no_active)
+    # Budget smaller than one row's work → break fires on the 2nd row.
+    # Sleep is well above the %.1f log precision so a lost assignment
+    # (rows never set → 0.0) is distinguishable from a fast pass.
+    monkeypatch.setattr(arch, "_FINALIZE_PASS_BUDGET", 0.01)
+
+    with caplog.at_level(logging.INFO, logger="app.services.archiver"):
+        await arch._finalize_retry_pass()
+
+    summary = [r for r in caplog.records if "finalize pass:" in r.getMessage()]
+    assert len(summary) == 1
+    msg = summary[0].getMessage()
+    assert "candidates=3" in msg
+    assert "rows=0.0s" not in msg, f"row time lost on the break path: {msg}"
+    assert any("budget spent" in r.getMessage() for r in caplog.records)
     await engine.dispose()

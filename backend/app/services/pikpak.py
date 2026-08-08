@@ -1053,35 +1053,66 @@ class PikPakService:
             "kind": resp.get("kind", "") or "",
         }
 
-    async def search_files(self, keyword: str, parent_id: str = "") -> list[PikPakFile]:
-        # PikPakAPI exposes file_list_search or similar; fall back to a
-        # client-side filter if not available in the installed version.
+    async def search_files(
+        self,
+        keyword: str,
+        parent_id: str = "",
+        *,
+        recursive: bool = False,
+        folder_cap: int = 400,
+    ) -> list[PikPakFile]:
+        """Name substring search. PikPakAPI may expose a server-side
+        `file_search`; the installed version does not, so in practice this
+        always runs the client-side fallback.
+
+        Non-recursive (the default, and what the frontend's in-folder
+        filter wants) scans only ``parent_id``'s direct children — but via
+        ``list_all_files``, so a folder with more than one page of children
+        no longer hides its tail.
+
+        ``recursive=True`` walks the subtree, which is what an existence
+        check ("is this code anywhere in the drive?") needs: the default
+        against the root can only ever see top-level folders, so it
+        answers "no" for every archived file, which lives several levels
+        down. The walk raises past ``folder_cap`` rather than returning a
+        short list, because a truncated result is indistinguishable from
+        "not there" and that is exactly how it gets misread as evidence.
+        """
         client = await self._ensure()
-        has_search = hasattr(client, "file_search")
-        if has_search:
+        if hasattr(client, "file_search"):
             resp = await self._call(
                 lambda c: c.file_search(keyword, parent_id=parent_id)
             )
             files_raw = resp.get("files", []) if isinstance(resp, dict) else []
-        else:
-            resp = await self._call(
-                lambda c: c.file_list(parent_id=parent_id, size=500)
-            )
-            all_files = resp.get("files", []) if isinstance(resp, dict) else []
-            kw = keyword.lower()
-            files_raw = [f for f in all_files if kw in (f.get("name") or "").lower()]
-        return [
-            PikPakFile(
-                id=f.get("id", ""),
-                name=f.get("name", ""),
-                kind=f.get("kind", ""),
-                size=int(f.get("size")) if f.get("size") else None,
-                parent_id=f.get("parent_id"),
-                created_time=f.get("created_time"),
-                thumbnail_link=f.get("thumbnail_link"),
-            )
-            for f in files_raw
-        ]
+            return [self._file_from_raw(f) for f in files_raw]
+
+        kw = keyword.lower()
+        if not recursive:
+            children, _ = await self.list_all_files(parent_id)
+            return [c for c in children if kw in c.name.lower()]
+
+        matches: list[PikPakFile] = []
+        queue: list[str] = [parent_id]
+        visited = 0
+        while queue:
+            pid = queue.pop(0)
+            visited += 1
+            if visited > folder_cap:
+                raise PikPakError(
+                    f"搜尋範圍過大(已走訪 {folder_cap} 個資料夾仍未走完),"
+                    "請改帶較深的 parent_id 縮小範圍"
+                )
+            children, partial = await self.list_all_files(pid)
+            if partial:
+                raise PikPakError(
+                    "搜尋範圍過大(單一資料夾超過列舉上限),請改帶較深的 parent_id"
+                )
+            for child in children:
+                if kw in child.name.lower():
+                    matches.append(child)
+                if child.kind == "drive#folder":
+                    queue.append(child.id)
+        return matches
 
     async def create_share(
         self,

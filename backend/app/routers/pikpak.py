@@ -425,9 +425,20 @@ async def file_url(file_id: str):
 
 
 @router.get("/files/search", response_model=list[PikPakFile])
-async def search_files(q: str = Query(..., min_length=1), parent_id: str = ""):
+async def search_files(
+    q: str = Query(..., min_length=1),
+    parent_id: str = "",
+    recursive: bool = False,
+):
+    """Name substring search. The default scans only ``parent_id``'s direct
+    children — that is the frontend's in-folder filter. Pass
+    ``recursive=true`` for "does this code exist anywhere?": archived files
+    live several levels below the root, so a root-level non-recursive
+    search answers "no" for all of them."""
     try:
-        return await pikpak_service.search_files(q, parent_id=parent_id)
+        return await pikpak_service.search_files(
+            q, parent_id=parent_id, recursive=recursive
+        )
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
 

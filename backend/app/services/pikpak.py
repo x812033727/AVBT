@@ -198,6 +198,12 @@ class PikPakService:
         # and how often it ran out of retries (ramp watch signals).
         self.throttle_backoff_total: int = 0
         self.throttle_exhausted_total: int = 0
+        # Every round trip issued through ``_call``, including the ones
+        # that raise. Callers sample the delta across a unit of work to
+        # separate "this pass got slower" from "this pass does more
+        # calls" — the two need opposite fixes and the wall-clock number
+        # alone cannot tell them apart.
+        self.api_call_total: int = 0
         self._canonical_cache: dict[str, tuple[str, float]] = {}
         self._canonical_inflight: dict[str, asyncio.Task[str]] = {}
         self._create_lock = asyncio.Lock()
@@ -517,6 +523,10 @@ class PikPakService:
         timeout = float(settings.pikpak_api_timeout_seconds or 0)
 
         async def _run(c):
+            # Counted here, not at the top of _call, so throttle retries
+            # and the post-relogin re-run each register: they are real
+            # round trips and they are exactly what saturates PikPak.
+            self.api_call_total += 1
             if timeout > 0:
                 try:
                     return await asyncio.wait_for(op(c), timeout=timeout)

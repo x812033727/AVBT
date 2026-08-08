@@ -18,6 +18,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
@@ -1171,7 +1172,38 @@ async def _active_task_ids() -> set[str]:
 
 async def _finalize_retry_pass() -> int:
     """Re-run finalize on recently-archived rows that missed it. Returns
-    how many rows were finalized this pass."""
+    how many rows were finalized this pass.
+
+    Wrapper only: the work lives in ``_finalize_retry_pass_inner`` so a
+    summary line is emitted on EVERY exit path, including the two early
+    aborts. Passes that drain nothing used to leave no trace at all,
+    which made "the pass is slow" and "the pass never ran" look
+    identical in the log (archived→finalized median went 8.6 min →
+    27.8 min across the 2026-08-04 deploy with no line to say why)."""
+    stats: dict[str, object] = {
+        "selected": 0, "candidates": 0, "presence": 0.0,
+        "tasklist": 0.0, "rows": 0.0, "aborted": "",
+    }
+    started = time.monotonic()
+    calls_before = pikpak_service.api_call_total
+    done = 0
+    try:
+        done = await _finalize_retry_pass_inner(stats)
+    finally:
+        logger.info(
+            "finalize pass: selected=%s candidates=%s done=%s "
+            "elapsed=%.1fs tasklist=%.1fs presence=%.1fs rows=%.1fs "
+            "pikpak_calls=%d%s",
+            stats["selected"], stats["candidates"], done,
+            time.monotonic() - started, stats["tasklist"],
+            stats["presence"], stats["rows"],
+            pikpak_service.api_call_total - calls_before,
+            f" aborted={stats['aborted']}" if stats["aborted"] else "",
+        )
+    return done
+
+
+async def _finalize_retry_pass_inner(stats: dict) -> int:
     from .finalize import run_finalize  # avoid cycle
     from .offline_tasks import SETTLE_GRACE  # avoid cycle
 
@@ -1215,13 +1247,18 @@ async def _finalize_retry_pass() -> int:
                 .limit(_FINALIZE_RETRY_LIMIT)
             )
         ).scalars().all()
+        stats["selected"] = len(rows)
         if not rows:
             return 0
+        t0 = time.monotonic()
         try:
             active = await _active_task_ids()
         except PikPakError as exc:
+            stats["aborted"] = "tasklist"
             logger.warning("finalize retry skipped: %s", exc)
             return 0
+        finally:
+            stats["tasklist"] = time.monotonic() - t0
         # Cheap DB-only filters first. The presence refresh below is
         # ~1-2 live PikPak listings per code, so refreshing a row this
         # pass will not touch is pure load: dead rows (task gone, nothing
@@ -1240,6 +1277,7 @@ async def _finalize_retry_pass() -> int:
             if last is not None and now - last < _FINALIZE_RETRY_COOLDOWN:
                 continue  # just failed — let the cooldown expire first
             candidates.append(row)
+        stats["candidates"] = len(candidates)
         if not candidates:
             return 0
         # Both the presence-path folder fallback and the flattened check
@@ -1250,6 +1288,7 @@ async def _finalize_retry_pass() -> int:
         # pass will touch: one listing each, versus the full-drive walk
         # this used to force (10k codes, minutes, every stale pass).
         # Fail closed like the task-list guard.
+        t0 = time.monotonic()
         try:
             from .pikpak_presence import presence_index  # avoid cycle
 
@@ -1258,8 +1297,12 @@ async def _finalize_retry_pass() -> int:
                 timeout=_PRESENCE_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
+            stats["aborted"] = "presence"
             logger.warning("finalize retry skipped (presence): %s", exc)
             return 0
+        finally:
+            stats["presence"] = time.monotonic() - t0
+        rows_start = time.monotonic()
         pass_start = asyncio.get_event_loop().time()
         for row in candidates:
             if asyncio.get_event_loop().time() - pass_start > _FINALIZE_PASS_BUDGET:
@@ -1325,6 +1368,7 @@ async def _finalize_retry_pass() -> int:
             except Exception as exc:  # noqa: BLE001
                 _finalize_attempts[row.id] = datetime.utcnow()
                 logger.warning("finalize retry %s failed: %s", row.code, exc)
+        stats["rows"] = time.monotonic() - rows_start
         if done:
             await session.commit()
     return done

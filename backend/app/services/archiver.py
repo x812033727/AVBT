@@ -989,13 +989,36 @@ async def _cleanup_target_parents(parent_ids: set[str]) -> int:
                 continue
             error_count = 0
             first_reason = ""
+            # Name every file this pass actually touched. Without it a
+            # dedupe (which TRASHES the loser) leaves no trace beyond
+            # "cleaned N folder(s)" — live 2026-08-08 the sweep trashed a
+            # duplicate ORER-010 (2).mp4 and reconstructing which file
+            # vanished took two rounds, because presence still listed the
+            # old path and the live listing did not.
+            actions: list[str] = []
             async for ev in _phase2_cleanup_target(
                 pid, pid, children, dry_run=False, idx_start=0
             ):
-                if ev.get("action") == "error":
+                action = ev.get("action")
+                if action == "error":
                     error_count += 1
                     if not first_reason:
                         first_reason = ev.get("reason") or ""
+                elif action and action != "skip":
+                    # "skip" is the no-op majority; logging it would bury
+                    # the handful of lines that matter.
+                    actions.append(
+                        f"{action} {ev.get('source')!r}"
+                        f"->{ev.get('target')!r}"
+                    )
+            if actions:
+                shown = actions[:_CLEANUP_ACTION_LOG_MAX]
+                extra = len(actions) - len(shown)
+                logger.info(
+                    "phase-2 cleanup actions %s: %s%s",
+                    pid, "; ".join(shown),
+                    f" (+{extra} more)" if extra else "",
+                )
             if error_count:
                 _cleanup_error_total += error_count
                 logger.warning(
@@ -1196,6 +1219,11 @@ _ABANDON_GRACE = timedelta(hours=24)
 # can't grow it without limit.
 _reap_cleanup_paths: set[str] = set()
 _REAP_CLEANUP_PATHS_MAX = 200
+
+# How many per-file cleanup actions one folder may name in its log line.
+# A first-time series folder can rename dozens of files at once; the tail
+# is summarised as a count so the line stays readable.
+_CLEANUP_ACTION_LOG_MAX = 20
 
 
 async def _active_task_ids() -> set[str]:

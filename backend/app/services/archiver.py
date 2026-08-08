@@ -1067,9 +1067,61 @@ _FINALIZE_RETRY_WINDOW = timedelta(hours=24)
 _FINALIZE_RETRY_LIMIT = 2000
 # A row that just failed (error / timeout) is skipped for this long so
 # a block of failing rows costs one attempt each per cooldown, not one
-# per 60s pass.
+# per 60s pass. The first retry keeps the historical 10 minutes; each
+# further CONSECUTIVE failure doubles the wait up to the ceiling.
+#
+# Flat 10 min was not enough. Live 2026-08-08 (first pass instrumented
+# by #273): selected=190 candidates=33 done=1 pikpak_calls=461. The 32
+# losers were rows that can never finalize — 21 "找不到 X 的歸檔資料夾"
+# for codes whose download died at 0% and whose files never landed — and
+# each came back every 10 minutes forever, ~14 round trips apiece,
+# crowding out the rows that could actually finish inside a
+# budget-bounded pass. archived→finalized median: 6-8 min → 28 min.
+#
+# Backoff, never eviction: a row dropped from the pool never gets its
+# junk purged. The ceiling keeps a transiently-failing row coming back
+# within 6 h, which is also how an operator's manual fix gets picked up.
 _FINALIZE_RETRY_COOLDOWN = timedelta(minutes=10)
-_finalize_attempts: dict[int, datetime] = {}
+_FINALIZE_RETRY_COOLDOWN_MAX = timedelta(hours=6)
+# row id -> (last attempt, consecutive failures since the last success)
+_finalize_attempts: dict[int, tuple[datetime, int]] = {}
+
+
+def _finalize_backoff(failures: int) -> timedelta:
+    """How long a row waits after ``failures`` consecutive failures."""
+    if failures <= 0:
+        return timedelta(0)
+    delay = _FINALIZE_RETRY_COOLDOWN * (2 ** (failures - 1))
+    return min(delay, _FINALIZE_RETRY_COOLDOWN_MAX)
+
+
+def _finalize_in_cooldown(row_id: int, now: datetime) -> bool:
+    entry = _finalize_attempts.get(row_id)
+    if entry is None:
+        return False
+    last, failures = entry
+    return now - last < _finalize_backoff(failures)
+
+
+def _note_finalize_failure(row_id: int, now: datetime) -> None:
+    _, failures = _finalize_attempts.get(row_id, (now, 0))
+    _finalize_attempts[row_id] = (now, failures + 1)
+
+
+def _clear_finalize_attempts(row_id: int) -> None:
+    """Called on success: the next failure starts the curve over."""
+    _finalize_attempts.pop(row_id, None)
+
+
+def _prune_finalize_attempts(now: datetime) -> None:
+    """Drop entries the selection window can no longer return. Without
+    this the map grows for every row id ever attempted — tolerable when
+    entries expired in 10 min, a real leak now that a stuck row holds
+    one for 6 h."""
+    floor = now - _FINALIZE_RETRY_WINDOW
+    for rid in [k for k, (last, _f) in _finalize_attempts.items()
+                if last < floor]:
+        del _finalize_attempts[rid]
 # One pass must not monopolise the archiver loop: stop draining after
 # this many seconds and let the next pass continue (the mover runs in
 # the same loop, and fresh completions shouldn't wait behind a long
@@ -1181,7 +1233,7 @@ async def _finalize_retry_pass() -> int:
     identical in the log (archived→finalized median went 8.6 min →
     27.8 min across the 2026-08-04 deploy with no line to say why)."""
     stats: dict[str, object] = {
-        "selected": 0, "candidates": 0, "presence": 0.0,
+        "selected": 0, "candidates": 0, "cooling": 0, "presence": 0.0,
         "tasklist": 0.0, "rows": 0.0, "aborted": "",
     }
     started = time.monotonic()
@@ -1191,10 +1243,10 @@ async def _finalize_retry_pass() -> int:
         done = await _finalize_retry_pass_inner(stats)
     finally:
         logger.info(
-            "finalize pass: selected=%s candidates=%s done=%s "
+            "finalize pass: selected=%s candidates=%s cooling=%s done=%s "
             "elapsed=%.1fs tasklist=%.1fs presence=%.1fs rows=%.1fs "
             "pikpak_calls=%d%s",
-            stats["selected"], stats["candidates"], done,
+            stats["selected"], stats["candidates"], stats["cooling"], done,
             time.monotonic() - started, stats["tasklist"],
             stats["presence"], stats["rows"],
             pikpak_service.api_call_total - calls_before,
@@ -1269,15 +1321,18 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
         # loop (live 2026-07-15). The cooldown below exists precisely to
         # stop that re-listing; it only works if it gates the refresh too.
         now = datetime.utcnow()
+        _prune_finalize_attempts(now)
         candidates = []
+        cooling = 0
         for row in rows:
             if row.task_id and row.task_id in active:
                 continue  # still downloading — try again next pass
-            last = _finalize_attempts.get(row.id)
-            if last is not None and now - last < _FINALIZE_RETRY_COOLDOWN:
-                continue  # just failed — let the cooldown expire first
+            if _finalize_in_cooldown(row.id, now):
+                cooling += 1
+                continue  # failed recently — let its backoff expire first
             candidates.append(row)
         stats["candidates"] = len(candidates)
+        stats["cooling"] = cooling
         if not candidates:
             return 0
         # Both the presence-path folder fallback and the flattened check
@@ -1341,7 +1396,7 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1
-                        _finalize_attempts.pop(row.id, None)
+                        _clear_finalize_attempts(row.id)
                     elif await _already_flattened(row.code):
                         # Sweep-archived rows use the flattened layout —
                         # the video sits directly in the 系列 folder, so
@@ -1353,20 +1408,20 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
                         row.finalized = True
                         row.finalized_at = datetime.utcnow()
                         done += 1
-                        _finalize_attempts.pop(row.id, None)
+                        _clear_finalize_attempts(row.id)
                     else:
                         # Ran but not finalizable yet (settling / still
                         # materialising) — back off so the drain doesn't
                         # re-list the same folders every 60s.
-                        _finalize_attempts[row.id] = datetime.utcnow()
+                        _note_finalize_failure(row.id, datetime.utcnow())
             except TimeoutError:
-                _finalize_attempts[row.id] = datetime.utcnow()
+                _note_finalize_failure(row.id, datetime.utcnow())
                 logger.warning(
                     "finalize retry %s timed out after %ss",
                     row.code, _FINALIZE_ROW_TIMEOUT,
                 )
             except Exception as exc:  # noqa: BLE001
-                _finalize_attempts[row.id] = datetime.utcnow()
+                _note_finalize_failure(row.id, datetime.utcnow())
                 logger.warning("finalize retry %s failed: %s", row.code, exc)
         stats["rows"] = time.monotonic() - rows_start
         if done:

@@ -1456,8 +1456,9 @@ async def test_finalize_retry_refreshes_only_attempted_codes(tmp_path, monkeypat
 
     monkeypatch.setattr(fin, "run_finalize", fake_run_finalize)
     monkeypatch.setattr(arch, "_active_task_ids", active)
-    # MIDV-002 is row id 2 — park it in the cooldown.
-    arch._finalize_attempts[2] = now
+    # MIDV-002 is row id 2 — park it in the cooldown. Entries are
+    # (last attempt, consecutive failures) since the backoff change.
+    arch._finalize_attempts[2] = (now, 1)
 
     done = await arch._finalize_retry_pass()
     assert done == 1

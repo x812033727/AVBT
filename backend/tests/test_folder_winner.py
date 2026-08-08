@@ -28,6 +28,7 @@ class StubSvc:
         self.moved = []
         self.renamed = []
         self.trashed = []
+        self.deferred = []
 
     async def list_files(self, folder_id, size=200):
         if folder_id == "series":
@@ -55,6 +56,9 @@ class StubSvc:
 
     def move_settled(self, source_id):
         return self.settled
+
+    def defer_shell(self, folder_id):
+        self.deferred.append(folder_id)
 
 
 def _wrap():
@@ -249,6 +253,9 @@ async def test_unsettled_moves_keep_wrapper(monkeypatch):
     assert sorted(i for ids, _p in svc.moved for i in ids) == [
         "d1", "d2", "d3", "d4"]
     assert "wrap" not in svc.trashed           # …but the wrapper stays
+    # "Only a later, settled pass may take the shell" — that later pass
+    # has to be arranged, or the shell stays forever (live 2026-08-06).
+    assert svc.deferred == ["wrap"]
 
 
 async def test_evacuated_shell_trashed_once_settled(monkeypatch):

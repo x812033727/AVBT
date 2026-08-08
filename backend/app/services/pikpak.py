@@ -222,6 +222,9 @@ class PikPakService:
         self._boot_guard_until: float = (
             0.0 if loaded is not None else time.time() + MOVE_SETTLE_SECONDS
         )
+        # Wrappers this process emptied by flattening but could not trash
+        # yet because the settle gate was still shut (see defer_shell).
+        self._deferred_shells: dict[str, float] = {}
 
     # ---------- move settle gate ----------
 
@@ -1156,6 +1159,45 @@ class PikPakService:
                     top_videos.extend(nested_videos)
         return top_videos, total_count
 
+    def defer_shell(self, folder_id: str) -> None:
+        """Remember a wrapper WE just emptied by moving its videos out,
+        but could not trash because the settle gate was still shut.
+
+        The flatten path stamps ``record_move_source(child.id)`` for each
+        video it moves and then tests ``move_settled(child.id)`` in the
+        same breath, so that test is always False and the wrapper is
+        always left behind for "a later pass". No later pass ever takes
+        it: ``_became_empty`` only reports True for a folder emptied
+        DURING that pass (``level_removed > 0 and len(children) > 0``),
+        so a folder that is already empty on arrival is invisible to it.
+        The two lock together and the shell survives forever.
+
+        This set is the missing hand-off. Membership is the safety
+        argument: only a wrapper this process itself emptied is ever
+        recorded, so nothing here can be an in-flight download wrapper —
+        those list empty because PikPak has not written into them yet
+        (#129), were never moved out of, and are never deferred.
+        Relaxing the shared ``_became_empty`` predicate instead would
+        sweep those in too, which is why it is left alone.
+
+        In-memory only: a restart drops the set and the shells simply
+        leak as they do today — no regression, no stale id acted on.
+        """
+        if folder_id:
+            self._deferred_shells[folder_id] = time.time()
+
+    def take_due_shells(self) -> list[str]:
+        """Pop the deferred shells whose settle gate has now opened.
+
+        Popped, not retried: each shell gets exactly one collection
+        attempt, so a wrapper that is not actually empty (leftover junk
+        the flatten did not take) cannot re-queue itself forever. Today
+        it gets zero attempts, so one is strictly better."""
+        due = [fid for fid in self._deferred_shells if self.move_settled(fid)]
+        for fid in due:
+            self._deferred_shells.pop(fid, None)
+        return due
+
     async def _trash_if_empty(
         self, folder_id: str, *, protect_ids: frozenset[str] = frozenset()
     ) -> bool:
@@ -1589,6 +1631,10 @@ class PikPakService:
                         # wrapper stays until the settle gate opens; a
                         # later pass removes the emptied shell.
                         if not self.move_settled(child.id):
+                            # Hand the emptied shell to the deferred set —
+                            # the "later pass" this comment promised does
+                            # not otherwise exist (see defer_shell).
+                            self.defer_shell(child.id)
                             summary["skipped"] += 1
                             level_remaining += 1
                             yield {**base_event, "action": "skip",

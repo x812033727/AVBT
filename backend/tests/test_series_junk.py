@@ -26,10 +26,22 @@ def _f(name, size, kind="drive#file", fid="x", phase="PHASE_TYPE_COMPLETE"):
         ("cover.jpg", 200, True),
         ("SNIS-494.iso", 23 * GB, False),              # rescued disc image
         ("AP-619.zip", 2 * GB, False),                 # archived work
+        ("CAWD-087", 7 * GB, False),                   # the work, extension missing (live 2026-09-01)
+        ("CAWD-087", None, False),                     # unknown-size non-video — assume legit (#220)
+        ("readme", 3 * MB, True),                      # small extension-less file is still junk
     ],
 )
 def test_is_series_junk(name, size, want):
     assert is_series_junk(name, size) is want
+
+
+def test_big_non_video_is_kept_not_trashed():
+    # 2026-09-01: series_junk trashed ``CAWD-087`` (7.57GB, no extension —
+    # the torrent's only payload) as "not a video", emptying the landing
+    # and sending the HD copy to the recycler. Name alone never decides.
+    assert is_series_junk("CAWD-087", 7_566_687_458) is False
+    assert is_series_junk("CAWD-087.txt", 7_566_687_458) is False
+    assert is_series_junk("CAWD-087.txt", 2 * MB) is True
 
 
 def test_in_flight_file_is_never_junk():

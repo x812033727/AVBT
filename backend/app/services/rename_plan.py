@@ -262,6 +262,17 @@ def _canonical_video_name(name: str) -> str:
     return stem.upper()
 
 
+def _letter_marker_index(name: str, code: str) -> int:
+    """``_part_marker_index`` restricted to the lone-variant-letter
+    branch (``CODE-B`` → 2); 0 for every other marker shape. The caller
+    needs to tell a letter apart from a digit marker because a lone
+    letter is the one marker shape this project's own naming convention
+    also uses for NON-part variants (``-C`` = 中文字幕, ``-U`` = 無碼).
+    Digit markers carry no such ambiguity."""
+    idx, from_letter = _part_marker(name, code)
+    return idx if from_letter else 0
+
+
 def _part_marker_index(name: str, code: str) -> int:
     """1-based index of the multipart marker tucked next to ``code`` in
     ``name``: ``CD<n>`` / ``HHB<n>`` (old-scene disc tag) / ``-<n>`` /
@@ -272,8 +283,14 @@ def _part_marker_index(name: str, code: str) -> int:
     unmarked instead of claiming part slot 1080. Composite ``CD<n>-<letter>`` markers return the disc number;
     same-disc sub-parts tie-break alphabetically via the caller's name
     sort and claim consecutive slots."""
+    return _part_marker(name, code)[0]
+
+
+def _part_marker(name: str, code: str) -> tuple[int, bool]:
+    """``(index, came_from_a_lone_variant_letter)`` — see
+    ``_part_marker_index`` for the index semantics."""
     if not code:
-        return 0
+        return 0, False
     stem = name
     m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
     if m:
@@ -297,14 +314,14 @@ def _part_marker_index(name: str, code: str) -> int:
         # resolution tail (``..._2024``) must not claim a part slot.
         m2 = re.search(r"(?:CD|PART|[-_])(\d{1,2})_?\s*$", stem, re.IGNORECASE)
         if m2:
-            return int(m2.group(1))
-        return 0
+            return int(m2.group(1)), False
+        return 0, False
     for key in ("part", "cd", "hhb", "dash", "us"):
         if m.group(key):
-            return int(m.group(key))
+            return int(m.group(key)), False
     if m.group("letter"):
-        return ord(m.group("letter").upper()) - ord("A") + 1
-    return 0
+        return ord(m.group("letter").upper()) - ord("A") + 1, True
+    return 0, False
 
 
 def has_part_marker(name: str, canon: str) -> bool:
@@ -630,16 +647,42 @@ def _build_video_rename_plan(
         # file still becomes ``_1`` and ``(2)``/``(3)`` follow. In a
         # mixed group a stray bare file (old whole-film rip) can no
         # longer shift every real disc up by one slot.
+        # A lone variant letter is only a disc letter when the discs it
+        # follows are actually here. ``-C`` on its own is this project's
+        # 中文字幕 tag and ``-U`` its 無碼 tag — reading those as discs 3
+        # and 21 punched the holes behind SQTE-470 ``[_1, _3]`` and
+        # SDJS-322 ``[_1, _22]`` (live 2026-08-06). Letters worn by group
+        # members that already carry a ``<canon>_N`` name are lost to us,
+        # but those files hold their slot in ``used_indices`` anyway, so
+        # a demoted file still lands on the next free index.
+        group_letters = {
+            idx for f in files if (idx := _letter_marker_index(f.name, canon)) > 0
+        }
+
+        def effective_marker(f, canon=canon, group_letters=group_letters) -> int:
+            letter = _letter_marker_index(f.name, canon)
+            if letter > 1 and not all(x in group_letters for x in range(1, letter)):
+                return 0
+            return _part_marker_index(f.name, canon)
+
+        def demoted(f, canon=canon) -> bool:
+            return _letter_marker_index(f.name, canon) > 0 and not effective_marker(f)
+
+        # ... and a demoted variant sorts BEHIND the genuinely bare file
+        # it is a variant of, so ``SQTE-470.mp4`` keeps _1 and its 中文
+        # 字幕 twin follows as _2 (plain name order would put ``-C``
+        # first: ``-`` sorts under ``.``).
         unnamed.sort(
             key=lambda f: (
-                _part_marker_index(f.name, canon) == 0,
-                _part_marker_index(f.name, canon),
+                effective_marker(f) == 0,
+                effective_marker(f),
+                demoted(f),
                 _dup_sort_index(f.name),
                 f.name,
             )
         )
         for f in unnamed:
-            marker = _part_marker_index(f.name, canon)
+            marker = effective_marker(f)
             # Marker-bearing files prefer their own index; bare ones
             # grab the next free slot. Collisions skip ahead — except
             # when the marker's own slot is held by an existing

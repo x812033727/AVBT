@@ -504,3 +504,57 @@ def test_plan_marker_collision_different_size_still_skips_ahead():
     plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
                                               _is_video)
     assert plan["gdhh-167-1.mp4"] == "GDHH-167_2.mp4"
+
+
+def test_plan_lone_chinese_sub_letter_does_not_punch_hole():
+    # Live 2026-08-06: SQTE-470 landed twice from two btih, both dn
+    # ``SQTE-470-C``. ``-C`` is this project's 中文字幕 tag, but the
+    # letter branch read it as disc C, so the second copy took _3 and
+    # left _2 empty. With no -A/-B sibling it must fall to the next
+    # free slot instead.
+    children = [
+        _f("SQTE-470_1.mp4", 7_602_588_640),
+        _f("SQTE-470-C.mp4", 7_548_968_377),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["SQTE-470-C.mp4"] == "SQTE-470_2.mp4"
+
+
+def test_plan_lone_uncensored_letter_does_not_claim_slot_21():
+    # ``-U`` (無碼) is letter 21. Same demotion, far uglier hole.
+    children = [
+        _f("SDJS-322_1.mkv", 6 * GB),
+        _f("SDJS-322-U.mkv", 6 * GB + 900 * 1024 * 1024),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["SDJS-322-U.mkv"] == "SDJS-322_2.mkv"
+
+
+def test_plan_real_disc_letters_keep_their_slots():
+    # KAVR-457 shape: a genuine A/B/C VR set. The letters that DO have
+    # their predecessors present still map to 1/2/3.
+    children = [
+        _f("KAVR-457-A.mp4", 9 * GB),
+        _f("KAVR-457-B.mp4", 9 * GB),
+        _f("KAVR-457-C.mp4", 8 * GB),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["KAVR-457-A.mp4"] == "KAVR-457_1.mp4"
+    assert plan["KAVR-457-B.mp4"] == "KAVR-457_2.mp4"
+    assert plan["KAVR-457-C.mp4"] == "KAVR-457_3.mp4"
+
+
+def test_plan_bare_file_keeps_slot_one_against_variant_letter():
+    # The demoted variant must not sort ahead of the bare original and
+    # steal _1 — the bare whole-film file is part 1.
+    children = [
+        _f("SQTE-470.mp4", 7 * GB),
+        _f("SQTE-470-C.mp4", 7 * GB + 100 * 1024 * 1024),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["SQTE-470.mp4"] == "SQTE-470_1.mp4"
+    assert plan["SQTE-470-C.mp4"] == "SQTE-470_2.mp4"

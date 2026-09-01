@@ -720,9 +720,16 @@ async def test_stream_ambiguous_presence_folders_abort(monkeypatch):
 
 async def test_flattened_check_sees_bt_named_wrapper(monkeypatch):
     """A wrapper folder with a non-canonical name is still a per-code
-    folder — _already_flattened must NOT stamp the row finalized."""
+    folder — _already_flattened must NOT stamp the row finalized.
+
+    The wrapper holds the video: that is what makes it finalize's work
+    (live EKDV-039, whose EKDV039.avi sat inside exactly such a
+    wrapper). An EMPTY wrapper is a different animal — see below."""
     wrapper_path = "AVBT/製作商/SOD/系/sdmm-053@bt"
-    fake_svc = FakeSvc({}, path_ids={wrapper_path: "wrap"})
+    fake_svc = FakeSvc(
+        {"wrap": [_file("sdmm053.mp4", "v1", 4096)]},
+        path_ids={wrapper_path: "wrap"},
+    )
 
     async def fake_resolve(code):
         return "AVBT/製作商/SOD/系/SDMM-053"
@@ -731,6 +738,50 @@ async def test_flattened_check_sees_bt_named_wrapper(monkeypatch):
     monkeypatch.setattr(arch, "pikpak_service", fake_svc)
     _patch_presence(monkeypatch, [wrapper_path])
     assert await arch._already_flattened("SDMM-053") is False
+
+
+async def _flattened_with_empty_shells(monkeypatch, *, settled):
+    """live SVDVD-691 shape: the canonical video is already loose in the
+    系列 folder and both per-code folders left behind are empty."""
+    base = "AVBT/製作商/サディスティックヴィレッジ/奴隷調教"
+    w1, w2 = f"{base}/[7sht.me]svdvd-691", f"{base}/svdvd691"
+    loose = f"{base}/SVDVD-691.mp4"
+    fake_svc = FakeSvc({"w1": [], "w2": []},
+                       path_ids={w1: "w1", w2: "w2"})
+    fake_svc.settled = settled
+
+    async def fake_resolve(code):
+        return f"{base}/SVDVD-691"
+
+    async def fake_files(code):
+        return {"ok": True,
+                "files": [{"name": "SVDVD-691.mp4", "path": loose}]}
+
+    import app.services.video_count as vc
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    monkeypatch.setattr(arch, "pikpak_service", fake_svc)
+    monkeypatch.setattr(vc, "files_for_code", fake_files)
+    _patch_presence(monkeypatch, [w1, w2, loose])
+    return await arch._already_flattened("SVDVD-691")
+
+
+async def test_flattened_check_ignores_empty_settled_shells(monkeypatch):
+    """Two EMPTY per-code shells must not veto the flattened stamp.
+
+    Live 2026-08-06 deadlock: run_finalize aborts with "SVDVD-691 有 2
+    個候選資料夾,無法確定要整理哪一個" while _already_flattened refused
+    to stamp *because those same shells existed* — both doors shut, so
+    the row re-ran every 60s from 08-05 onward even though
+    SVDVD-691.mp4 (6.84GB) had long been loose in the 系列 folder.
+    Empty shells hold nothing for finalize to organize."""
+    assert await _flattened_with_empty_shells(monkeypatch, settled=True) is True
+
+
+async def test_flattened_check_blocks_unsettled_empty_shells(monkeypatch):
+    """"Lists empty" is not proof while a move is in flight (#140): with
+    the move-settle gate closed the shell still counts as occupied."""
+    assert await _flattened_with_empty_shells(
+        monkeypatch, settled=False) is False
 
 
 async def test_flattened_check_true_for_loose_video(monkeypatch):

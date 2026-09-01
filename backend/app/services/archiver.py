@@ -464,6 +464,54 @@ _legacy_swept_total: int = 0
 # per-run count.
 _cleanup_error_total: int = 0
 
+# Series folders whose last phase-2 pass had to skip something behind a
+# time gate (settle grace / move-settle / a file still transferring).
+# Phase-2 only ever runs on folders the CURRENT sweep moved items into,
+# so once the gate opens nothing brings the folder back — the deferred
+# dedupe / shell trash / canonical rename never happens (live #168:
+# DVMM-107 / MADV-555 / MIH-004 kept ``CODE-SD.mp4`` + ``CODE_2.mp4`` for
+# four weeks). Each value is the remaining sweep budget: the folder rides
+# along on the next sweeps until a pass finishes with no gated skip, or
+# the budget runs out — a permanently stuck transfer must not pin a
+# folder forever. Bounded like the reap queue. Memory only, like the
+# rest of the sweep's phase-2 queue: a restart just forgets the revisit.
+_revisit_parent_ids: dict[str, int] = {}
+_REVISIT_MAX = 200
+# 12 sweeps × 300s default interval ≈ 1h: past the 30-min move-settle
+# gate (the longest of the three) with slack for a skipped sweep.
+_REVISIT_BUDGET = 12
+_REVISIT_GATED_REASONS = frozenset({"settling", "move_settling", "transferring"})
+
+
+def _note_revisit(pid: str, gated: bool) -> None:
+    """Record the outcome of a phase-2 pass on ``pid``: a clean pass
+    (nothing gated) retires the folder; a gated one arms it with a fresh
+    budget, or leaves an already-armed budget counting down."""
+    if not gated:
+        _revisit_parent_ids.pop(pid, None)
+        return
+    if pid in _revisit_parent_ids:
+        return
+    if len(_revisit_parent_ids) >= _REVISIT_MAX:
+        return
+    _revisit_parent_ids[pid] = _REVISIT_BUDGET
+
+
+def _take_due_revisits() -> set[str]:
+    """Folders owed another phase-2 pass. Each call spends one sweep of
+    budget; exhausted entries are dropped so a folder whose gate never
+    opens stops costing a listing per sweep."""
+    due: set[str] = set()
+    for pid in list(_revisit_parent_ids):
+        left = _revisit_parent_ids[pid] - 1
+        if left < 0:
+            del _revisit_parent_ids[pid]
+            logger.info("phase-2 revisit budget exhausted for %s", pid)
+            continue
+        _revisit_parent_ids[pid] = left
+        due.add(pid)
+    return due
+
 
 def _sweep_due() -> bool:
     """True when the AVBT-root sweep should run now (interval elapsed
@@ -822,6 +870,10 @@ async def _sweep_root_once(*, cleanup_all_targets: bool = False) -> int:
             if pid:
                 target_parent_ids.add(pid)
 
+    # Folders whose previous phase-2 pass hit a time gate: bring them
+    # back until a pass runs clean (or the budget runs out).
+    target_parent_ids |= _take_due_revisits()
+
     # Rerun phase-2 cleanup on every target folder that received items.
     # Catches:
     #   - Wrappers whose main video finished downloading after the
@@ -989,6 +1041,7 @@ async def _cleanup_target_parents(parent_ids: set[str]) -> int:
                 continue
             error_count = 0
             first_reason = ""
+            gated = False
             async for ev in _phase2_cleanup_target(
                 pid, pid, children, dry_run=False, idx_start=0
             ):
@@ -996,6 +1049,12 @@ async def _cleanup_target_parents(parent_ids: set[str]) -> int:
                     error_count += 1
                     if not first_reason:
                         first_reason = ev.get("reason") or ""
+                elif (
+                    ev.get("action") == "skip"
+                    and ev.get("reason") in _REVISIT_GATED_REASONS
+                ):
+                    gated = True
+            _note_revisit(pid, gated)
             if error_count:
                 _cleanup_error_total += error_count
                 logger.warning(
@@ -1198,6 +1257,36 @@ _reap_cleanup_paths: set[str] = set()
 _REAP_CLEANUP_PATHS_MAX = 200
 
 
+def _queue_series_parents_for_cleanup(code: str) -> int:
+    """Hand ``code``'s series folder(s) to the next sweep's phase-2 pass.
+
+    Reads presence only (no PikPak call); the caller is responsible for
+    having refreshed it. Legacy-archive parents (``AVBT/已完成``) are
+    NEVER queued: phase-2 winner-picks and flattens whole folders, and
+    the legacy sweep deliberately leaves user-kept wrappers alone (see
+    _sweep_legacy_archive_stream) — a code whose only copy lives there
+    must not drag the shared bucket into a rename/dedupe pass it was
+    never designed to survive. Returns the number of new paths queued."""
+    if len(_reap_cleanup_paths) >= _REAP_CLEANUP_PATHS_MAX:
+        return 0
+    from .pikpak_presence import presence_index  # avoid cycle
+
+    legacy = (
+        settings.pikpak_archive_folder or "AVBT/已完成"
+    ).strip().strip("/")
+    queued = 0
+    for path in presence_index.paths_for(code):
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        if not parent:
+            continue
+        if parent == legacy or parent.startswith(legacy + "/"):
+            continue
+        if parent not in _reap_cleanup_paths:
+            _reap_cleanup_paths.add(parent)
+            queued += 1
+    return queued
+
+
 async def _active_task_ids() -> set[str]:
     """Task ids that are still downloading (or otherwise not COMPLETE).
 
@@ -1397,6 +1486,11 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
                         row.finalized_at = datetime.utcnow()
                         done += 1
                         _clear_finalize_attempts(row.id)
+                        # The flatten just wrote loose files into the
+                        # series folder outside any sweep's move
+                        # accounting — nothing else would ever put that
+                        # folder in front of phase-2 (#168).
+                        _queue_series_parents_for_cleanup(row.code)
                     elif await _already_flattened(row.code):
                         # Sweep-archived rows use the flattened layout —
                         # the video sits directly in the 系列 folder, so
@@ -1674,18 +1768,7 @@ async def _reap_orphan_rows() -> int:
             # (see _sweep_legacy_archive_stream) — a code whose only copy
             # lives there must not drag the shared bucket into a rename/
             # dedupe pass it was never designed to survive.
-            if len(_reap_cleanup_paths) < _REAP_CLEANUP_PATHS_MAX:
-                from .pikpak_presence import presence_index  # avoid cycle
-                legacy = (
-                    settings.pikpak_archive_folder or "AVBT/已完成"
-                ).strip().strip("/")
-                for path in presence_index.paths_for(row.code):
-                    parent = path.rsplit("/", 1)[0] if "/" in path else ""
-                    if not parent:
-                        continue
-                    if parent == legacy or parent.startswith(legacy + "/"):
-                        continue
-                    _reap_cleanup_paths.add(parent)
+            _queue_series_parents_for_cleanup(row.code)
             logger.warning(
                 "orphan reap closed %s (task %s gone, %s; files already "
                 "flattened)",
@@ -2099,6 +2182,9 @@ async def archive_once() -> int:
             for row in moved_rows_by_code.get(code, []):
                 row.finalized = True
                 row.finalized_at = _now
+            # Same gap as the retry pass: the flatten landed loose files
+            # in the series folder with no sweep to phase-2 them (#168).
+            _queue_series_parents_for_cleanup(code)
 
         if moved or shell_trashed:
             await session.commit()

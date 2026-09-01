@@ -501,10 +501,17 @@ async def finalize_code_folder_stream(
         from .archiver import _archive_leaf, _resolve_archive_path_by_code
 
         path = await _resolve_archive_path_by_code(code)
+        # Observability (r875): the live archiver judged ORECO-838
+        # "no video" while a fresh process planned the same code fine —
+        # the difference can only be resolver state (folder cache /
+        # canonical cache). Say which folder was picked and how.
+        cached = path in getattr(svc, "_folder_cache", {})
         folder_id = await svc.lookup_folder_id(path)
         folder_path = path if folder_id else None
+        resolved_via = "cache" if cached else "lookup"
         if not folder_id:
             hits = await presence_code_folders(svc, code)
+            resolved_via = "presence"
             if len(hits) > 1:
                 yield {"type": "error",
                        "message": (f"{code} 有 {len(hits)} 個候選資料夾,"
@@ -518,6 +525,10 @@ async def finalize_code_folder_stream(
         if not folder_id:
             yield {"type": "error", "message": f"找不到 {code} 的歸檔資料夾({path})"}
             return
+        logger.info(
+            "finalize %s: resolved folder %s (%s) via %s",
+            code, folder_id, folder_path or folder_leaf, resolved_via,
+        )
     else:
         # Explicit folder_id (archiver inline hook): recover the path so
         # the parent (系列 folder) can be resolved for the flatten. Only
@@ -565,6 +576,12 @@ async def finalize_code_folder_stream(
     flatten = parent_id is not None and parent_id != folder_id
 
     if plan.no_video:
+        logger.info(
+            "finalize %s: no video in folder %s — %d entr%s listed"
+            " (partial=%s, depth_truncated=%s)",
+            code, folder_id, len(entries),
+            "y" if len(entries) == 1 else "ies", partial, depth_truncated,
+        )
         if flatten and await _parent_has_code_video(svc, parent_id, code):
             # The loose video this verdict rests on may still wear its
             # BT name — normalise it NOW: succeeding here stamps the row

@@ -47,6 +47,51 @@ def test_canonical_head_paren_code_tag():
     )
 
 
+TITLE_120 = "Arisa4 アリーinオーストラリア・美里有紗"
+
+
+def test_canonical_head_bracket_code_tag_is_not_a_site_label():
+    """``[REBDB-120] <title>`` — the bracket holds the CODE, not a site
+    tag. Stripping it left pure title text, which erased the code and
+    hid the part marker (live 2026-08-09: finalize renamed two parts to
+    ``ARISA4 …-2/-3.mp4``, code-less and invisible to presence)."""
+    for n in (1, 2, 3):
+        assert (
+            _canonical_video_name(f"[REBDB-120] {TITLE_120}-{n}.mp4")
+            == "REBDB-120"
+        )
+    assert _canonical_video_name("[ABP-123] title here.mp4") == "ABP-123"
+    assert _canonical_video_name("[CLUB-044] Title.mp4") == "CLUB-044"
+
+
+def test_canonical_head_bracket_site_label_still_stripped():
+    """The gate keys on "does the bracket content yield a code", so
+    genuine site/label brackets are untouched."""
+    assert _canonical_video_name("[JavBus.com] ABP-123.mp4") == "ABP-123"
+    assert _canonical_video_name("[88K.ME]TRE-112.mp4") == "TRE-112"
+    assert _canonical_video_name("[7sht.me]svdvd-691.mp4") == "SVDVD-691"
+    assert _canonical_video_name("[52iv.net原创发布]REBDB-057.mp4") == "REBDB-057"
+    assert _canonical_video_name("[44x.me]geurb-003.mp4") == "GEURB-003"
+    assert (
+        _canonical_video_name("[JAV] [Uncensored] star-264 [1080p].mp4")
+        == "STAR-264"
+    )
+
+
+def test_plan_bracket_code_tag_parts_get_numbered():
+    """The whole point: the three parts must group and become
+    ``_1.._3`` instead of three code-less singletons."""
+    files = [_f(f"[REBDB-120] {TITLE_120}-{n}.mp4") for n in (1, 2, 3)]
+    plan, _ = _build_video_rename_plan(
+        files, 300 * 1024 * 1024, _is_video, require_marker=True
+    )
+    assert plan == {
+        f"[REBDB-120] {TITLE_120}-1.mp4": "REBDB-120_1.mp4",
+        f"[REBDB-120] {TITLE_120}-2.mp4": "REBDB-120_2.mp4",
+        f"[REBDB-120] {TITLE_120}-3.mp4": "REBDB-120_3.mp4",
+    }
+
+
 def test_canonical_mid_name_code_still_untouched():
     # A free-text mid-name code must NOT collapse to the bare code —
     # a making-of would group with the main film and lose the dedup.

@@ -166,6 +166,17 @@ def _canonical_video_name(name: str) -> str:
     while prev != stem:
         prev = stem
         m = _BT_PREFIX_BRACKET_RE.match(stem)
+        # A leading ``[...]`` whose content IS a JAV code is an explicit
+        # code tag, not a site label — the very shape the module note
+        # above says jav_code.py refuses to strip (``[CLUB-044] Title``).
+        # Stripping it leaves pure title text, so the ``if code:`` block
+        # below never runs: the code is erased AND the part marker is
+        # never recognised, so ``[REBDB-120] <title>-1/-2/-3.mp4`` lands
+        # as three singleton groups renamed to ``<TITLE>-N.mp4`` —
+        # code-less, unindexable by presence, and never numbered
+        # ``_1.._3`` (live 2026-08-09, finalize renamed two of them).
+        if m and extract_jav_code(m.group(0).strip(" []")):
+            m = None
         if m:
             site_labels.add(m.group(0).strip(" []").split(".")[0].upper())
             stem = stem[m.end():]

@@ -401,6 +401,37 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
     return hits
 
 
+async def _split_settled_empty_candidates(
+    svc, hits: list[tuple[str, str, str]]
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Partition per-code folder candidates into ``(live, empty)``.
+
+    A candidate counts as *empty* only on a positive, reliable read:
+    its move-settle gate is open (a freshly moved wrapper lists
+    optimistically empty — #140), its listing is complete (not partial
+    / not an error), and it has zero children. Anything else — files,
+    subfolders, an in-flight move, a truncated or failed listing — is
+    *live*. Read-only: nothing here trashes, moves or renames."""
+    live: list[tuple[str, str, str]] = []
+    empty: list[tuple[str, str, str]] = []
+    for hit in hits:
+        fid = hit[0]
+        try:
+            if not svc.move_settled(fid):
+                live.append(hit)
+                continue
+            kids, partial = await svc.list_all_files(fid)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("candidate listing %s failed: %s", fid, exc)
+            live.append(hit)
+            continue
+        if partial or kids:
+            live.append(hit)
+        else:
+            empty.append(hit)
+    return live, empty
+
+
 async def _parent_has_code_video(svc, parent_id: str, code: str) -> bool:
     """A substantial video for ``code`` already sits loose in the parent
     (系列) folder — evidence that an earlier settle-gated run evacuated
@@ -513,10 +544,53 @@ async def finalize_code_folder_stream(
             hits = await presence_code_folders(svc, code)
             resolved_via = "presence"
             if len(hits) > 1:
-                yield {"type": "error",
-                       "message": (f"{code} 有 {len(hits)} 個候選資料夾,"
-                                   "無法確定要整理哪一個,中止")}
-                return
+                # Two+ per-code folders usually means a re-download's
+                # wrapper landed next to an older one — and one of them
+                # is a bare shell (the task died before writing a byte,
+                # or an earlier settle-gated pass already evacuated it).
+                # Aborting on the raw count wedged those codes forever:
+                # the shell is never listed, so the empty-shell reaper
+                # below never gets to run, and the real video in the
+                # OTHER folder is never flattened (live 09-01: MADV-513
+                # 3.67GB behind aavv38 shell; ORECO-824/825/828 ad
+                # shells behind kfa55 shells; IPZZ-958 / ORECO-817 two
+                # shells beside an already-flattened CODE.mp4). Only a
+                # VERIFIABLY empty candidate is set aside — settled
+                # move gate, complete listing, zero children — and it
+                # is set aside, not touched: this pass acts on the
+                # surviving candidate through the unchanged single-
+                # folder flow; the shell gets its own turn on a later
+                # pass once it is the sole candidate.
+                live, empty = await _split_settled_empty_candidates(
+                    svc, hits)
+                if len(live) == 1:
+                    logger.info(
+                        "finalize %s: ignoring %d settled empty shell(s) "
+                        "as candidates (%s); proceeding with %s",
+                        code, len(empty),
+                        ", ".join(leaf for _f, leaf, _p in empty),
+                        live[0][1],
+                    )
+                    hits = live
+                elif not live:
+                    # Every candidate is a settled empty shell. Hand the
+                    # first to the single-folder flow: its existing gates
+                    # (parent already holds CODE video → emptied_shell;
+                    # aged row → empty_shell_no_video) retire shells one
+                    # per pass, and the code leaves this branch once a
+                    # single candidate remains.
+                    logger.info(
+                        "finalize %s: all %d candidates are settled empty "
+                        "shells; taking %s first",
+                        code, len(hits), hits[0][1],
+                    )
+                    hits = hits[:1]
+                else:
+                    yield {"type": "error",
+                           "message": (f"{code} 有 {len(live)} 個候選資料夾"
+                                       f"(另 {len(empty)} 個空殼已略過),"
+                                       "無法確定要整理哪一個,中止")}
+                    return
             if hits:
                 folder_id, folder_leaf, folder_path = hits[0]
                 canonical = _archive_leaf(code)

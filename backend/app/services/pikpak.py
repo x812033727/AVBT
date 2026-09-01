@@ -121,6 +121,12 @@ MOVE_SOURCES_FILE = Path(
 _LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
 _LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
 
+# How long PikPak must have been continuously VISIBLE before a shell
+# verdict (ad shell / empty shell) may condemn a folder. Mirrors
+# offline_tasks.SETTLE_GRACE; kept as a local literal to avoid an import
+# cycle. See ``sight_is_stale`` for why blindness has to fail closed.
+SIGHT_STALE_SECONDS = 900
+
 # Every phase in which a task still owes us files. pikpakapi's default
 # filter is RUNNING+ERROR, so PENDING — everything queued behind PikPak's
 # ~100-task concurrency cap — drops out unless asked for by name. Anything
@@ -222,6 +228,48 @@ class PikPakService:
         self._boot_guard_until: float = (
             0.0 if loaded is not None else time.time() + MOVE_SETTLE_SECONDS
         )
+        # Visibility tracking (see sight_is_stale). Both start at 0: a
+        # fresh process has no idea what PikPak did while it was down,
+        # so the first successful call counts as regaining sight.
+        self._last_sight: float = 0.0
+        self._sight_regained_at: float = 0.0
+
+    # ---------- visibility gate ----------
+
+    def _note_sight(self) -> None:
+        """Stamp a successful round-trip to PikPak. A gap longer than
+        ``SIGHT_STALE_SECONDS`` means we were blind for a while, so the
+        stamp also re-arms the post-recovery grace."""
+        now = time.time()
+        if now - self._last_sight > SIGHT_STALE_SECONDS:
+            self._sight_regained_at = now
+        self._last_sight = now
+
+    def sight_is_stale(self, max_age: float = SIGHT_STALE_SECONDS) -> bool:
+        """True when this service cannot vouch for having seen PikPak
+        continuously for the last ``max_age`` seconds — either it has no
+        fresh successful call, or it only just regained sight.
+
+        Shell verdicts (ad shell, empty shell) rest on a listing being
+        complete: "files landed but not one video" only condemns a
+        folder because anything still in flight would have shown up.
+        That premise dies during an outage — a login cooldown, a network
+        partition — because PikPak keeps writing while we cannot look.
+        The moment sight returns, a wrapper whose ad clips landed first
+        lists exactly like a finished ad shell, and every age-based gate
+        (``is_settling`` on row age, ``move_settled`` on move stamps) has
+        quietly expired for the whole backlog at once — the gates that
+        exist to catch this very misread are the ones an outage
+        disarms. So blindness fails closed: no shell trash until we have
+        watched continuously for a full grace window.
+
+        Costs a 15-minute delay on shell cleanup after each restart or
+        outage; buys back the guarantee that an invisible in-flight
+        video is never trashed with its wrapper (live: TRE-143)."""
+        now = time.time()
+        if now - self._last_sight > max_age:
+            return True
+        return now - self._sight_regained_at < max_age
 
     # ---------- move settle gate ----------
 
@@ -410,6 +458,10 @@ class PikPakService:
             ),
             "login_cooldown_seconds": int(self._login_cooldown_remaining()),
             "login_block_reason": self._login_block_reason,
+            # Observability for the rota: True means shell trashing is
+            # currently suppressed because we have not watched PikPak
+            # continuously for a full grace window.
+            "sight_is_stale": self.sight_is_stale(),
         }
 
     def logout(self) -> None:
@@ -544,7 +596,7 @@ class PikPakService:
         while True:
             client = await self._ensure()
             try:
-                return await _run(client)
+                result = await _run(client)
             except Exception as exc:  # noqa: BLE001
                 if _is_invalid_token_error(exc):
                     logger.warning(
@@ -553,7 +605,9 @@ class PikPakService:
                     )
                     await self._drop_for_relogin(client)
                     client = await self._ensure()
-                    return await _run(client)
+                    retried = await _run(client)
+                    self._note_sight()
+                    return retried
                 if _is_too_frequent_error(exc):
                     if attempt < max_retries:
                         self.throttle_backoff_total += 1
@@ -573,6 +627,9 @@ class PikPakService:
                     # separately from absorbed throttles.
                     self.throttle_exhausted_total += 1
                 raise
+            # Only a completed round-trip proves we can see PikPak.
+            self._note_sight()
+            return result
 
     async def login(
         self, username: str | None = None, password: str | None = None

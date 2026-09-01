@@ -803,6 +803,16 @@ async def _resolve_folder_winner(
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("trash wrapper %s failed: %s",
                                    folder.name, exc)
+            else:
+                # ...except the promised "later pass" never arrives on
+                # the SCHEDULED path: sweep only re-runs phase-2 on
+                # folders it moved something INTO this pass, and the
+                # shell's own parent typically never receives anything
+                # again. Hand it to the deferred set so the sweep drains
+                # it once the gate opens (see defer_shell). The move
+                # stamps above guarantee this branch is always taken on
+                # a real flatten — the gate cannot already be open.
+                pikpak_service.defer_shell(folder.id)
         except Exception as exc:  # noqa: BLE001
             return {"action": "error", "target": canonical_file,
                     "reason": f"flatten failed: {exc}"}

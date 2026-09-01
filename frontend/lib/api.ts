@@ -683,6 +683,7 @@ export type QueueStatus = {
     sent: number;
     skipped_no_magnet: number;
     skipped_already_sent: number;
+    skipped_traffic_gate: number;
     failed: number;
     cancelled: number;
   };
@@ -694,6 +695,7 @@ export type QueueStatus = {
       | "sent"
       | "skipped_no_magnet"
       | "skipped_already_sent"
+      | "skipped_traffic_gate"
       | "failed"
       | "cancelled";
     message: string;

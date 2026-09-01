@@ -25,7 +25,7 @@ from ..schemas import (
     VideoCountResponse,
     VideoCountResult,
 )
-from ..services import archiver, episode_finder
+from ..services import archiver, episode_finder, traffic_budget
 from ..services import container_swap as container_swap_svc
 from ..services import dup_copies as dup_copies_svc
 from ..services import folder_twins as folder_twins_svc
@@ -99,6 +99,25 @@ async def transfer_quota():
         return await pikpak_service.transfer_quota()
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
+
+
+@router.get("/traffic-gate")
+async def traffic_gate():
+    """Today's slice of the monthly offline-traffic budget: how much of
+    it is spent, whether new submits are being held, and the raw meter
+    behind the decision. The rota reads this instead of inferring a shut
+    gate from a failed probe submit."""
+    plan = await traffic_budget.current_plan()
+    return {
+        "enabled": await traffic_budget.enabled(),
+        "open": plan.is_open,
+        "reason": plan.reason(),
+        "allowance_bytes": plan.allowance,
+        "spent_today_bytes": plan.spent_today,
+        "month_used_bytes": plan.used,
+        "month_limit_bytes": plan.limit,
+        "degraded": plan.degraded,
+    }
 
 
 @router.post("/offline", response_model=PikPakTask)

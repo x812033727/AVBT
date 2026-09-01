@@ -136,6 +136,19 @@ _GLUED_EXT_RE = re.compile(
 _PAREN_TAG_RE = re.compile(r"\(([^)]*)\)|\[([^\]]*)\]")
 
 
+def _GLUED_DOMAIN_TAIL_RE(code: str) -> re.Pattern:
+    """``<code><variant?><site-token>.<tld>[@]`` with nothing else —
+    ``AP317Czzpp08.com@``. Anchored on the code so the domain token can
+    never eat into it; the token has no separators, which is exactly
+    why ``_BT_SUFFIX_DOMAIN_RE`` (separator-led) misses it — and why a
+    separator-led tail (``300MIUM-1270-UNCENSORED-NYAP2P.COM``) is left
+    to that rule, so the UNCENSORED marker it preserves stays."""
+    return re.compile(
+        rf"\d{{0,4}}{_flex_code_re(code)}[A-Za-z0-9]*\.{_SITE_TLDS}@?\s*",
+        re.IGNORECASE,
+    )
+
+
 def _flex_code_re(code: str) -> str:
     """Regex source matching ``code`` while tolerating the separator BT
     names routinely drop or swap: ``HUNTA-578`` must also match the
@@ -158,6 +171,16 @@ def _canonical_video_name(name: str) -> str:
     m = re.search(r"\.[A-Za-z0-9]{1,5}$", stem)
     if m:
         stem = stem[: m.start()]
+    raw_stem = stem
+    code0 = extract_jav_code(stem)
+    # ``AP317Czzpp08.com@`` — a site tag glued straight onto the code's
+    # tail and closed with ``@``. The at-prefix rule below reads the
+    # whole stem as ``<site>@`` and strips it to nothing, and the plan
+    # then renames the file to a bare ``.mp4`` (live 2026-09-01: AP-317's
+    # only copy sealed as ``.mp4`` in its 系列 folder). When the stem is
+    # exactly ``<code><glued domain>[@]`` the code IS the canonical.
+    if code0 and _GLUED_DOMAIN_TAIL_RE(code0).fullmatch(stem):
+        return code0.upper()
     # Iteratively strip BT-site wrappers + resolution/dup suffixes until
     # nothing changes. Multiple passes catch combinations like
     # ``[88K.ME]TRE-112 (2) HD``.
@@ -197,6 +220,12 @@ def _canonical_video_name(name: str) -> str:
         # after the extension strip; it hides the code from the
         # end-anchored match below and never carries meaning by itself.
         stem = _DUP_SUFFIX_RE.sub("", stem).strip(" .")
+    if not stem:
+        # Every rule fired and nothing is left: the name was all site
+        # noise around the code (or no code at all). An empty canonical
+        # becomes an empty rename target, so fall back to the code the
+        # raw name carried, else the raw stem itself.
+        stem = code0 or raw_stem
     # Try to anchor on the JAV code, then strip any part marker hanging
     # off the end (CD<n> / -<n> / _<n> / lone variant letter). When the
     # code itself can't be extracted (e.g. ``CD3`` confuses the lookahead
@@ -534,6 +563,8 @@ def _build_video_rename_plan(
         canon = _canonical_video_name(c.name)
         if is_lonely and full and full.upper() in canon:
             canon = canon.replace(full.upper(), base.upper(), 1)
+        if not canon:
+            continue  # never plan a rename to a bare ``.ext`` (belt and braces)
         groups.setdefault(canon, []).append(c)
 
     plan: dict[str, str] = {}

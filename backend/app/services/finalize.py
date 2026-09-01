@@ -481,12 +481,20 @@ async def finalize_code_folder_stream(
     code: str,
     *,
     folder_id: str | None = None,
+    parent_id: str | None = None,
     dry_run: bool = True,
     allow_shell_trash: bool = False,
 ) -> AsyncIterator[dict]:
     """Finalize one 番號's archive folder. Events mirror the cleanup
     stream: ``start`` / ``progress`` (action ∈ rename|move|purge|trash|
     skip|error) / ``warn`` / ``done``.
+
+    ``parent_id`` (only with an explicit ``folder_id``) is the 系列
+    folder the caller has ALREADY verified to contain ``folder_id`` as a
+    direct child — the file_id fallback in the archiver's retry pass
+    lists the canonical series folder and finds the wrapper by id, so
+    the flatten destination is known without a by-name path lookup.
+    Ignored when ``folder_id`` is None.
 
     Layout policy: NO per-code folders (user decision 2026-07-14). The
     keepers are evacuated into the folder's PARENT (the 系列 folder) as
@@ -518,7 +526,7 @@ async def finalize_code_folder_stream(
         if not folder_id:
             yield {"type": "error", "message": f"找不到 {code} 的歸檔資料夾({path})"}
             return
-    else:
+    elif parent_id is None:
         # Explicit folder_id (archiver inline hook): recover the path so
         # the parent (系列 folder) can be resolved for the flatten. Only
         # trust it when it resolves back to the same folder; any failure
@@ -531,10 +539,11 @@ async def finalize_code_folder_stream(
                 folder_path = path
         except Exception as exc:  # noqa: BLE001
             logger.debug("finalize %s: path recovery failed: %s", code, exc)
+    if folder_id is None or parent_id == folder_id:
+        parent_id = None  # a hint without a folder, or a self-parent, is void
 
     # Flatten destination: the folder's parent. None → legacy behaviour.
-    parent_id: str | None = None
-    if folder_path and "/" in folder_path:
+    if parent_id is None and folder_path and "/" in folder_path:
         try:
             parent_id = await svc.lookup_folder_id(
                 folder_path.rsplit("/", 1)[0])
@@ -905,14 +914,16 @@ async def finalize_code_folder_stream(
 
 async def run_finalize(
     svc, code: str, *, folder_id: str | None = None,
+    parent_id: str | None = None,
     allow_shell_trash: bool = False,
 ) -> dict | None:
     """Drain the stream non-interactively (archiver hook). Returns the
-    ``done`` summary when finalize fully succeeded, else ``None``."""
+    ``done`` summary when finalize fully succeeded, else ``None``.
+    ``parent_id`` rides through to the stream (see there)."""
     summary: dict | None = None
     failed = False
     async for event in finalize_code_folder_stream(
-        svc, code, folder_id=folder_id, dry_run=False,
+        svc, code, folder_id=folder_id, parent_id=parent_id, dry_run=False,
         allow_shell_trash=allow_shell_trash,
     ):
         etype = event.get("type")

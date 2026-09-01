@@ -47,8 +47,13 @@ def _uniquify_target(target: str, taken: set[str]) -> str:
 # an uncensored rip group with the censored retail release, and the
 # dedupe keeps the BIGGER file — which is usually the censored one.
 # Quality is same-content-worse; a cut is different content.
+# ``HQ`` is DMM's content-id quality label (``IPVR00301_1_HQ.mp4``) and
+# sits AFTER the part index. Left in the stem it hid the marker from
+# the end-anchored code match below, so ``_1_HQ`` / ``_2_HQ`` became
+# two different canonicals and phase-2 trashed disc 1 as a "duplicate"
+# of disc 2 (live loss IPVR-301, 2026-08-31 17:09 UTC).
 _DUP_SUFFIX_RE = re.compile(
-    r"\s*(?:\(\d+\)|_\d+|HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
+    r"\s*(?:\(\d+\)|_\d+|HQ|HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P"
     r"|[-_. ]?[(\[](?:HD|FHD|UHD|SD|4KS|4K|2K|8K|720P|1080P|2160P|4320P)[)\]]"
     r"|[-_.](?:H26[45]|X26[45]|HEVC|AV1)"
     r"|高清|超清|[-_]?CH)[-_ ]*$",

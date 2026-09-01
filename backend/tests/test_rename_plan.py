@@ -504,3 +504,64 @@ def test_plan_marker_collision_different_size_still_skips_ahead():
     plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
                                               _is_video)
     assert plan["gdhh-167-1.mp4"] == "GDHH-167_2.mp4"
+
+
+def test_plan_bare_twin_batch_claims_no_slots():
+    # Live 2026-08-05: a second magnet for a code whose parts already
+    # landed re-delivered the same three parts under marker-less names,
+    # and each skipped ahead into a fresh slot — DSUVR-002 / DEVR-038
+    # ended up with ``_1.._3`` plus their +4,161-byte twins as ``_4.._6``
+    # (IPOK-026 the same, 36GB of it). The batch must claim nothing.
+    children = [
+        _f("DEVR-038_1.mp4", 2_387_028_928),
+        _f("DEVR-038_2.mp4", 2_248_877_232),
+        _f("DEVR-038_3.mp4", 2_495_697_824),
+        _f("DEVR-038.mp4", 2_387_033_089),
+        _f("DEVR-038(1).mp4", 2_248_881_393),
+        _f("DEVR-038(2).mp4", 2_495_701_985),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan == {}
+
+
+def test_plan_bare_refill_of_missing_parts_still_numbered():
+    # The gate must not eat a genuine refill: only one part is held, so
+    # the two newcomers cannot pair off one-to-one and get numbered.
+    children = [
+        _f("SOE-829_1.wmv", int(1.2 * GB)),
+        _f("SOE-829.wmv", int(1.1 * GB)),
+        _f("SOE-829(1).wmv", int(1.15 * GB)),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["SOE-829.wmv"] == "SOE-829_2.wmv"
+    assert plan["SOE-829(1).wmv"] == "SOE-829_3.wmv"
+
+
+def test_plan_bare_partial_twin_batch_still_numbered():
+    # One newcomer twins an existing part, the other is a genuinely
+    # different rip. A partial match is not evidence of a re-download,
+    # so the old skip-ahead behaviour stands for the whole batch.
+    children = [
+        _f("HUNTA-594_1.mp4", 4_000_000_000),
+        _f("HUNTA-594_2.mp4", 4_500_000_000),
+        _f("HUNTA-594.mp4", 4_000_004_161),
+        _f("HUNTA-594(1).mp4", 6_800_000_000),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["HUNTA-594.mp4"] == "HUNTA-594_3.mp4"
+    assert plan["HUNTA-594(1).mp4"] == "HUNTA-594_4.mp4"
+
+
+def test_plan_bare_twin_unknown_size_does_not_withhold():
+    # An unknown size must never be read as a twin — the gate only ever
+    # withholds a rename and must not do that on a guess.
+    children = [
+        _f("MIRD-275_1.mp4", None),
+        _f("MIRD-275.mp4", 2_387_033_089),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan["MIRD-275.mp4"] == "MIRD-275_2.mp4"

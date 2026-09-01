@@ -62,6 +62,7 @@ def _safe_code(code: str) -> str:
 # Delegate to the shared helpers so missing-code services can compute the
 # same path without importing the archiver (which would cycle).
 from .jav_code import (  # noqa: E402
+    extract_jav_code,
     extract_jav_code_full,
 )
 from .jav_code import (  # noqa: E402
@@ -1381,13 +1382,53 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
                     # wrapper was migrated by the sweep long ago). The
                     # move-settle gate in finalize is the real guard;
                     # this just avoids opting in prematurely.
-                    if await run_finalize(
-                        pikpak_service, row.code,
-                        allow_shell_trash=(
-                            (row.archived_at or row.created_at)
-                            < datetime.utcnow() - _ABANDON_GRACE
-                        ),
-                    ):
+                    shell_ok = (
+                        (row.archived_at or row.created_at)
+                        < datetime.utcnow() - _ABANDON_GRACE
+                    )
+                    try:
+                        ok = await run_finalize(
+                            pikpak_service, row.code,
+                            allow_shell_trash=shell_ok,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # By-name resolution itself blew up (live AP-370
+                        # 2026-08-31: the presence path's canonical walk
+                        # raised "File or folder is not found" every
+                        # pass for 3h while the wrapper sat in the series
+                        # folder). The id-based fallback below does not
+                        # touch that path — try it before giving up.
+                        if not _file_id_fallback_eligible(row):
+                            raise
+                        logger.warning(
+                            "finalize retry %s by-name failed: %s; "
+                            "trying file_id fallback", row.code, exc,
+                        )
+                        ok = None
+                    if not ok and _file_id_fallback_eligible(row):
+                        # #145 corollary: phase-1 routed the wrapper by
+                        # OfflineTaskLog code, so a BT name the parser
+                        # can't read (``kawd772hhbhd``, ``1122kawd687FHD``)
+                        # still lands in the right series folder — where
+                        # finalize, which finds folders by NAME, can never
+                        # see it (live 2026-08-31: 5 KAWD wrappers, ~30GB,
+                        # "找不到歸檔資料夾" every pass). The row's file_id
+                        # IS the wrapper; prove it sits in the canonical
+                        # series folder and finalize it by id.
+                        parent = await _locate_archived_wrapper(row)
+                        if parent:
+                            ok = await run_finalize(
+                                pikpak_service, row.code,
+                                folder_id=row.file_id, parent_id=parent,
+                                allow_shell_trash=shell_ok,
+                            )
+                            if ok:
+                                logger.info(
+                                    "finalize retry %s: wrapper resolved by "
+                                    "file_id %s (name %r unparseable)",
+                                    row.code, row.file_id, row.name,
+                                )
+                    if ok:
                         if not row.archived:
                             # Collecting-orphan: the sweep's stamp never
                             # matched, so close the move here too.
@@ -1427,6 +1468,42 @@ async def _finalize_retry_pass_inner(stats: dict) -> int:
         if done:
             await session.commit()
     return done
+
+
+def _file_id_fallback_eligible(row: OfflineTaskLog) -> bool:
+    """Rows the id-based finalize fallback may serve: the sweep already
+    moved the wrapper (``archived``) and the task left a file_id behind.
+    Restricted further to names the parser cannot read — when the name
+    parses, by-name finalize DID find the folder and returned None for a
+    real reason (settling / still materialising); re-running it by id
+    would just repeat the same plan on the same folder."""
+    if not (row.archived and row.file_id):
+        return False
+    return extract_jav_code(row.name or "") is None
+
+
+async def _locate_archived_wrapper(row: OfflineTaskLog) -> str:
+    """Series-folder id when ``row.file_id`` is a direct child FOLDER of
+    the code's canonical series folder, else ``""``.
+
+    One path lookup + one listing, only for rows by-name finalize could
+    not serve. Anything else — wrapper routed to a non-canonical series
+    twin, file_id that is a bare file, listing failure — returns "" and
+    the row simply stays in the backoff pool as before."""
+    try:
+        path = await _resolve_archive_path_by_code(row.code)
+        if "/" not in path:
+            return ""
+        parent = await pikpak_service.lookup_folder_id(path.rsplit("/", 1)[0])
+        if not parent:
+            return ""
+        children, _partial = await pikpak_service.list_all_files(parent)
+        for child in children:
+            if child.id == row.file_id and child.kind == "drive#folder":
+                return parent
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("locate wrapper %s by file_id failed: %s", row.code, exc)
+    return ""
 
 
 async def _reap_orphan_rows() -> int:

@@ -379,7 +379,13 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
     and choosing the series folder from what's physically on PikPak — so
     the canonical ``製作商/<studio>/<series>/<CODE>`` guess can miss even
     though a per-code folder absolutely exists. Loose-video paths (the
-    flattened layout) don't count."""
+    flattened layout) don't count — but file-vs-folder is decided by the
+    folder-typed lookup below, NOT by the leaf's spelling: BT wrappers
+    routinely name the folder after the video file itself
+    (``u15x-REBDB-120.mp4`` the FOLDER, real video inside), and skipping
+    video-looking leaves on name alone stranded those codes forever —
+    finalize looped 找不到歸檔資料夾 while the reaper kept the row as
+    files-still-on-PikPak (live 2026-08-12: REBDB-120)."""
     from .jav_code import normalize_code  # avoid cycle at import time
     from .pikpak_presence import presence_index
 
@@ -390,8 +396,6 @@ async def presence_code_folders(svc, code: str) -> list[tuple[str, str, str]]:
     seen: set[str] = set()
     for path in presence_index.paths_for(code):
         leaf = path.rsplit("/", 1)[-1]
-        if is_video(leaf):
-            continue
         if normalize_code(extract_jav_code(leaf) or "") != want:
             continue
         fid = await svc.lookup_folder_id(path)  # folder-typed leaf only

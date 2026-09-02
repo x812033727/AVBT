@@ -400,3 +400,25 @@ def test_hyphenated_code_outranks_squished_title_token(name, want):
 )
 def test_hyphenated_code_outranks_squished_title_token_full(name, want):
     assert extract_jav_code_full(name) == want
+
+
+# Hyphen preference must not promote domain-tail artifacts: the .com in
+# ``one2048.com-0127-club604`` survives the site-noise strip (the ``-``
+# after the TLD is the CLUB-032 guard), so ``COM-0127`` reads as a
+# hyphenated code and — without the COM demotion — would outrank the
+# real squished code after it (12 live corpus names, one generator).
+@pytest.mark.parametrize(
+    "name,want",
+    [
+        ("one2048.com-0127-club604-FHD", "CLUB-604"),
+        ("one2048.com-0205-dvdms501-FHD", "DVDMS-501"),
+        ("one2048.com-0316-ap752-FHD", "AP-752"),
+        # Demotion is ranking-only: a lone COM-NNN still falls back to
+        # last-wins and returns unchanged, same as before this fix.
+        ("one2048.com-0127-FHD", "COM-0127"),
+        # CLUB itself stays first-tier — it is a real JavBus label.
+        ("122.CLUB-032", "CLUB-032"),
+    ],
+)
+def test_domain_tail_com_candidate_never_outranks_real_code(name, want):
+    assert extract_jav_code(name) == want

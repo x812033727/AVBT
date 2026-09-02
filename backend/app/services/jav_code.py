@@ -280,6 +280,12 @@ def _strip_site_noise(stem: str) -> str:
     return stem
 
 
+# See _pick_match: hyphenated candidates with these labels are domain-tail
+# artifacts (``xxx.com-0127``), not catalog codes. Evidence-gated allowlist —
+# COM is the only shape in the live corpus; notably CLUB must NOT join it.
+_DEMOTED_HYPHEN_LABELS = {"COM"}
+
+
 def _pick_match(matches: list[str]) -> str:
     """Choose the code among every code-like substring of a stem.
 
@@ -295,8 +301,23 @@ def _pick_match(matches: list[str]) -> str:
     it never outranks an explicit ``LABEL-NNN``. Among several
     hyphenated matches the tail still wins (site-noise rescue keeps its
     later-real-code priority).
+
+    One label is demoted from the hyphenated tier: ``COM``. Release
+    names glue a date onto a site domain (``one2048.com-0127-club604``),
+    and because the ``.com`` is followed by ``-`` the site-noise strip
+    deliberately leaves it alone (the CLUB-032 guard) — so ``COM-0127``
+    reads as a hyphenated code and would outrank the real squished code
+    after it (corpus: 12 live names, all this one generator). Demotion
+    only changes ranking: when nothing else matches, a lone ``COM-NNN``
+    still returns via the last-wins fallback, exactly as before. CLUB
+    et al. stay first-tier — CLUB is a real JavBus label.
     """
-    hyphenated = [m for m in matches if "-" in m]
+    hyphenated = [
+        m for m in matches
+        if "-" in m
+        and m.split("-", 1)[0].lstrip("0123456789").upper()
+        not in _DEMOTED_HYPHEN_LABELS
+    ]
     return (hyphenated or matches)[-1]
 
 

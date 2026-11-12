@@ -130,6 +130,13 @@ ACTIVE_PHASES = [
     "PHASE_TYPE_PENDING",
     "PHASE_TYPE_ERROR",
 ]
+# The subset that is actually downloading or queued. Listed on its own so
+# a pile of failed tasks can never crowd it out of a size-capped listing
+# (see PikPakService.list_active_tasks).
+IN_FLIGHT_PHASES = [
+    "PHASE_TYPE_RUNNING",
+    "PHASE_TYPE_PENDING",
+]
 
 
 def _is_too_frequent_error(exc: BaseException) -> bool:
@@ -884,6 +891,29 @@ class PikPakService:
             if not page_token:
                 break
         return tasks[:size]
+
+    async def list_active_tasks(self, size: int = 1000) -> list[PikPakTask]:
+        """Every not-yet-complete task, in-flight ones first.
+
+        PikPak lists tasks newest-first across all requested phases, so
+        one ``ACTIVE_PHASES`` listing capped at ``size`` is only as deep
+        as the newest ``size`` tasks. ERROR tasks never leave the list on
+        their own: with the drive full, every hourly tracker pass adds
+        ~100 more "Storage space is not enough" rows on top (live
+        2026-11-12: 30,000+ ERROR tasks, the 10 RUNNING ones sitting at
+        position 550 and sinking — already invisible to the size=500
+        operator view, ~440 rows from falling out of the archiver's
+        size=1000 guard and being finalized/reaped mid-transfer).
+
+        RUNNING+PENDING are therefore listed separately and always kept;
+        ERROR tasks only fill whatever room is left."""
+        in_flight = await self.list_tasks(size=size, phases=IN_FLIGHT_PHASES)
+        room = size - len(in_flight)
+        failed = (
+            await self.list_tasks(size=room, phases=["PHASE_TYPE_ERROR"])
+            if room > 0 else []
+        )
+        return [*in_flight, *failed]
 
     async def retry_task(self, task_id: str) -> dict:
         return await self._call(lambda c: c.offline_task_retry(task_id))

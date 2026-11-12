@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import app.routers.pikpak as pikpak_router
 import app.services.archiver as arch
-from app.services.pikpak import ACTIVE_PHASES, PikPakService
+from app.services.pikpak import IN_FLIGHT_PHASES, PikPakService
 
 
 async def test_list_tasks_paginates_and_forwards_phases(monkeypatch):
@@ -75,46 +75,97 @@ async def test_list_tasks_stops_at_requested_size(monkeypatch):
     assert len(tasks) == 150
 
 
-async def test_active_task_ids_includes_pending(monkeypatch):
-    captured: dict = {}
+def _flooded_account(n_errors: int):
+    """Fake PikPak listing: newest-first, ``n_errors`` ERROR tasks newer
+    than the in-flight ones, honouring the phase filter and size cap."""
+    newest_first = [
+        *(SimpleNamespace(id=f"err{i}", phase="PHASE_TYPE_ERROR")
+          for i in range(n_errors)),
+        SimpleNamespace(id="run1", phase="PHASE_TYPE_RUNNING"),
+        SimpleNamespace(id="pend1", phase="PHASE_TYPE_PENDING"),
+    ]
+    calls: list = []
 
     async def fake_list_tasks(size=100, phases=None):
-        captured["phases"] = phases
-        return [
-            SimpleNamespace(id="pend1", phase="PHASE_TYPE_PENDING"),
-            SimpleNamespace(id="run1", phase="PHASE_TYPE_RUNNING"),
-            SimpleNamespace(id="done1", phase="PHASE_TYPE_COMPLETE"),
-        ]
+        calls.append((size, phases))
+        wanted = phases or ["PHASE_TYPE_RUNNING", "PHASE_TYPE_ERROR"]
+        return [t for t in newest_first if t.phase in wanted][:size]
 
-    monkeypatch.setattr(arch.pikpak_service, "list_tasks", fake_list_tasks)
+    return fake_list_tasks, calls
+
+
+async def test_list_active_tasks_survives_error_flood(monkeypatch):
+    """Live 2026-11-12: 30,000+ "Storage space is not enough" ERROR tasks
+    sat above 10 RUNNING ones in PikPak's newest-first listing. A single
+    size-capped ACTIVE_PHASES listing would have dropped the RUNNING
+    tasks once ~440 more errors piled on."""
+    svc = PikPakService()
+    fake, calls = _flooded_account(5000)
+    monkeypatch.setattr(svc, "list_tasks", fake)
+
+    tasks = await svc.list_active_tasks(size=1000)
+
+    assert [t.id for t in tasks[:2]] == ["run1", "pend1"]
+    assert len(tasks) == 1000
+    assert calls[0] == (1000, IN_FLIGHT_PHASES)
+    assert calls[1] == (998, ["PHASE_TYPE_ERROR"])
+
+
+async def test_list_active_tasks_skips_error_listing_when_full(monkeypatch):
+    svc = PikPakService()
+    calls: list = []
+
+    async def fake_list_tasks(size=100, phases=None):
+        calls.append(phases)
+        return [SimpleNamespace(id=f"r{i}", phase="PHASE_TYPE_PENDING")
+                for i in range(size)]
+
+    monkeypatch.setattr(svc, "list_tasks", fake_list_tasks)
+
+    tasks = await svc.list_active_tasks(size=3)
+
+    assert len(tasks) == 3
+    assert calls == [IN_FLIGHT_PHASES]
+
+
+async def test_active_task_ids_includes_pending_behind_error_flood(monkeypatch):
+    fake, _calls = _flooded_account(5000)
+    monkeypatch.setattr(arch.pikpak_service, "list_tasks", fake)
 
     ids = await arch._active_task_ids()
 
     assert "pend1" in ids
     assert "run1" in ids
-    assert "done1" not in ids
-    assert "PHASE_TYPE_PENDING" in (captured["phases"] or [])
+    assert "err0" in ids  # ERROR tasks still count as not-complete
 
 
-async def test_tasks_endpoint_reports_pending(monkeypatch):
+async def test_active_task_ids_drops_complete(monkeypatch):
+    async def fake_list_active_tasks(size=1000):
+        return [
+            SimpleNamespace(id="run1", phase="PHASE_TYPE_RUNNING"),
+            SimpleNamespace(id="done1", phase="PHASE_TYPE_COMPLETE"),
+        ]
+
+    monkeypatch.setattr(
+        arch.pikpak_service, "list_active_tasks", fake_list_active_tasks
+    )
+
+    assert await arch._active_task_ids() == {"run1"}
+
+
+async def test_tasks_endpoint_reports_in_flight_behind_error_flood(monkeypatch):
     """The operator's in-flight view must not hide the queue.
 
     DB `pending` has drifted, so /api/pikpak/tasks is the only in-flight
-    truth — and a queued task that reads as absent gets diagnosed as a
-    dead seed and has its magnet resent (live: MMGO-005 VOx_Q5Tj).
+    truth — and a task that reads as absent gets diagnosed as a dead
+    seed and has its magnet resent (live: MMGO-005 VOx_Q5Tj). Same for a
+    RUNNING task buried under failed ones (2026-11-12: the page showed
+    500 ERROR / 0 RUNNING with 10 tasks still downloading).
     """
-    captured: dict = {}
-
-    async def fake_list_tasks(size=100, phases=None):
-        captured["phases"] = phases
-        return [
-            SimpleNamespace(id="run1", phase="PHASE_TYPE_RUNNING"),
-            SimpleNamespace(id="pend1", phase="PHASE_TYPE_PENDING"),
-        ]
-
-    monkeypatch.setattr(pikpak_router.pikpak_service, "list_tasks", fake_list_tasks)
+    fake, _calls = _flooded_account(5000)
+    monkeypatch.setattr(pikpak_router.pikpak_service, "list_tasks", fake)
 
     tasks = await pikpak_router.list_tasks(size=500)
 
-    assert captured["phases"] == ACTIVE_PHASES
-    assert [t.id for t in tasks] == ["run1", "pend1"]
+    assert [t.id for t in tasks[:2]] == ["run1", "pend1"]
+    assert len(tasks) == 500

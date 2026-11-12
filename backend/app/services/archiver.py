@@ -35,7 +35,7 @@ from ..database import SessionLocal
 from ..models import MovieDetailCache, OfflineTaskLog, TrackedListing
 from ..schemas import MovieDetail
 from ..scrapers import javbus as scraper
-from .pikpak import ACTIVE_PHASES, PikPakError, pikpak_service
+from .pikpak import PikPakError, pikpak_service
 from .webhook_queue import webhook_queue
 
 logger = logging.getLogger(__name__)
@@ -1214,7 +1214,10 @@ async def _active_task_ids() -> set[str]:
     gone" while they were merely waiting in a 53-deep PENDING queue
     (live: MMGO-005, closed twice before its replacement ever ran)."""
     try:
-        tasks = await pikpak_service.list_tasks(size=1000, phases=ACTIVE_PHASES)
+        # In-flight tasks are listed apart from ERROR ones: a combined
+        # newest-first listing lets a flood of failed tasks push the
+        # downloading ones past the size cap (see list_active_tasks).
+        tasks = await pikpak_service.list_active_tasks(size=1000)
     except Exception as exc:  # noqa: BLE001
         # Fail closed: with no task list we can't prove anything is
         # complete, so the caller skips this pass entirely.

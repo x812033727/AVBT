@@ -9,9 +9,56 @@ unchanged."""
 
 from __future__ import annotations
 
+import logging
 import re
 
 from .jav_code import ext_of, extract_jav_code, extract_jav_code_full
+
+logger = logging.getLogger(__name__)
+
+# Observation only: remember which multi-part decisions were already
+# logged so a plan that is recomputed every archiver loop (dry-run
+# checks, a rename that keeps failing) writes its line once per process.
+_LOGGED_DECISIONS: set[tuple] = set()
+_LOGGED_DECISIONS_MAX = 5000
+
+
+def _log_multipart_decision(
+    canon: str, group: list, assigned: dict[str, str],
+    copies: list, outliers: list,
+) -> None:
+    """Log how a same-canonical group was numbered, with the ORIGINAL
+    names. The flatten/cleanup callers rename without logging, so once
+    ``CODE.mp4`` + ``CODE.480p.mp4`` has become ``_2`` / ``_1`` nothing
+    records which names produced the fake part set (live: HUNTC-057/079/
+    129/180/187, IPZZ-194/203 — same runtime, two resolutions). Never
+    raises and never changes the plan."""
+    try:
+        copy_names = {f.name for f in copies}
+        outlier_names = {f.name for f in outliers}
+        key = (canon, tuple(sorted(assigned.items())),
+               tuple(sorted(copy_names)), tuple(sorted(outlier_names)))
+        if key in _LOGGED_DECISIONS:
+            return
+        if len(_LOGGED_DECISIONS) >= _LOGGED_DECISIONS_MAX:
+            _LOGGED_DECISIONS.clear()
+        _LOGGED_DECISIONS.add(key)
+        parts = []
+        for f in group:
+            if f.name in assigned:
+                verdict = assigned[f.name]
+            elif f.name in copy_names:
+                verdict = "(copy)"
+            elif f.name in outlier_names:
+                verdict = "(outlier)"
+            else:
+                verdict = "(kept)"
+            size = getattr(f, "size", None)
+            dur = getattr(f, "duration", None)
+            parts.append(f"{f.name!r} size={size} dur={dur} -> {verdict}")
+        logger.info("multipart plan %s: %s", canon, "; ".join(parts))
+    except Exception:  # noqa: BLE001
+        logger.debug("multipart plan log failed for %s", canon, exc_info=True)
 
 
 def _uniquify_target(target: str, taken: set[str]) -> str:
@@ -575,6 +622,7 @@ def _build_video_rename_plan(
         # the dedup can take them. Name-declared re-encodes (a trailing
         # quality tag) get the same treatment — they beat gates the
         # runtime rule can't judge (unprobed files, >½-size SD rips).
+        group_all = list(files)
         copies = low_bitrate_copies(files)
         copies += [f for f in quality_tagged_copies(files, canon)
                    if f not in copies]
@@ -602,6 +650,11 @@ def _build_video_rename_plan(
                     # _5). Only BT-noise names get the canonical.
                     if not part_named and target != c.name:
                         plan[c.name] = target
+                _log_multipart_decision(
+                    canon, group_all,
+                    {f.name: plan[f.name] for f in survivors
+                     if f.name in plan},
+                    copies, [])
                 continue
             files = survivors
         # A stray low-res whole-film rip must not claim a part slot.
@@ -663,4 +716,8 @@ def _build_video_rename_plan(
             ext = ext_of(f.name)
             plan[f.name] = f"{canon}_{n}{ext}"
             used_indices.add(n)
+        _log_multipart_decision(
+            canon, group_all,
+            {f.name: plan[f.name] for f in unnamed if f.name in plan},
+            copies, _outliers)
     return plan, group_members

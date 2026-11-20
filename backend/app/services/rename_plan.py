@@ -426,6 +426,18 @@ def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
 # other is a bitrate difference, not a different disc.
 _SAME_FILM_DURATION_TOLERANCE = 0.05
 _COPY_MAX_SIZE_FRACTION = 0.5
+# A second, narrower gate for the SD rip that ships inside the same
+# torrent as its HD twin. A 480p encode runs ~62% of the 720p file
+# (live 2026-11-20: HUNTC-057 2.16GB/3.45GB, HUNTC-070/129/180 the same
+# 0.625 ratio), so it slips the half-size gate above and sits on disk as
+# a fake ``_1`` beside the real film's ``_2``. What gives it away is the
+# runtime: both files were cut from one master, so PikPak reports the
+# SAME second count (measured gap < 0.1s on all five), where two real
+# discs agreeing to the second is a coincidence. The size gate stays —
+# two same-runtime files within 20% of each other are different rips a
+# human has to judge (see STOL-094), not an obvious loser.
+_IDENTICAL_RUNTIME_SECONDS = 1
+_IDENTICAL_RUNTIME_MAX_SIZE_FRACTION = 0.8
 
 
 def low_bitrate_copies(files: list) -> list:
@@ -451,7 +463,14 @@ def low_bitrate_copies(files: list) -> list:
                        * _SAME_FILM_DURATION_TOLERANCE)
         much_smaller = (f.size is not None
                         and f.size <= (biggest.size or 0) * _COPY_MAX_SIZE_FRACTION)
-        if same_length and much_smaller:
+        identical_length = (abs(f.duration - biggest.duration)
+                            <= _IDENTICAL_RUNTIME_SECONDS)
+        clearly_smaller = (
+            f.size is not None
+            and f.size <= (biggest.size or 0)
+            * _IDENTICAL_RUNTIME_MAX_SIZE_FRACTION)
+        if (same_length and much_smaller) or (
+                identical_length and clearly_smaller):
             out.append(f)
     return out
 

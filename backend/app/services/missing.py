@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import AppMeta, TrackedListing
+from ..models import AppMeta, GDriveLocation, TrackedListing
 from ..schemas import (
     AggregatedMissing,
     AggregatedMissingItem,
@@ -39,6 +39,26 @@ from . import listing_catalog
 from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
 from .listing_walker import walk_listing
 from .pikpak_presence import presence_index
+
+
+async def drive_codes() -> set[str]:
+    """Normalized codes stored on Google Drive (``gdrive_location``)."""
+    try:
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(GDriveLocation.code).distinct())).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — Drive lookup down ≠ missing page down
+        logger.warning("drive_codes lookup failed: %s", exc)
+        return set()
+    return {normalize_code(c) or c.upper() for c in rows if c}
+
+
+async def _owned_codes() -> set[str]:
+    """Codes the user has: on PikPak (presence index) or moved to Google
+    Drive. Works whose PikPak source was trashed after a Drive move must
+    still count as downloaded — otherwise the 缺漏 badge shows them as
+    missing and tracker auto-send re-downloads them (then gdrive_auto
+    moves them again, forever)."""
+    return (await presence_index.get()) | await drive_codes()
 
 
 def _expected_roots(kind: str, slug: str, name: str) -> list[str]:
@@ -561,7 +581,7 @@ async def missing_for_listing(
     # so forcing a walk here bought ~2.5min of PikPak calls per call for
     # data that is already current. Full walks stay on the explicit
     # /presence/refresh path.
-    presence = await presence_index.get()
+    presence = await _owned_codes()
 
     # Fold in owned works the magnet-only walk missed but that belong here
     # (aged-off magnets / listing-index gaps). They then count toward the
@@ -735,7 +755,7 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     identical results into ``_summary_result``."""
     # Same split as missing_for_listing: ``refresh`` re-fetches listings,
     # it does not re-walk the drive.
-    presence = await presence_index.get()
+    presence = await _owned_codes()
     ignored = set(await get_ignored_codes())
     async with SessionLocal() as session:
         rows = (
@@ -792,7 +812,7 @@ async def missing_summary_stream(
         # ``error`` event then bail. ``refresh`` re-fetches listings; it
         # does not re-walk the drive (#163/#169).
         try:
-            presence = await presence_index.get()
+            presence = await _owned_codes()
             ignored = set(await get_ignored_codes())
             async with SessionLocal() as session:
                 rows = (
@@ -885,7 +905,7 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
         if not refresh and _all_result is not None:
             return _all_result
         # Listing refresh, not a drive walk — see missing_for_listing.
-        presence = await presence_index.get()
+        presence = await _owned_codes()
         ignored = set(await get_ignored_codes())
         async with SessionLocal() as session:
             rows = (

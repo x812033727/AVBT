@@ -25,6 +25,7 @@ import {
   type TrackedListing,
 } from "@/lib/api";
 import MissingDetailPanel from "./MissingDetailPanel";
+import TrackedGDriveControl from "./TrackedGDriveControl";
 
 export function keyOf(it: TrackedListing) {
   return `${it.kind}:${it.id}`;
@@ -277,6 +278,7 @@ export default function TrackedRow({
             />
             自動送 PikPak
           </label>
+          <TrackedGDriveControl item={item} onChanged={onChanged} />
           <div className="flex gap-2">
             <button
               onClick={() => onCheckNow()}

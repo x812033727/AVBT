@@ -156,6 +156,14 @@ class TrackedListingIn(BaseModel):
 
 
 class TrackedListingOut(TrackedListingIn):
+    # "存到 Google Drive" (set via PUT /api/tracked/{kind}/{slug}/gdrive,
+    # never through the upsert above so toggling auto_send can't reset it).
+    gdrive_enabled: bool = False
+    gdrive_account_id: int = 0
+    gdrive_delete_source: bool = True
+    gdrive_last_error: str = ""
+    gdrive_moved_count: int = 0
+    gdrive_active: bool = False
     last_seen_code: str = ""
     last_checked_at: datetime | None = None
     last_error: str = ""

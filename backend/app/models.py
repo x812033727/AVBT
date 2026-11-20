@@ -74,6 +74,16 @@ class TrackedListing(Base):
     quiet_ticks: Mapped[int] = mapped_column(Integer, default=0)
     last_full_scan_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    # "存到 Google Drive" per listing: the listing's downloaded works (and
+    # every later one, see services/gdrive_auto.py) move to this account.
+    # server_default too: raw-SQL inserts (database._backfill_tracked_actresses)
+    # don't know these columns and fresh tables make them NOT NULL.
+    gdrive_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    gdrive_account_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    gdrive_delete_source: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1"
+    )
+    gdrive_last_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -343,8 +353,17 @@ class GDriveJob(Base):
     __tablename__ = "gdrive_job"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # The listing this job moves. Historical column names: ``studio_id`` /
+    # ``studio_name`` hold the listing id / name for every kind;
+    # ``listing_kind`` says which axis (studio | star | label | series |
+    # director).
+    listing_kind: Mapped[str] = mapped_column(String(16), default="studio")
     studio_id: Mapped[str] = mapped_column(String(64), index=True, default="")
     studio_name: Mapped[str] = mapped_column(String(256), default="")
+    # JSON list of codes to move; empty = every downloaded work of the
+    # listing. Auto jobs (gdrive_auto) carry just the newly-settled codes.
+    codes: Mapped[str] = mapped_column(Text, default="")
+    origin: Mapped[str] = mapped_column(String(16), default="manual")  # manual | auto
     account_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
     status: Mapped[str] = mapped_column(String(16), index=True, default="scanning")
     delete_source: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -414,6 +433,8 @@ class GDriveLocation(Base):
     code: Mapped[str] = mapped_column(String(64), index=True, default="")
     account_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
     job_id: Mapped[int] = mapped_column(Integer, default=0)
+    # Listing whose job moved it (``studio_id`` = listing id, any kind).
+    listing_kind: Mapped[str] = mapped_column(String(16), default="studio")
     studio_id: Mapped[str] = mapped_column(String(64), index=True, default="")
     drive_file_id: Mapped[str] = mapped_column(String(128), unique=True)
     drive_folder_id: Mapped[str] = mapped_column(String(128), default="")

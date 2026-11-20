@@ -25,6 +25,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import posixpath
 from datetime import datetime, timedelta
@@ -35,7 +36,7 @@ from sqlalchemy import delete, func, or_, select, update
 from ..config import settings
 from ..database import SessionLocal
 from ..models import GDriveAccount, GDriveJob, GDriveLocation, GDriveTransfer
-from . import gdrive_accounts, gdrive_policy, studio_index
+from . import gdrive_accounts, gdrive_policy, listing_codes, studio_index
 from .gdrive import (
     AccountAuth,
     GDriveAuthError,
@@ -135,6 +136,7 @@ class GDriveTransferQueue:
         self._inflight: set[int] = set()
         self._scans: dict[int, asyncio.Task] = {}
         self._job_locks: dict[int, asyncio.Lock] = {}
+        self._scan_lock = asyncio.Lock()
 
     # ---------- lifecycle ----------
 
@@ -178,43 +180,60 @@ class GDriveTransferQueue:
     # ---------- jobs ----------
 
     async def create_jobs(
-        self, studio_ids: list[str], *, account_id: int, delete_source: bool
+        self,
+        targets: list[tuple[str, str, str]],
+        *,
+        account_id: int,
+        delete_source: bool,
+        codes: list[str] | None = None,
+        origin: str = "manual",
     ) -> list[dict]:
-        """One job per studio. Studios with an active job are skipped."""
+        """One job per listing ``(kind, id, name)``. Listings that already
+        have an active job are skipped. ``codes`` limits the job to those
+        works (auto jobs); ``None`` = every downloaded work of the listing."""
         await gdrive_accounts.credentials(account_id)  # fail fast
-        agg = await studio_index.get()
         results: list[dict] = []
         async with SessionLocal() as session:
             active = set(
                 (
                     await session.execute(
-                        select(GDriveJob.studio_id).where(GDriveJob.status.in_(ACTIVE_JOB_STATES))
+                        select(GDriveJob.listing_kind, GDriveJob.studio_id).where(
+                            GDriveJob.status.in_(ACTIVE_JOB_STATES)
+                        )
                     )
-                ).scalars().all()
+                ).all()
             )
             new_jobs: list[GDriveJob] = []
-            for sid in dict.fromkeys(s.strip() for s in studio_ids if s.strip()):
-                entry = agg.studios.get(sid)
-                if entry is None:
-                    results.append({"studio_id": sid, "job_id": None, "error": "找不到此製作商的已下載作品"})
+            seen: set[tuple[str, str]] = set()
+            for kind, lid, name in targets:
+                lid = (lid or "").strip()
+                if not lid or (kind, lid) in seen:
                     continue
-                if sid in active:
-                    results.append({"studio_id": sid, "job_id": None, "error": "已有進行中的搬移"})
+                seen.add((kind, lid))
+                if (kind, lid) in active:
+                    results.append(
+                        {"kind": kind, "studio_id": lid, "job_id": None, "error": "已有進行中的搬移"}
+                    )
                     continue
                 job = GDriveJob(
-                    studio_id=sid,
-                    studio_name=entry.name,
+                    listing_kind=kind,
+                    studio_id=lid,
+                    studio_name=name or lid,
                     account_id=account_id,
                     status="scanning",
                     delete_source=delete_source,
                     source_state="pending" if delete_source else "keep",
+                    codes=json.dumps(sorted(set(codes))) if codes else "",
+                    origin=origin,
                     message="掃描 PikPak 檔案中…",
                 )
                 session.add(job)
                 new_jobs.append(job)
             await session.commit()
         for job in new_jobs:
-            results.append({"studio_id": job.studio_id, "job_id": job.id, "error": ""})
+            results.append(
+                {"kind": job.listing_kind, "studio_id": job.studio_id, "job_id": job.id, "error": ""}
+            )
             self._scans[job.id] = asyncio.create_task(self._scan_job(job.id))
         return results
 
@@ -234,22 +253,15 @@ class GDriveTransferQueue:
             job = await session.get(GDriveJob, job_id)
             if job is None:
                 return
-            studio_id, account_id = job.studio_id, job.account_id
-        entry = await studio_index.studio_for(studio_id)
-        codes = sorted({w.code for s in (entry.series.values() if entry else []) for w in s.works})
+            kind, listing_id, account_id = job.listing_kind, job.studio_id, job.account_id
+            wanted = job.codes
+        if wanted:
+            codes = sorted(json.loads(wanted))
+        else:
+            codes = sorted(await listing_codes.codes_for_listing(kind, listing_id))
         if not codes:
-            await self._set_job(job_id, status="error", message="此製作商沒有已下載作品", finished=True)
+            await self._set_job(job_id, status="error", message="沒有已下載的作品", finished=True)
             return
-
-        # Files already on this account (re-run after a partial job).
-        async with SessionLocal() as session:
-            done_paths = set(
-                (
-                    await session.execute(
-                        select(GDriveLocation.path).where(GDriveLocation.account_id == account_id)
-                    )
-                ).scalars().all()
-            )
 
         specs: list[dict] = []
         missing: list[str] = []
@@ -263,49 +275,70 @@ class GDriveTransferQueue:
                     spec["code"] = normalize_code(code) or code
                     specs.append(spec)
 
-        skipped = 0
-        rows: list[GDriveTransfer] = []
-        for spec in specs:
-            if drive_path_for(spec["pikpak_path"]) in done_paths:
-                skipped += 1
-                continue
-            rows.append(
-                GDriveTransfer(
-                    job_id=job_id,
-                    account_id=account_id,
-                    code=spec["code"],
-                    pikpak_file_id=spec["file_id"],
-                    pikpak_name=spec["name"],
-                    pikpak_size=spec["size"],
-                    pikpak_path=spec["pikpak_path"],
-                    source_leaf_id=spec["leaf_id"],
-                    drive_dir=spec["drive_dir"],
-                    drive_code_dir=spec["drive_code_dir"],
-                    status="pending",
-                    message="排隊中",
+        # Check-and-insert under one lock so two overlapping listings'
+        # scans can't both queue the same file.
+        async with self._scan_lock:
+            # Never move a file twice: skip what is already on Drive (any
+            # account — a work can belong to several Drive-enabled listings)
+            # or queued in another active job.
+            async with SessionLocal() as session:
+                done_paths = set(
+                    (await session.execute(select(GDriveLocation.path))).scalars().all()
                 )
-            )
-        async with SessionLocal() as session:
-            session.add_all(rows)
-            job = await session.get(GDriveJob, job_id)
-            if job is None or job.status != "scanning":
-                await session.rollback()
-                return
-            job.code_count = len(codes) - len(missing)
-            job.file_count = len(rows)
-            job.total_bytes = sum(r.pikpak_size for r in rows)
-            notes = []
-            if skipped:
-                notes.append(f"{skipped} 個檔案已在 Drive,略過")
-            if missing:
-                notes.append(f"{len(missing)} 部在 PikPak 找不到路徑")
-            job.message = ";".join(notes)
-            job.status = "transferring" if rows else "done"
-            if not rows:
-                job.finished_at = datetime.utcnow()
-                job.source_state = "keep"
-                job.message = job.message or "沒有需要搬移的檔案"
-            await session.commit()
+                busy_ids = set(
+                    (
+                        await session.execute(
+                            select(GDriveTransfer.pikpak_file_id).where(
+                                GDriveTransfer.job_id != job_id,
+                                GDriveTransfer.status.in_(("pending", "running")),
+                            )
+                        )
+                    ).scalars().all()
+                )
+
+            skipped = 0
+            rows: list[GDriveTransfer] = []
+            for spec in specs:
+                if drive_path_for(spec["pikpak_path"]) in done_paths or spec["file_id"] in busy_ids:
+                    skipped += 1
+                    continue
+                rows.append(
+                    GDriveTransfer(
+                        job_id=job_id,
+                        account_id=account_id,
+                        code=spec["code"],
+                        pikpak_file_id=spec["file_id"],
+                        pikpak_name=spec["name"],
+                        pikpak_size=spec["size"],
+                        pikpak_path=spec["pikpak_path"],
+                        source_leaf_id=spec["leaf_id"],
+                        drive_dir=spec["drive_dir"],
+                        drive_code_dir=spec["drive_code_dir"],
+                        status="pending",
+                        message="排隊中",
+                    )
+                )
+            async with SessionLocal() as session:
+                session.add_all(rows)
+                job = await session.get(GDriveJob, job_id)
+                if job is None or job.status != "scanning":
+                    await session.rollback()
+                    return
+                job.code_count = len(codes) - len(missing)
+                job.file_count = len(rows)
+                job.total_bytes = sum(r.pikpak_size for r in rows)
+                notes = []
+                if skipped:
+                    notes.append(f"{skipped} 個檔案已在 Drive 或其他搬移中,略過")
+                if missing:
+                    notes.append(f"{len(missing)} 部在 PikPak 找不到路徑")
+                job.message = ";".join(notes)
+                job.status = "transferring" if rows else "done"
+                if not rows:
+                    job.finished_at = datetime.utcnow()
+                    job.source_state = "keep"
+                    job.message = job.message or "沒有需要搬移的檔案"
+                await session.commit()
         self.notify()
 
     async def _files_for_leaf(self, leaf_path: str) -> list[dict]:
@@ -659,6 +692,7 @@ class GDriveTransferQueue:
                     code=code,
                     account_id=account_id,
                     job_id=job_id,
+                    listing_kind=job.listing_kind if job else "studio",
                     studio_id=job.studio_id if job else "",
                     drive_file_id=file_id,
                     drive_folder_id=folder_id,
@@ -797,6 +831,7 @@ class GDriveTransferQueue:
             logger.warning("presence refresh after gdrive move failed: %s", exc)
             presence_index.invalidate()
         studio_index.invalidate()
+        listing_codes.invalidate()
         return True
 
     # ---------- caller actions ----------

@@ -408,6 +408,13 @@ export type TrackedListing = {
   new_count: number;
   last_full_scan_at: string | null;
   last_missing_count: number;
+  // 「存到 Google Drive」(PUT /api/tracked/{kind}/{id}/gdrive)
+  gdrive_enabled: boolean;
+  gdrive_account_id: number;
+  gdrive_delete_source: boolean;
+  gdrive_last_error: string;
+  gdrive_moved_count: number;
+  gdrive_active: boolean;
   created_at: string;
 };
 
@@ -711,6 +718,8 @@ export type GDriveJobStatus =
 
 export type GDriveJob = {
   id: number;
+  listing_kind: TrackedKind;
+  origin: "manual" | "auto";
   studio_id: string;
   studio_name: string;
   account_id: number;

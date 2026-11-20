@@ -330,18 +330,31 @@ class MigrateIn(BaseModel):
 @router.post("/migrate")
 async def migrate(payload: MigrateIn):
     await _require_ready()
+    agg = await studio_index.get()
+    targets: list[tuple[str, str, str]] = []
+    missing: list[dict] = []
+    for sid in dict.fromkeys(s.strip() for s in payload.studio_ids if s.strip()):
+        entry = agg.studios.get(sid)
+        if entry is None:
+            missing.append(
+                {"kind": "studio", "studio_id": sid, "job_id": None, "error": "找不到此製作商的已下載作品"}
+            )
+        else:
+            targets.append(("studio", sid, entry.name))
     try:
         results = await gdrive_transfer_queue.create_jobs(
-            payload.studio_ids, account_id=payload.account_id, delete_source=payload.delete_source
+            targets, account_id=payload.account_id, delete_source=payload.delete_source
         )
     except gdrive_accounts.AccountUnavailable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"results": results}
+    return {"results": missing + results}
 
 
 def _job_public(job: GDriveJob, stats: dict, labels: dict[int, str]) -> dict:
     return {
         "id": job.id,
+        "listing_kind": job.listing_kind,
+        "origin": job.origin,
         "studio_id": job.studio_id,
         "studio_name": job.studio_name,
         "account_id": job.account_id,
@@ -454,7 +467,9 @@ async def active_studios():
     async with SessionLocal() as session:
         ids = (
             await session.execute(
-                select(GDriveJob.studio_id).where(GDriveJob.status.in_(ACTIVE_JOB_STATES))
+                select(GDriveJob.studio_id).where(
+                    GDriveJob.status.in_(ACTIVE_JOB_STATES), GDriveJob.listing_kind == "studio"
+                )
             )
         ).scalars().all()
     return sorted(set(ids))

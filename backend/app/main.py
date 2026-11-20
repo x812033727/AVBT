@@ -33,6 +33,7 @@ from .services import (
     auto_backup,
     detail_backfill,
     duplicate_scan,
+    gdrive_auto,
     log_cleanup,
     notify,
     tracker,
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
         supervise(auto_backup.run_loop, "auto-backup"),
         supervise(duplicate_scan.run_loop, "duplicate-scan"),
         supervise(detail_backfill.run_loop, "detail-backfill"),
+        supervise(gdrive_auto.run_loop, "gdrive-auto"),
     ]
     try:
         yield

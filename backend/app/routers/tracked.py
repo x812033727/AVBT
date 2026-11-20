@@ -3,11 +3,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_session
-from ..models import TrackedListing
+from ..models import GDriveJob, GDriveLocation, TrackedListing
 from ..schemas import (
     AggregatedMissing,
     CheckListingResult,
@@ -17,8 +18,9 @@ from ..schemas import (
     TrackedListingOut,
 )
 from ..scrapers import javbus as scraper
-from ..services import listing_catalog, tracker, tracking_migration
+from ..services import gdrive_accounts, gdrive_auto, listing_catalog, tracker, tracking_migration
 from ..services import missing as missing_svc
+from ..services.gdrive_transfer import ACTIVE_JOB_STATES
 
 router = APIRouter(prefix="/api/tracked", tags=["tracked"])
 
@@ -65,8 +67,47 @@ async def migrate_labels_to_studio(
     )
 
 
-def _to_out(r: TrackedListing) -> TrackedListingOut:
+async def _gdrive_stats(
+    session: AsyncSession,
+) -> tuple[dict[tuple[str, str], int], set[tuple[str, str]]]:
+    """(moved-code counts, listings with an active job) for every listing."""
+    moved = {
+        (k, i): int(n)
+        for k, i, n in (
+            await session.execute(
+                select(
+                    GDriveLocation.listing_kind,
+                    GDriveLocation.studio_id,
+                    func.count(func.distinct(GDriveLocation.code)),
+                ).group_by(GDriveLocation.listing_kind, GDriveLocation.studio_id)
+            )
+        ).all()
+    }
+    active = set(
+        (
+            await session.execute(
+                select(GDriveJob.listing_kind, GDriveJob.studio_id).where(
+                    GDriveJob.status.in_(ACTIVE_JOB_STATES)
+                )
+            )
+        ).all()
+    )
+    return moved, active
+
+
+def _to_out(
+    r: TrackedListing,
+    moved: dict[tuple[str, str], int] | None = None,
+    active: set[tuple[str, str]] | None = None,
+) -> TrackedListingOut:
+    key = (r.kind, r.id)
     return TrackedListingOut(
+        gdrive_enabled=bool(r.gdrive_enabled),
+        gdrive_account_id=int(r.gdrive_account_id or 0),
+        gdrive_delete_source=r.gdrive_delete_source is not False,
+        gdrive_last_error=r.gdrive_last_error or "",
+        gdrive_moved_count=(moved or {}).get(key, 0),
+        gdrive_active=key in (active or set()),
         kind=r.kind,
         id=r.id,
         name=r.name,
@@ -226,7 +267,8 @@ async def list_tracked(session: AsyncSession = Depends(get_session)):
             select(TrackedListing).order_by(TrackedListing.created_at.desc())
         )
     ).scalars().all()
-    return [_to_out(r) for r in rows]
+    moved, active = await _gdrive_stats(session)
+    return [_to_out(r, moved, active) for r in rows]
 
 
 @router.post("", response_model=TrackedListingOut)
@@ -364,7 +406,47 @@ async def get_tracked(
     row = await session.get(TrackedListing, (kind, slug))
     if not row:
         raise HTTPException(status_code=404, detail="not tracked")
-    return _to_out(row)
+    moved, active = await _gdrive_stats(session)
+    return _to_out(row, moved, active)
+
+
+class GDriveSettingIn(BaseModel):
+    enabled: bool
+    account_id: int = 0
+    delete_source: bool = True
+
+
+@router.put("/{kind}/{slug:path}/gdrive", response_model=TrackedListingOut)
+async def set_gdrive(
+    kind: str,
+    slug: str,
+    payload: GDriveSettingIn,
+    session: AsyncSession = Depends(get_session),
+):
+    """Per-listing "存到 Google Drive". Switching it on (or changing the
+    account) starts moving the listing's existing works right away; the
+    periodic gdrive_auto loop then keeps later downloads moving too.
+    Switching it off stops new jobs; running ones are left alone."""
+    if kind == "genre":
+        raise HTTPException(status_code=400, detail="類別(genre)追蹤不支援存到 Drive")
+    row = await session.get(TrackedListing, (kind, slug))
+    if not row:
+        raise HTTPException(status_code=404, detail="not tracked")
+    if payload.enabled:
+        try:
+            await gdrive_accounts.credentials(payload.account_id)
+        except gdrive_accounts.AccountUnavailable as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    row.gdrive_enabled = payload.enabled
+    if payload.account_id:
+        row.gdrive_account_id = payload.account_id
+    row.gdrive_delete_source = payload.delete_source
+    row.gdrive_last_error = ""
+    await session.commit()
+    if payload.enabled:
+        gdrive_auto.trigger(kind, slug)
+    moved, active = await _gdrive_stats(session)
+    return _to_out(row, moved, active)
 
 
 @router.delete("/{kind}/{slug:path}")

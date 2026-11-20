@@ -23,7 +23,10 @@ AVBT:個人用 JAV 收藏管理站。JavBus 抓磁力 → PikPak 離線下載 �
     - `gdrive*.py` — PikPak → Google Drive 依製作商搬移:`gdrive.py` REST 客戶端
       (OAuth、resumable upload)、`gdrive_config.py` 金鑰/OAuth 用戶端/重新導向網址、
       `gdrive_accounts.py` 帳號/token、`gdrive_policy.py`
-      流量預算/時段(`app_meta` 的 `gdrive:*`)、`gdrive_transfer.py` 工作與串流 worker
+      流量預算/時段(`app_meta` 的 `gdrive:*`)、`gdrive_transfer.py` 工作與串流 worker、
+      `gdrive_auto.py` 追蹤頁「存到 Drive」的定期自動搬移
+    - `listing_codes.py` — 追蹤(任一類別)→ PikPak 上番號,用 detail 快取比對
+      (歸檔資料夾一律是 `製作商/…`,女優/系列等沒有自己的資料夾)
   - `app/scrapers/javbus.py` — JavBus 抓取(限流、429 退避、detail 快取)
 - `frontend/`(Next.js 14 App Router + TS + Tailwind):
   - `lib/api.ts` — 唯一 API client 與全部型別

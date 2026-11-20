@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorBox } from "@/components/shared/ErrorBox";
 import { Button } from "@/components/ui/button";
 import {
+  TRACKED_LABELS,
   api,
   type GDriveJob,
   type GDriveJobsOut,
@@ -161,7 +162,7 @@ export default function GDrivePage() {
         <EmptyState
           icon={HardDrive}
           title="還沒有搬移工作"
-          hint="到製作商頁按「搬到 Drive」,勾選已不再更新的製作商"
+          hint="到追蹤頁勾選「存到 Drive」,或到製作商頁按「搬到 Drive」"
         />
       ) : (
         <div className="space-y-2">
@@ -185,12 +186,27 @@ export default function GDrivePage() {
                         <ChevronRight className="h-4 w-4" aria-hidden />
                       )}
                     </button>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal text-muted-foreground">
+                      {TRACKED_LABELS[j.listing_kind] ?? j.listing_kind}
+                    </span>
                     <Link
-                      href={`/studios/${encodeURIComponent(j.studio_id)}`}
+                      href={
+                        j.listing_kind === "studio"
+                          ? `/studios/${encodeURIComponent(j.studio_id)}`
+                          : `/${j.listing_kind}/${encodeURIComponent(j.studio_id)}`
+                      }
                       className="hover:text-primary hover:underline"
                     >
                       {j.studio_name || j.studio_id}
                     </Link>
+                    {j.origin === "auto" && (
+                      <span
+                        className="rounded bg-sky-400/15 px-1.5 py-0.5 text-[11px] font-normal text-sky-300"
+                        title="由追蹤頁「存到 Drive」自動建立"
+                      >
+                        自動
+                      </span>
+                    )}
                   </div>
                   <span className="text-xs text-muted-foreground">→ {j.account_label}</span>
                   <span className={`text-xs ${label.cls}`}>{label.text}</span>

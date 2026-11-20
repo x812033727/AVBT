@@ -334,6 +334,10 @@ class Settings(BaseSettings):
     gdrive_account_daily_limit_gb: float = 740.0
     # 「每日」流量預算與允許時段用的時區。
     gdrive_timezone: str = "Asia/Taipei"
+    # 追蹤頁「存到 Drive」:每 N 分鐘檢查一次開啟的追蹤有沒有新作品要搬;
+    # 新歸檔的作品要落地滿 settle 分鐘(且 finalize 完成)才搬,避免跟 archiver 搶檔。
+    gdrive_auto_interval_minutes: int = 30
+    gdrive_auto_settle_minutes: int = 60
     notify_gdrive_done: bool = True
     notify_gdrive_failed: bool = True
 

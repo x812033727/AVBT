@@ -154,6 +154,15 @@ _MIGRATION_DDL = (
     "ALTER TABLE gdrive_account ADD COLUMN oauth_client_id INTEGER DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_gdrive_account_oauth_client_id "
     "ON gdrive_account(oauth_client_id)",
+    # Per-listing "存到 Google Drive" (tracked page) + generalised jobs.
+    "ALTER TABLE tracked_listing ADD COLUMN gdrive_enabled BOOLEAN DEFAULT 0",
+    "ALTER TABLE tracked_listing ADD COLUMN gdrive_account_id INTEGER DEFAULT 0",
+    "ALTER TABLE tracked_listing ADD COLUMN gdrive_delete_source BOOLEAN DEFAULT 1",
+    "ALTER TABLE tracked_listing ADD COLUMN gdrive_last_error TEXT DEFAULT ''",
+    "ALTER TABLE gdrive_job ADD COLUMN listing_kind VARCHAR(16) DEFAULT 'studio'",
+    "ALTER TABLE gdrive_job ADD COLUMN codes TEXT DEFAULT ''",
+    "ALTER TABLE gdrive_job ADD COLUMN origin VARCHAR(16) DEFAULT 'manual'",
+    "ALTER TABLE gdrive_location ADD COLUMN listing_kind VARCHAR(16) DEFAULT 'studio'",
 )
 
 

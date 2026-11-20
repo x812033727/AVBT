@@ -14,6 +14,7 @@ from .routers import (
     backup,
     collection,
     compare,
+    gdrive,
     img,
     javbus,
     ops,
@@ -38,6 +39,7 @@ from .services import (
 )
 from .services.auth import apply_reset_sentinel, require_auth
 from .services.download_queue import download_queue, warm_sent_hashes
+from .services.gdrive_transfer import gdrive_transfer_queue
 from .services.pcloud import pcloud_service
 from .services.pcloud_transfer import pcloud_transfer_queue
 from .services.scraper_health import scraper_health
@@ -63,6 +65,7 @@ async def lifespan(app: FastAPI):
     await warm_sent_hashes()
     await webhook_queue.start()
     await pcloud_transfer_queue.start()
+    await gdrive_transfer_queue.start()
     background = [
         supervise(archiver.run_loop, "archiver"),
         supervise(tracker.run_loop, "tracker"),
@@ -81,6 +84,7 @@ async def lifespan(app: FastAPI):
                 await t
             except asyncio.CancelledError:
                 pass
+        await gdrive_transfer_queue.stop()
         await pcloud_transfer_queue.stop()
         await webhook_queue.stop()
         await download_queue.stop()
@@ -110,6 +114,9 @@ app.add_middleware(
 
 # Public: the frontend hits these before it has a token.
 app.include_router(auth.router)
+# Google redirects the browser here without our token; the signed OAuth
+# state parameter authenticates it instead.
+app.include_router(gdrive.public_router)
 
 # Protected: every data/route below requires a valid login token.
 # NB: img.router stays PUBLIC — browser <img src> tags can't carry an
@@ -120,6 +127,7 @@ _guard = [Depends(require_auth)]
 app.include_router(javbus.router, dependencies=_guard)
 app.include_router(pikpak.router, dependencies=_guard)
 app.include_router(pcloud.router, dependencies=_guard)
+app.include_router(gdrive.router, dependencies=_guard)
 app.include_router(compare.router, dependencies=_guard)
 app.include_router(collection.router, dependencies=_guard)
 app.include_router(tracked.router, dependencies=_guard)

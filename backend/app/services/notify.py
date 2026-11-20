@@ -28,6 +28,8 @@ EVENT_DEFAULTS = {
     "duplicates_found": "notify_duplicates_found",
     "transfer_done": "notify_transfer_done",
     "transfer_failed": "notify_transfer_failed",
+    "gdrive_done": "notify_gdrive_done",
+    "gdrive_failed": "notify_gdrive_failed",
 }
 
 

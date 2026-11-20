@@ -9,4 +9,5 @@ pydantic==2.10.2
 pydantic-settings==2.6.1
 python-dotenv==1.0.1
 PyJWT==2.10.1
+cryptography==44.0.0
 PikPakAPI==0.1.11

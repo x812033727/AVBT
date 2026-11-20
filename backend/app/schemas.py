@@ -425,6 +425,9 @@ class StudioIndexItem(BaseModel):
     series_count: int = 0
     work_count: int = 0
     tracked: bool = False
+    pikpak_count: int = 0
+    gdrive_count: int = 0
+    gdrive_account_ids: list[int] = Field(default_factory=list)
 
 
 class StudioIndexOut(BaseModel):
@@ -457,6 +460,8 @@ class StudioSeriesWorksOut(BaseModel):
     series_name: str = ""
     count: int = 0
     works: list[MovieListItem] = Field(default_factory=list)
+    # Codes of ``works`` that (also) live on Google Drive.
+    gdrive_codes: list[str] = Field(default_factory=list)
 
 
 class ReorganizeOptions(BaseModel):

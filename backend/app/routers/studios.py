@@ -21,6 +21,7 @@ from ..schemas import (
     StudioSeriesWorksOut,
 )
 from ..services import detail_backfill, studio_index
+from ..services.jav_code import normalize_code
 
 router = APIRouter(prefix="/api/studios", tags=["studios"])
 
@@ -46,6 +47,9 @@ async def studio_list():
                 series_count=len(e.series),
                 work_count=e.work_count,
                 tracked=e.id in tracked_ids,
+                pikpak_count=e.pikpak_count,
+                gdrive_count=e.gdrive_count,
+                gdrive_account_ids=sorted(e.gdrive_account_ids),
             )
             for e in agg.studios.values()
         ],
@@ -87,6 +91,7 @@ async def studio_series_works(studio_id: str, series_id: str):
     if pair is None:
         raise HTTPException(status_code=404, detail="查無此系列(或尚未建檔)")
     entry, sentry = pair
+    agg = await studio_index.get()
     return StudioSeriesWorksOut(
         studio_id=entry.id,
         studio_name=entry.name,
@@ -94,4 +99,9 @@ async def studio_series_works(studio_id: str, series_id: str):
         series_name=sentry.name,
         count=len(sentry.works),
         works=sentry.works,
+        gdrive_codes=[
+            w.code
+            for w in sentry.works
+            if w.code in agg.gdrive_codes or (normalize_code(w.code) or "") in agg.gdrive_codes
+        ],
     )

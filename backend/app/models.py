@@ -278,3 +278,125 @@ class ListingCatalog(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, index=True
     )
+
+
+class GDriveAccount(Base):
+    """One Google Drive account the user authorised via OAuth.
+
+    ``refresh_token_enc`` is Fernet-encrypted with ``GDRIVE_TOKEN_KEY``
+    (services/gdrive_crypto.py) — the only secret this app keeps in the
+    DB, because accounts are added at runtime from the settings page.
+    It is never serialised into an API response. ``daily_*`` tracks the
+    Google 750 GB/day upload cap per account (day = gdrive_timezone)."""
+
+    __tablename__ = "gdrive_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str] = mapped_column(String(128), default="")
+    email: Mapped[str] = mapped_column(String(256), default="", index=True)
+    refresh_token_enc: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    quota_total: Mapped[int] = mapped_column(Integer, default=0)  # 0 = unlimited
+    quota_used: Mapped[int] = mapped_column(Integer, default=0)
+    quota_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    daily_day: Mapped[str] = mapped_column(String(10), default="")
+    daily_uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class GDriveJob(Base):
+    """One "move this studio to Drive account X" request.
+
+    States: ``scanning`` → ``transferring`` → ``done`` | ``partial``
+    (some files failed; source kept) | ``cancelled`` | ``error`` (scan
+    failed). ``source_state``: ``keep`` (delete_source off) → ``pending``
+    → ``trashed`` | ``trash_failed``. The PikPak source is trashed only
+    when EVERY file of the job is done and size-verified."""
+
+    __tablename__ = "gdrive_job"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    studio_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    studio_name: Mapped[str] = mapped_column(String(256), default="")
+    account_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
+    status: Mapped[str] = mapped_column(String(16), index=True, default="scanning")
+    delete_source: Mapped[bool] = mapped_column(Boolean, default=True)
+    source_state: Mapped[str] = mapped_column(String(16), default="keep")
+    code_count: Mapped[int] = mapped_column(Integer, default=0)
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class GDriveTransfer(Base):
+    """One PikPak file → Google Drive upload, streamed through the backend.
+
+    States: ``pending`` → ``running`` → ``done`` | ``failed`` |
+    ``cancelled``. ``session_uri`` is the Drive resumable-upload session
+    (valid ~1 week): after a restart the worker asks Drive how many bytes
+    it already holds and resumes from there instead of re-sending."""
+
+    __tablename__ = "gdrive_transfer"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
+    code: Mapped[str] = mapped_column(String(64), index=True, default="")
+    # PikPak source. ``source_leaf_id`` is the code-level folder (or bare
+    # video file) this file was found under — what gets trashed at the end.
+    pikpak_file_id: Mapped[str] = mapped_column(String(128), default="")
+    pikpak_name: Mapped[str] = mapped_column(String(512), default="")
+    pikpak_size: Mapped[int] = mapped_column(Integer, default=0)
+    pikpak_path: Mapped[str] = mapped_column(String(1024), default="")
+    source_leaf_id: Mapped[str] = mapped_column(String(128), default="")
+    # Drive target: ``drive_dir`` is the folder path (mirror of the PikPak
+    # parent path); ``drive_code_dir`` the folder that mirrors the code leaf.
+    drive_dir: Mapped[str] = mapped_column(String(1024), default="")
+    drive_code_dir: Mapped[str] = mapped_column(String(1024), default="")
+    drive_folder_id: Mapped[str] = mapped_column(String(128), default="")
+    drive_file_id: Mapped[str] = mapped_column(String(128), default="")
+    session_uri: Mapped[str] = mapped_column(Text, default="")
+    bytes_uploaded: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), index=True, default="pending")
+    message: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class GDriveLocation(Base):
+    """Where a work's files live on Google Drive after a move.
+
+    The PikPak presence index stops seeing a code once its source is
+    trashed, so this table is the code → Drive lookup that keeps the
+    studio page, the movie page link and the embedded player working.
+    One row per uploaded file."""
+
+    __tablename__ = "gdrive_location"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), index=True, default="")
+    account_id: Mapped[int] = mapped_column(Integer, index=True, default=0)
+    job_id: Mapped[int] = mapped_column(Integer, default=0)
+    studio_id: Mapped[str] = mapped_column(String(64), index=True, default="")
+    drive_file_id: Mapped[str] = mapped_column(String(128), unique=True)
+    drive_folder_id: Mapped[str] = mapped_column(String(128), default="")
+    code_folder_id: Mapped[str] = mapped_column(String(128), default="")
+    path: Mapped[str] = mapped_column(String(1024), default="")
+    name: Mapped[str] = mapped_column(String(512), default="")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    is_video: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

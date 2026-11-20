@@ -3,7 +3,7 @@
 A listing on JavBus (e.g. all works in series MIDV) gives us the full
 expected catalog. The PikPak presence index gives us which codes are
 already on disk; works moved to Google Drive count as held too
-(``_held_codes``). Missing = catalog − held.
+(``_owned_codes``). Missing = catalog − held.
 
 Catalog walks are persisted to the ``listing_catalog`` table (with the
 in-memory ``_listing_cache`` as L1 parse cache), so summary rebuilds and
@@ -40,6 +40,34 @@ from . import listing_catalog
 from .jav_code import KIND_LABELS_CH, normalize_code, safe_folder_name
 from .listing_walker import walk_listing
 from .pikpak_presence import presence_index
+
+
+async def drive_codes() -> set[str]:
+    """Normalized codes stored on Google Drive (``gdrive_location``).
+    Only video rows count: a stray cover/subtitle upload must not mark a
+    work as held."""
+    try:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(GDriveLocation.code)
+                    .where(GDriveLocation.is_video.is_(True))
+                    .distinct()
+                )
+            ).scalars().all()
+    except Exception as exc:  # noqa: BLE001 — Drive lookup down ≠ missing page down
+        logger.warning("drive_codes lookup failed: %s", exc)
+        return set()
+    return {normalize_code(c) or c.upper() for c in rows if c}
+
+
+async def _owned_codes() -> set[str]:
+    """Codes the user has: on PikPak (presence index) or moved to Google
+    Drive. Works whose PikPak source was trashed after a Drive move must
+    still count as downloaded — otherwise the 缺漏 badge shows them as
+    missing and tracker auto-send re-downloads them (then gdrive_auto
+    moves them again, forever)."""
+    return (await presence_index.get()) | await drive_codes()
 
 
 def _expected_roots(kind: str, slug: str, name: str) -> list[str]:
@@ -508,30 +536,6 @@ def invalidate_listing(kind: str, slug: str) -> None:
     invalidate_result_caches()
 
 
-async def _held_codes() -> set[str]:
-    """Codes we already own: on PikPak (presence index) or moved to Google
-    Drive (``gdrive_location``).
-
-    A Drive move with 搬完刪 PikPak trashes the PikPak source, so the
-    presence index forgets the code. Judged on presence alone, every moved
-    work turned back into a 缺漏 — and the tracker's backfill would download
-    the whole moved catalog again. Only video rows count: a stray cover
-    upload must not mark a work as held."""
-    presence = await presence_index.get()
-    async with SessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(GDriveLocation.code)
-                .where(GDriveLocation.is_video.is_(True))
-                .distinct()
-            )
-        ).scalars().all()
-    on_drive = {normalize_code(c) or c for c in rows if c}
-    if not on_drive:
-        return presence
-    return presence | on_drive
-
-
 def _split_present_missing(
     items: list[MovieListItem], present: set[str]
 ) -> tuple[list[str], list[MovieListItem], set[str]]:
@@ -586,7 +590,7 @@ async def missing_for_listing(
     # so forcing a walk here bought ~2.5min of PikPak calls per call for
     # data that is already current. Full walks stay on the explicit
     # /presence/refresh path.
-    presence = await _held_codes()
+    presence = await _owned_codes()
 
     # Fold in owned works the magnet-only walk missed but that belong here
     # (aged-off magnets / listing-index gaps). They then count toward the
@@ -760,7 +764,7 @@ async def _missing_summary_locked(*, refresh: bool) -> MissingSummary:
     identical results into ``_summary_result``."""
     # Same split as missing_for_listing: ``refresh`` re-fetches listings,
     # it does not re-walk the drive.
-    presence = await _held_codes()
+    presence = await _owned_codes()
     ignored = set(await get_ignored_codes())
     async with SessionLocal() as session:
         rows = (
@@ -817,7 +821,7 @@ async def missing_summary_stream(
         # ``error`` event then bail. ``refresh`` re-fetches listings; it
         # does not re-walk the drive (#163/#169).
         try:
-            presence = await _held_codes()
+            presence = await _owned_codes()
             ignored = set(await get_ignored_codes())
             async with SessionLocal() as session:
                 rows = (
@@ -910,7 +914,7 @@ async def missing_all(*, refresh: bool = False) -> AggregatedMissing:
         if not refresh and _all_result is not None:
             return _all_result
         # Listing refresh, not a drive walk — see missing_for_listing.
-        presence = await _held_codes()
+        presence = await _owned_codes()
         ignored = set(await get_ignored_codes())
         async with SessionLocal() as session:
             rows = (

@@ -504,3 +504,35 @@ def test_plan_marker_collision_different_size_still_skips_ahead():
     plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
                                               _is_video)
     assert plan["gdhh-167-1.mp4"] == "GDHH-167_2.mp4"
+
+
+def test_multipart_decision_is_logged_once_and_plan_unchanged(caplog):
+    """Observation only: the numbering decision is logged with the
+    original names, once per distinct decision, without altering it."""
+    import logging
+    from types import SimpleNamespace
+
+    from app.services import rename_plan as rp
+
+    def mk():
+        return [
+            SimpleNamespace(name="HUNTC-079.mp4", size=4_900_000_000,
+                            kind="drive#file", duration=0),
+            SimpleNamespace(name="HUNTC-079-480.mp4", size=3_000_000_000,
+                            kind="drive#file", duration=0),
+        ]
+
+    rp._LOGGED_DECISIONS.clear()
+    is_video = lambda n: n.lower().endswith(".mp4")  # noqa: E731
+    with caplog.at_level(logging.INFO, logger="app.services.rename_plan"):
+        plan1, _ = rp._build_video_rename_plan(mk(), 500_000_000, is_video)
+        plan2, _ = rp._build_video_rename_plan(mk(), 500_000_000, is_video)
+    assert plan1 == plan2 == {
+        "HUNTC-079-480.mp4": "HUNTC-079_1.mp4",
+        "HUNTC-079.mp4": "HUNTC-079_2.mp4",
+    }
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("multipart plan HUNTC-079")]
+    assert len(lines) == 1
+    assert "'HUNTC-079-480.mp4' size=3000000000" in lines[0]
+    assert "-> HUNTC-079_1.mp4" in lines[0]

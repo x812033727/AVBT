@@ -343,6 +343,39 @@ def _near_identical_size(a: int | None, b: int | None) -> bool:
     return abs(int(a) - int(b)) <= max(16 * 1024 * 1024, int(max(a, b) * 0.01))
 
 
+def _all_bare_twins(unnamed: list, slot_holders: dict, canon: str) -> bool:
+    """True when every marker-less newcomer is a size-twin of a *distinct*
+    part that is already numbered — i.e. the whole batch is a re-download
+    of a set we already hold.
+
+    #264 covers the same collision for marker-bearing files. A file with
+    no marker takes "the next free slot" instead, so a second magnet's
+    three parts land as ``_4.._6`` next to the ``_1.._3`` they duplicate
+    (live: DSUVR-002 / DEVR-038 +4,161 bytes per part, IPOK-026 −1 byte).
+
+    The one-to-one requirement is what keeps this from eating a genuine
+    refill: an equal-chunk release missing parts has newcomers with no
+    twin left to pair with, so the gate stays shut and they get numbered.
+    """
+    if not unnamed or not slot_holders:
+        return False
+    if any(_part_marker_index(f.name, canon) > 0 for f in unnamed):
+        return False
+    if len(unnamed) > len(slot_holders):
+        return False
+    free = list(slot_holders.values())
+    for f in unnamed:
+        match = next(
+            (h for h in free
+             if _near_identical_size(getattr(h, "size", None), f.size)),
+            None,
+        )
+        if match is None:
+            return False
+        free.remove(match)
+    return True
+
+
 def _split_size_outliers(files: list, code: str) -> tuple[list, list]:
     """Split a same-canonical, all-substantial group into (parts,
     outliers). A stray whole-film low-res rip sitting next to real
@@ -638,6 +671,12 @@ def _build_video_rename_plan(
                 f.name,
             )
         )
+        # A batch that merely re-delivers parts we already hold must not
+        # claim fresh slots beside them (see ``_all_bare_twins``). Leaving
+        # the names untouched keeps the copies visible to hygiene/dedup
+        # instead of corrupting the part order.
+        if _all_bare_twins(unnamed, slot_holders, canon):
+            continue
         for f in unnamed:
             marker = _part_marker_index(f.name, canon)
             # Marker-bearing files prefer their own index; bare ones

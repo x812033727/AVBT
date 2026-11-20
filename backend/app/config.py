@@ -126,6 +126,13 @@ class Settings(BaseSettings):
     # 上千,硬切到製作商追蹤後首輪全掃會一次灌爆佇列。用較小的上限把
     # 整廠回補攤到多輪消化(仍會完整下載,只是不爆量)。<=0 不設限。
     tracker_studio_backfill_batch_limit: int = 30
+    # 缺漏補檔的同碼冷卻(小時):某番號已送出、且該筆 offline_task_log
+    # 尚未結案(未 finalize / 未 abandon / 未 superseded)時,這段時間內
+    # 不再補送。presence 只在 finalize 後才看得到新落地的檔,期間 missing
+    # 掃描仍把它當缺漏;btih 去重擋不住「換下一顆磁力」,於是每個 tick
+    # 都對同一支再送一顆(2026-11-18~20 實況:839 碼送了 2,475 筆)。
+    # 冷卻期滿仍未結案才放行下一顆(等同自動換磁力)。<=0 停用。
+    tracker_backfill_resend_cooldown_hours: float = 24
 
     # Global download queue: every PikPak offline submission (tracker
     # auto-send, bulk send-all, single magnet) routes through one queue

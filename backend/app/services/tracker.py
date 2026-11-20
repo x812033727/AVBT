@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..database import SessionLocal
-from ..models import AppMeta, TrackedListing
+from ..models import AppMeta, OfflineTaskLog, TrackedListing
 from ..schemas import SendAllOptions
 from ..scrapers import javbus as scraper
 from . import missing as missing_svc
@@ -90,6 +90,39 @@ def _tracker_options() -> SendAllOptions:
     )
 
 
+async def _recently_submitted_codes() -> set[str]:
+    """Codes (upper-cased) with an offline-task row that was submitted
+    within ``tracker_backfill_resend_cooldown_hours`` and hasn't closed.
+
+    The missing scan answers from the presence index, which only learns
+    about a download once finalize has run. Until then the code still
+    reads as missing, and the queue's btih dedupe just makes
+    ``pick_best_magnet`` fall through to the *next* magnet — so every
+    tick re-submitted the same work with a different torrent (live
+    2026-11-18..20, archiver off for a week: 839 codes → 2,475
+    submissions, up to 9 parallel copies of one code). Once the cooldown
+    lapses with the row still open the code is offered again, which
+    keeps the useful half of the old behaviour: a dead torrent gets a
+    different magnet, just daily instead of hourly."""
+    hours = settings.tracker_backfill_resend_cooldown_hours
+    if hours <= 0:
+        return set()
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(OfflineTaskLog.code)
+            .where(
+                OfflineTaskLog.finalized.is_(False),
+                OfflineTaskLog.abandoned.is_(False),
+                OfflineTaskLog.superseded.is_(False),
+                OfflineTaskLog.created_at > cutoff,
+                OfflineTaskLog.code != "",
+            )
+            .distinct()
+        )
+        return {code.upper() for (code,) in rows}
+
+
 async def _enqueue_auto_send(
     kind: str,
     slug: str,
@@ -147,9 +180,23 @@ async def _enqueue_auto_send(
                     if kind == "studio"
                     else settings.tracker_backfill_batch_limit
                 )
+                try:
+                    open_codes = await _recently_submitted_codes()
+                except Exception as exc:  # noqa: BLE001
+                    # Fail open: a DB hiccup must not stall backfill —
+                    # worst case is the pre-existing duplicate submit.
+                    logger.warning(
+                        "backfill %s/%s: open-submission lookup failed: %s",
+                        kind, slug, exc,
+                    )
+                    open_codes = set()
                 added = 0
+                skipped_open = 0
                 for m in result.missing:
                     if not m.code or m.code in seen:
+                        continue
+                    if m.code.upper() in open_codes:
+                        skipped_open += 1
                         continue
                     if limit > 0 and added >= limit:
                         logger.info(
@@ -160,6 +207,12 @@ async def _enqueue_auto_send(
                     seen.add(m.code)
                     combined.append(m.code)
                     added += 1
+                if skipped_open:
+                    logger.info(
+                        "backfill %s/%s 略過 %d 支已送出未結案的番號(冷卻 %gh)",
+                        kind, slug, skipped_open,
+                        settings.tracker_backfill_resend_cooldown_hours,
+                    )
             if result is not None:
                 # Even with backfill off, keep the dashboard count fresh.
                 await _record_scan_result(kind, slug, len(result.missing))

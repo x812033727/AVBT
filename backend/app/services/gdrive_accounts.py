@@ -12,9 +12,9 @@ from sqlalchemy import func, select
 from ..config import settings
 from ..database import SessionLocal
 from ..models import GDriveAccount, GDriveLocation
-from . import gdrive_crypto
+from . import gdrive_config, gdrive_crypto
 from .auth import _get_secret
-from .gdrive import GDriveAuthError, gdrive_client
+from .gdrive import AccountAuth, GDriveAuthError, gdrive_client
 from .gdrive_policy import GB, today
 
 logger = logging.getLogger(__name__)
@@ -34,11 +34,12 @@ class AccountUnavailable(RuntimeError):
 # from the authenticated settings page can complete it.
 
 
-def make_state(*, label: str = "", account_id: int | None = None) -> str:
+def make_state(*, client_pk: int, label: str = "", account_id: int | None = None) -> str:
     payload = {
         "p": _STATE_PURPOSE,
         "label": label[:128],
         "aid": account_id or 0,
+        "cid": client_pk,
         "exp": int(time.time()) + _STATE_TTL,
     }
     return jwt.encode(payload, _get_secret(), algorithm="HS256")
@@ -71,6 +72,7 @@ def to_public(acc: GDriveAccount, *, location_files: int = 0, location_bytes: in
         "email": acc.email,
         "enabled": acc.enabled,
         "authorized": bool(acc.refresh_token_enc),
+        "oauth_client_id": acc.oauth_client_id,
         "quota_total": acc.quota_total,
         "quota_used": acc.quota_used,
         "quota_checked_at": acc.quota_checked_at.isoformat() + "Z" if acc.quota_checked_at else None,
@@ -109,7 +111,7 @@ async def list_public() -> list[dict]:
 # ---------- credentials ----------
 
 
-async def credentials(account_id: int) -> tuple[GDriveAccount, str]:
+async def credentials(account_id: int) -> AccountAuth:
     async with SessionLocal() as session:
         acc = await session.get(GDriveAccount, account_id)
     if acc is None:
@@ -122,7 +124,11 @@ async def credentials(account_id: int) -> tuple[GDriveAccount, str]:
         token = gdrive_crypto.decrypt(acc.refresh_token_enc)
     except gdrive_crypto.TokenKeyError as exc:
         raise AccountUnavailable(str(exc)) from exc
-    return acc, token
+    try:
+        creds = await gdrive_config.creds_for(acc.oauth_client_id)
+    except gdrive_config.ConfigConflict as exc:
+        raise AccountUnavailable(f"Drive 帳號「{acc.label or acc.email}」: {exc}") from exc
+    return AccountAuth(account_id=acc.id, refresh_token=token, creds=creds)
 
 
 async def set_error(account_id: int, message: str) -> None:
@@ -163,9 +169,9 @@ async def mark_daily_cap_hit(account_id: int) -> None:
 
 
 async def refresh_quota(account_id: int) -> dict:
-    acc, token = await credentials(account_id)
+    auth = await credentials(account_id)
     try:
-        info = await gdrive_client.about(account_id, token)
+        info = await gdrive_client.about(auth)
     except GDriveAuthError as exc:
         await set_error(account_id, str(exc))
         raise
@@ -180,14 +186,19 @@ async def refresh_quota(account_id: int) -> dict:
             row.last_error = ""
             await session.commit()
             return to_public(row)
-    return to_public(acc)
+    raise AccountUnavailable(f"Drive 帳號 #{account_id} 不存在")
 
 
-async def upsert_from_oauth(*, code: str, label: str, account_id: int | None) -> GDriveAccount:
-    """Finish the OAuth flow: exchange the code, look up the email, and
-    either overwrite the token of ``account_id`` (re-authorise) or create
-    / update the account with the same email."""
-    body = await gdrive_client.exchange_code(code)
+async def upsert_from_oauth(
+    *, code: str, label: str, account_id: int | None, client_pk: int
+) -> GDriveAccount:
+    """Finish the OAuth flow with OAuth client ``client_pk``: exchange the
+    code, look up the email, and either overwrite the token of
+    ``account_id`` (re-authorise, possibly switching client) or create /
+    update the account with the same email."""
+    creds = await gdrive_config.creds_for(client_pk)
+    redirect, _src = await gdrive_config.redirect_uri()
+    body = await gdrive_client.exchange_code(code, creds, redirect)
     refresh = body.get("refresh_token") or ""
     if not refresh:
         raise RuntimeError("Google 沒有回傳 refresh token(請在 Google 帳號移除此 app 授權後重試)")
@@ -213,6 +224,7 @@ async def upsert_from_oauth(*, code: str, label: str, account_id: int | None) ->
             acc.label = label
         acc.email = info["email"] or acc.email
         acc.refresh_token_enc = sealed
+        acc.oauth_client_id = client_pk
         acc.quota_total = info["quota_total"]
         acc.quota_used = info["quota_used"]
         acc.quota_checked_at = datetime.utcnow()

@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from ..config import cors_origin_list, settings
 from ..database import SessionLocal
 from ..models import GDriveAccount, GDriveJob, GDriveLocation, GDriveTransfer
-from ..services import gdrive_accounts, gdrive_crypto, gdrive_policy, studio_index
+from ..services import gdrive_accounts, gdrive_config, gdrive_crypto, gdrive_policy, studio_index
 from ..services.gdrive import (
     GDriveError,
     build_auth_url,
@@ -27,7 +27,6 @@ from ..services.gdrive import (
     file_view_url,
     folder_url,
     gdrive_client,
-    oauth_configured,
 )
 from ..services.gdrive_transfer import ACTIVE_JOB_STATES, gdrive_transfer_queue
 from ..services.jav_code import normalize_code
@@ -38,11 +37,11 @@ router = APIRouter(prefix="/api/gdrive", tags=["gdrive"])
 public_router = APIRouter(prefix="/api/gdrive", tags=["gdrive"])
 
 
-def _require_ready() -> None:
-    if not oauth_configured():
-        raise HTTPException(status_code=400, detail="未設定 GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET")
+async def _require_ready() -> None:
     if not gdrive_crypto.key_configured():
-        raise HTTPException(status_code=400, detail="未設定(或格式錯誤)GDRIVE_TOKEN_KEY")
+        raise HTTPException(status_code=400, detail="尚未設定加密金鑰(設定頁 → Google Drive)")
+    if not await gdrive_config.any_client_enabled():
+        raise HTTPException(status_code=400, detail="尚未新增(或全部停用)OAuth 用戶端(設定頁 → Google Drive)")
 
 
 def _frontend_settings_url(**params: str) -> str:
@@ -59,10 +58,11 @@ def _frontend_settings_url(**params: str) -> str:
 
 @router.get("/status")
 async def status():
+    redirect, _src = await gdrive_config.redirect_uri()
     return {
-        "oauth_configured": oauth_configured(),
+        "oauth_configured": await gdrive_config.any_client_enabled(),
         "key_configured": gdrive_crypto.key_configured(),
-        "redirect_uri": settings.gdrive_redirect_uri,
+        "redirect_uri": redirect,
         "accounts": await gdrive_accounts.list_public(),
         "queue": await gdrive_transfer_queue.status(),
     }
@@ -76,17 +76,35 @@ async def list_accounts():
 class OAuthStart(BaseModel):
     label: str = ""
     account_id: int | None = None  # set = re-authorise this account
+    # Which OAuth client to authorise with. Omitted: the account's current
+    # client (re-authorise) or the only enabled client.
+    oauth_client_id: int | None = None
 
 
 @router.post("/oauth/start")
 async def oauth_start(payload: OAuthStart):
-    _require_ready()
+    await _require_ready()
+    client_pk = payload.oauth_client_id or 0
     if payload.account_id:
         async with SessionLocal() as session:
-            if await session.get(GDriveAccount, payload.account_id) is None:
-                raise HTTPException(status_code=404, detail="帳號不存在")
-    state = gdrive_accounts.make_state(label=payload.label.strip(), account_id=payload.account_id)
-    return {"url": build_auth_url(state)}
+            acc = await session.get(GDriveAccount, payload.account_id)
+        if acc is None:
+            raise HTTPException(status_code=404, detail="帳號不存在")
+        client_pk = client_pk or acc.oauth_client_id
+    if not client_pk:
+        enabled = [c for c in await gdrive_config.list_clients() if c["enabled"]]
+        if len(enabled) != 1:
+            raise HTTPException(status_code=400, detail="請選擇要使用的 OAuth 用戶端")
+        client_pk = enabled[0]["id"]
+    try:
+        creds = await gdrive_config.creds_for(client_pk)
+    except gdrive_config.ConfigConflict as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    redirect, _src = await gdrive_config.redirect_uri()
+    state = gdrive_accounts.make_state(
+        client_pk=client_pk, label=payload.label.strip(), account_id=payload.account_id
+    )
+    return {"url": build_auth_url(state, creds, redirect)}
 
 
 @public_router.get("/oauth/callback")
@@ -102,12 +120,112 @@ async def oauth_callback(
         return RedirectResponse(_frontend_settings_url(gdrive="error", msg="Google 沒有回傳授權碼"))
     try:
         acc = await gdrive_accounts.upsert_from_oauth(
-            code=code, label=claims.get("label", ""), account_id=claims.get("aid") or None
+            code=code,
+            label=claims.get("label", ""),
+            account_id=claims.get("aid") or None,
+            client_pk=int(claims.get("cid") or 0),
         )
     except Exception as exc:  # noqa: BLE001 — report back to the UI
         logger.warning("gdrive oauth callback failed: %s", exc)
         return RedirectResponse(_frontend_settings_url(gdrive="error", msg=str(exc)[:300]))
     return RedirectResponse(_frontend_settings_url(gdrive="ok", msg=acc.email or acc.label))
+
+
+# ---------- OAuth configuration (settings page) ----------
+
+
+def _config_error(exc: Exception) -> HTTPException:
+    code = 409 if isinstance(exc, gdrive_config.ConfigConflict) else 400
+    return HTTPException(status_code=code, detail=str(exc))
+
+
+@router.get("/config")
+async def get_config():
+    redirect, redirect_src = await gdrive_config.redirect_uri()
+    return {
+        "key_source": gdrive_crypto.key_source(),
+        "key_configured": gdrive_crypto.key_configured(),
+        "redirect_uri": redirect,
+        "redirect_source": redirect_src,
+        "clients": await gdrive_config.list_clients(),
+    }
+
+
+class RedirectIn(BaseModel):
+    redirect_uri: str
+
+
+@router.put("/config/redirect-uri")
+async def put_redirect_uri(payload: RedirectIn):
+    _uri, src = await gdrive_config.redirect_uri()
+    if src == "env":
+        raise HTTPException(status_code=409, detail="重新導向網址目前來自 .env(GDRIVE_REDIRECT_URI),請改 .env")
+    try:
+        return {"redirect_uri": await gdrive_config.set_redirect_uri(payload.redirect_uri)}
+    except gdrive_config.ConfigError as exc:
+        raise _config_error(exc) from exc
+
+
+class TokenKeyIn(BaseModel):
+    key: str | None = None  # empty = generate one
+
+
+@router.post("/config/token-key")
+async def put_token_key(payload: TokenKeyIn):
+    try:
+        source = await gdrive_config.set_or_rotate_key((payload.key or "").strip() or None)
+    except (gdrive_config.ConfigError, gdrive_config.ConfigConflict) as exc:
+        raise _config_error(exc) from exc
+    gdrive_client.forget_all()
+    return {"key_source": source, "key_configured": True}
+
+
+class ClientIn(BaseModel):
+    label: str = ""
+    client_id: str
+    client_secret: str
+
+
+class ClientPatch(BaseModel):
+    label: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None  # empty/None = keep
+    enabled: bool | None = None
+
+
+@router.post("/clients")
+async def create_client(payload: ClientIn):
+    try:
+        return await gdrive_config.create_client(
+            label=payload.label, client_id=payload.client_id, client_secret=payload.client_secret
+        )
+    except (gdrive_config.ConfigError, gdrive_config.ConfigConflict) as exc:
+        raise _config_error(exc) from exc
+
+
+@router.patch("/clients/{client_pk}")
+async def update_client(client_pk: int, payload: ClientPatch):
+    try:
+        out = await gdrive_config.update_client(
+            client_pk,
+            label=payload.label,
+            client_id=payload.client_id,
+            client_secret=payload.client_secret,
+            enabled=payload.enabled,
+        )
+    except (gdrive_config.ConfigError, gdrive_config.ConfigConflict) as exc:
+        raise _config_error(exc) from exc
+    gdrive_client.forget_all()  # creds changed → mint fresh access tokens
+    return out
+
+
+@router.delete("/clients/{client_pk}")
+async def delete_client(client_pk: int):
+    try:
+        await gdrive_config.delete_client(client_pk)
+    except (gdrive_config.ConfigError, gdrive_config.ConfigConflict) as exc:
+        raise _config_error(exc) from exc
+    return {"ok": True}
 
 
 class AccountPatch(BaseModel):
@@ -211,7 +329,7 @@ class MigrateIn(BaseModel):
 
 @router.post("/migrate")
 async def migrate(payload: MigrateIn):
-    _require_ready()
+    await _require_ready()
     try:
         results = await gdrive_transfer_queue.create_jobs(
             payload.studio_ids, account_id=payload.account_id, delete_source=payload.delete_source

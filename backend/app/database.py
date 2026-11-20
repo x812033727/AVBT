@@ -150,6 +150,10 @@ _MIGRATION_DDL = (
     # historical rows whose code is already archived/finalized elsewhere
     # so they stop holding archive_once's pending peek open.
     "ALTER TABLE offline_task_log ADD COLUMN superseded BOOLEAN DEFAULT 0",
+    # Drive accounts bound to a settings-page OAuth client.
+    "ALTER TABLE gdrive_account ADD COLUMN oauth_client_id INTEGER DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS ix_gdrive_account_oauth_client_id "
+    "ON gdrive_account(oauth_client_id)",
 )
 
 
@@ -259,6 +263,9 @@ async def init_db() -> None:
     await _run_once("migrated:tracked_actresses_backfill", _backfill_tracked_actresses)
     await _run_once("migrated:btih_backfill", _backfill_btih)
     await _run_once("migrated:listing_name_cleanup", _cleanup_listing_names)
+    from .services.gdrive_config import import_env_client  # local: avoid cycles
+
+    await _run_once("migrated:gdrive_env_client", import_env_client)
 
 
 async def get_session() -> AsyncSession:

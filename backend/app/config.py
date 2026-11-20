@@ -310,16 +310,14 @@ class Settings(BaseSettings):
     pcloud_transfer_retry_base_seconds: int = 60
 
     # ----- Google Drive: 依製作商把 PikPak 影片搬到多個 Drive 帳號 -----
-    # OAuth client(Google Cloud Console → 憑證 → OAuth 用戶端 ID,類型
-    # 「網頁應用程式」)。同意畫面要發布為「正式版」,測試模式的
-    # refresh token 7 天就失效。
+    # OAuth 用戶端(可多組)、加密金鑰、重新導向網址都在「設定頁 → Google Drive」
+    # 設定;下面四項是選填,有填就覆蓋後台(後台該欄變唯讀)。
+    # GDRIVE_CLIENT_ID/SECRET:舊設定,開機時自動匯入成一組後台用戶端。
     gdrive_client_id: str = ""
     gdrive_client_secret: str = ""
-    # 加密 DB 內 refresh token 的 Fernet 金鑰(44 字元 urlsafe base64)。
-    # 產生:python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
-    # 未設定 → Drive 功能整區停用。換金鑰 = 所有帳號要重新授權。
+    # 加密 DB 內 refresh token / 用戶端密鑰的 Fernet 金鑰。不設 → 後台產生並存到
+    # data/gdrive_token_key.txt(不進 DB)。
     gdrive_token_key: str = ""
-    # Google 授權完導回的後端網址(要與 Console 登記的 redirect URI 完全一致)。
     gdrive_redirect_uri: str = "http://localhost:8000/api/gdrive/oauth/callback"
     # 授權完成後把瀏覽器送回前端的哪裡(留空 = CORS_ORIGINS 第一個 + /settings)。
     gdrive_frontend_url: str = ""

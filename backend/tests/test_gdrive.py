@@ -12,12 +12,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.database as db
 import app.services.gdrive_accounts as ga
+import app.services.gdrive_config as gc
 import app.services.gdrive_policy as gp
 import app.services.gdrive_transfer as gt
 import app.services.studio_index as si
 from app.config import settings
-from app.models import GDriveAccount, GDriveJob, GDriveLocation, GDriveTransfer
+from app.models import (
+    GDriveAccount,
+    GDriveJob,
+    GDriveLocation,
+    GDriveOAuthClient,
+    GDriveTransfer,
+)
 from app.services import gdrive, gdrive_crypto
+
+
+@pytest.fixture(autouse=True)
+def _isolated_key_file(tmp_path, monkeypatch):
+    """Never read/write ./data/gdrive_token_key.txt from tests."""
+    monkeypatch.setattr(gdrive_crypto, "KEY_FILE", tmp_path / "gdrive_token_key.txt")
+    # OAuth state is signed with the login secret; a fixed one keeps
+    # _get_secret from writing ./data/auth_secret.txt.
+    monkeypatch.setattr(settings, "auth_secret", "test-secret")
+    gdrive_crypto.reset_cache()
+    yield
+    gdrive_crypto.reset_cache()
+
 
 # ---------------------------------------------------------------------------
 # pure helpers
@@ -108,9 +128,9 @@ def test_token_crypto_roundtrip(monkeypatch):
 
 
 def test_oauth_state_roundtrip():
-    st = ga.make_state(label="主帳號", account_id=3)
+    st = ga.make_state(client_pk=2, label="主帳號", account_id=3)
     claims = ga.read_state(st)
-    assert claims["label"] == "主帳號" and claims["aid"] == 3
+    assert claims["label"] == "主帳號" and claims["aid"] == 3 and claims["cid"] == 2
     assert ga.read_state(st + "x") is None
 
 
@@ -144,10 +164,10 @@ class FakeDrive:
     def http(self):
         return self._http
 
-    async def ensure_path(self, account_id, token, path):
+    async def ensure_path(self, auth, path):
         return "folder:" + path
 
-    async def start_upload(self, account_id, token, *, name, folder_id, size, mime=""):
+    async def start_upload(self, auth, *, name, folder_id, size, mime=""):
         self.sessions += 1
         self.received = bytearray()
         return f"https://upload/session/{self.sessions}"
@@ -164,10 +184,10 @@ class FakeDrive:
             return size, {"id": "F1", "size": str(size)}
         return len(self.received), None
 
-    async def make_public(self, account_id, token, file_id):
+    async def make_public(self, auth, file_id):
         self.public.append(file_id)
 
-    async def trash(self, account_id, token, file_id):
+    async def trash(self, auth, file_id):
         pass
 
 
@@ -177,7 +197,7 @@ async def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "engine", engine)
     await db.init_db()
     maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    for mod in (gt, ga, gp, si):
+    for mod in (gt, ga, gc, gp, si):
         monkeypatch.setattr(mod, "SessionLocal", maker)
     monkeypatch.setattr(settings, "gdrive_token_key", Fernet.generate_key().decode())
     monkeypatch.setattr(settings, "gdrive_chunk_mb", 1)
@@ -208,7 +228,15 @@ async def env(tmp_path, monkeypatch):
     )
 
     async with maker() as s:
-        acc = GDriveAccount(label="A", email="a@x", refresh_token_enc=gdrive_crypto.encrypt("rt"))
+        client = GDriveOAuthClient(
+            label="C", client_id="cid-1", client_secret_enc=gdrive_crypto.encrypt("sec")
+        )
+        s.add(client)
+        await s.flush()
+        acc = GDriveAccount(
+            label="A", email="a@x", refresh_token_enc=gdrive_crypto.encrypt("rt"),
+            oauth_client_id=client.id,
+        )
         s.add(acc)
         await s.flush()
         job = GDriveJob(

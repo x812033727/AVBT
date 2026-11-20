@@ -21,7 +21,8 @@ AVBT:個人用 JAV 收藏管理站。JavBus 抓磁力 → PikPak 離線下載 �
     - `pikpak_presence.py` — 番號 → PikPak 路徑索引(missing / video_count 用)
     - `video_count.py` — 「這部幾集?」實際檔案數查詢
     - `gdrive*.py` — PikPak → Google Drive 依製作商搬移:`gdrive.py` REST 客戶端
-      (OAuth、resumable upload)、`gdrive_accounts.py` 帳號/token、`gdrive_policy.py`
+      (OAuth、resumable upload)、`gdrive_config.py` 金鑰/OAuth 用戶端/重新導向網址、
+      `gdrive_accounts.py` 帳號/token、`gdrive_policy.py`
       流量預算/時段(`app_meta` 的 `gdrive:*`)、`gdrive_transfer.py` 工作與串流 worker
   - `app/scrapers/javbus.py` — JavBus 抓取(限流、429 退避、detail 快取)
 - `frontend/`(Next.js 14 App Router + TS + Tailwind):
@@ -61,8 +62,10 @@ npm run lint && npm run typecheck && npm run build
 - **設定**:`.env` + 重啟生效;執行期可調的開關存 `app_meta`
   (`notify:*` 等)。secrets 只放 env,不進 DB / API 回應。
 - **Google Drive**:Drive 沒有遠端抓 URL 的 API,檔案一律 PikPak → 後端 → Drive
-  串流(吃主機流量)。refresh token 是唯一進 DB 的 secret,用 `GDRIVE_TOKEN_KEY`
-  (Fernet)加密,API 不回傳。搬走的作品看 `gdrive_location`(番號 → Drive 檔案),
+  串流(吃主機流量)。OAuth 用戶端(可多組,`gdrive_oauth_client`)與帳號 refresh
+  token 是例外進 DB 的 secret,一律用 Fernet 加密;金鑰來自 env `GDRIVE_TOKEN_KEY`
+  或 `data/gdrive_token_key.txt`(後台產生),**不進 DB**,API 也不回傳密鑰。
+  設定管理在 `gdrive_config.py`;每個帳號綁定發 token 的那組用戶端。搬走的作品看 `gdrive_location`(番號 → Drive 檔案),
   presence index 已看不到它們。
 - **例外處理**:背景迴圈要 log 再吞(`except Exception` 需 `# noqa: BLE001`
   註記);ruff 開 BLE 規則。

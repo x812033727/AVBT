@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 export default function MovieCard({
   item,
   present,
+  onDrive,
   meta,
   selectable,
   selected,
@@ -16,6 +17,8 @@ export default function MovieCard({
   meta?: CachedDetailLite;
   /** true = exists in PikPak, false = missing, undefined = unknown */
   present?: boolean;
+  /** Moved to (or also stored on) Google Drive. */
+  onDrive?: boolean;
   /** Multi-select mode: show a checkbox overlay instead of navigating. */
   selectable?: boolean;
   selected?: boolean;
@@ -51,6 +54,16 @@ export default function MovieCard({
           <span className="absolute right-2 top-2 inline-flex items-center gap-0.5 rounded-sm bg-emerald-500/85 px-1.5 py-0.5 text-[10px] font-semibold text-black">
             <Check className="h-3 w-3" aria-hidden />
             已下載
+          </span>
+        )}
+        {onDrive && (
+          <span
+            className={cn(
+              "absolute right-2 rounded-sm bg-sky-400/90 px-1.5 py-0.5 text-[10px] font-semibold text-black",
+              present === undefined ? "top-2" : "top-8",
+            )}
+          >
+            Drive
           </span>
         )}
         {present === false && (

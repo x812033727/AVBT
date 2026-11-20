@@ -98,6 +98,10 @@ export const api = {
   post: <T>(p: string, body?: unknown) =>
     request<T>(p, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   del: <T>(p: string) => request<T>(p, { method: "DELETE" }),
+  put: <T>(p: string, body?: unknown) =>
+    request<T>(p, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+  patch: <T>(p: string, body?: unknown) =>
+    request<T>(p, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
 };
 
 /**
@@ -593,6 +597,9 @@ export type StudioIndexItem = {
   series_count: number;
   work_count: number;
   tracked: boolean;
+  pikpak_count: number;
+  gdrive_count: number;
+  gdrive_account_ids: number[];
 };
 
 export type StudioIndexOut = {
@@ -625,6 +632,122 @@ export type StudioSeriesWorksOut = {
   series_name: string;
   count: number;
   works: MovieListItem[];
+  gdrive_codes: string[];
+};
+
+// ---------- Google Drive (依製作商搬移) ----------
+
+export type GDriveAccount = {
+  id: number;
+  label: string;
+  email: string;
+  enabled: boolean;
+  authorized: boolean;
+  quota_total: number; // 0 = 無上限
+  quota_used: number;
+  quota_checked_at: string | null;
+  uploaded_today: number;
+  remaining_today: number;
+  last_error: string;
+  stored_files: number;
+  stored_bytes: number;
+};
+
+export type GDrivePolicy = {
+  daily_budget_gb: number; // 0 = 不限
+  window: string; // "HH:MM-HH:MM" 或空字串
+  paused: boolean;
+  used_today_bytes: number;
+  remaining_today_bytes: number | null;
+  blocked_reason: string;
+  timezone: string;
+};
+
+export type GDriveQueueStatus = {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+  inflight: number;
+  concurrency: number;
+  policy: GDrivePolicy;
+};
+
+export type GDriveStatus = {
+  oauth_configured: boolean;
+  key_configured: boolean;
+  redirect_uri: string;
+  accounts: GDriveAccount[];
+  queue: GDriveQueueStatus;
+};
+
+export type GDriveJobStatus =
+  | "scanning"
+  | "transferring"
+  | "done"
+  | "partial"
+  | "cancelled"
+  | "error";
+
+export type GDriveJob = {
+  id: number;
+  studio_id: string;
+  studio_name: string;
+  account_id: number;
+  account_label: string;
+  status: GDriveJobStatus;
+  delete_source: boolean;
+  source_state: "keep" | "pending" | "trashed" | "trash_failed";
+  code_count: number;
+  file_count: number;
+  total_bytes: number;
+  uploaded_bytes: number;
+  counts: Record<string, number>;
+  message: string;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type GDriveJobsOut = { jobs: GDriveJob[]; queue: GDriveQueueStatus };
+
+export type GDriveTransfer = {
+  id: number;
+  code: string;
+  name: string;
+  size: number;
+  pikpak_path: string;
+  drive_dir: string;
+  bytes_uploaded: number;
+  status: "pending" | "running" | "done" | "failed" | "cancelled";
+  message: string;
+  attempts: number;
+  drive_file_id: string;
+};
+
+export type GDriveMigrateResult = {
+  results: { studio_id: string; job_id: number | null; error: string }[];
+};
+
+export type GDriveLocationFile = {
+  file_id: string;
+  name: string;
+  size: number;
+  is_video: boolean;
+  path: string;
+  view_url: string;
+  preview_url: string;
+};
+
+export type GDriveLocateOut = {
+  code: string;
+  locations: {
+    account_id: number;
+    account_label: string;
+    account_email: string;
+    folder_url: string;
+    files: GDriveLocationFile[];
+  }[];
 };
 
 // ---------- pCloud transfer queue ----------

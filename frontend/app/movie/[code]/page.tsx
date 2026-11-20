@@ -15,6 +15,7 @@ import {
   User,
 } from "lucide-react";
 import FinalizeButton from "@/components/FinalizeButton";
+import GDrivePlayer from "@/components/GDrivePlayer";
 import MagnetTable from "@/components/MagnetTable";
 import { Skeleton } from "@/components/Skeleton";
 import { toast } from "@/components/Toast";
@@ -339,6 +340,8 @@ export default function MoviePage({ params }: { params: { code: string } }) {
           )}
         </div>
       </div>
+
+      <GDrivePlayer code={code} />
 
       {!!data.samples.length && (
         <section>

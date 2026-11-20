@@ -37,6 +37,8 @@ export default function StudioSeriesWorksPage({
   if (error) return <ErrorBox message={error} />;
   if (!data) return <MovieGridSkeleton count={10} />;
 
+  const driveCodes = new Set(data.gdrive_codes ?? []);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -56,9 +58,10 @@ export default function StudioSeriesWorksPage({
       </div>
 
       <MovieGrid>
-        {data.works.map((w) => (
-          <MovieCard key={w.code} item={w} present={true} />
-        ))}
+        {data.works.map((w) => {
+          const onDrive = driveCodes.has(w.code);
+          return <MovieCard key={w.code} item={w} present={true} onDrive={onDrive} />;
+        })}
       </MovieGrid>
     </div>
   );

@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { Building2 } from "lucide-react";
+import { Building2, Check, HardDrive } from "lucide-react";
+import GDriveMigrateDialog from "@/components/GDriveMigrateDialog";
 import { toast } from "@/components/Toast";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorBox } from "@/components/shared/ErrorBox";
@@ -28,6 +29,11 @@ export default function StudiosPage() {
   const [sort, setSort] = useState<SortKey>("count");
   const [scope, setScope] = useState<Scope>("tracked");
   const [toggling, setToggling] = useState(false);
+  // 「搬到 Google Drive」勾選模式:點卡片 = 勾選,不進入製作商頁。
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [activeIds, setActiveIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SCOPE_STORAGE_KEY);
@@ -47,6 +53,24 @@ export default function StudiosPage() {
     } catch (e: any) {
       setError(e.message);
     }
+    api
+      .get<string[]>("/api/gdrive/active-studios")
+      .then((ids) => setActiveIds(new Set(ids)))
+      .catch(() => setActiveIds(new Set()));
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function exitSelecting() {
+    setSelecting(false);
+    setSelected(new Set());
   }
 
   useEffect(() => {
@@ -135,6 +159,18 @@ export default function StudiosPage() {
             placeholder="搜尋製作商…"
             className="h-9 w-40 rounded-md border border-border bg-background px-3 text-sm outline-none focus:border-primary"
           />
+          <button
+            onClick={() => (selecting ? exitSelecting() : setSelecting(true))}
+            className={
+              "inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs transition " +
+              (selecting
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground")
+            }
+          >
+            <HardDrive className="h-3.5 w-3.5" aria-hidden />
+            {selecting ? "取消勾選" : "搬到 Drive"}
+          </button>
           {(["name", "count"] as SortKey[]).map((k) => (
             <button
               key={k}
@@ -188,12 +224,27 @@ export default function StudiosPage() {
         />
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-          {list.map((s) => (
-            <Link
-              key={s.id}
-              href={`/studios/${encodeURIComponent(s.id)}`}
-              className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card transition hover:border-primary"
-            >
+          {list.map((s) => {
+            const isSel = selected.has(s.id);
+            const busyMove = activeIds.has(s.id);
+            const movable = !busyMove && (s.pikpak_count ?? s.work_count) > 0;
+            const cardClass =
+              "group relative flex flex-col overflow-hidden rounded-lg border bg-card text-left transition " +
+              (isSel ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary") +
+              (selecting && !movable ? " opacity-50" : "");
+            const body = (
+              <>
+              {selecting && (
+                <span
+                  className={
+                    "absolute left-2 top-2 z-10 grid h-5 w-5 place-items-center rounded border " +
+                    (isSel ? "border-primary bg-primary text-primary-foreground" : "border-white/70 bg-black/40")
+                  }
+                  aria-hidden
+                >
+                  {isSel && <Check className="h-3.5 w-3.5" />}
+                </span>
+              )}
               <div className="aspect-[3/2] w-full overflow-hidden bg-muted">
                 {s.sample_cover ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -217,11 +268,87 @@ export default function StudiosPage() {
                 <div className="text-xs text-muted-foreground">
                   {s.series_count} 系列・{s.work_count} 部
                 </div>
+                {(s.gdrive_count > 0 || busyMove) && (
+                  <div className="flex flex-wrap gap-1 text-[11px]">
+                    {s.gdrive_count > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded bg-sky-400/15 px-1.5 py-0.5 text-sky-300">
+                        <HardDrive className="h-3 w-3" aria-hidden />
+                        Drive {s.gdrive_count}
+                      </span>
+                    )}
+                    {busyMove && (
+                      <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-amber-300">搬移中</span>
+                    )}
+                  </div>
+                )}
               </div>
-            </Link>
-          ))}
+              </>
+            );
+            return selecting ? (
+              <button
+                key={s.id}
+                type="button"
+                disabled={!movable}
+                onClick={() => toggleSelect(s.id)}
+                className={cardClass}
+                title={busyMove ? "已有進行中的搬移" : !movable ? "PikPak 上沒有作品" : undefined}
+              >
+                {body}
+              </button>
+            ) : (
+              <Link key={s.id} href={`/studios/${encodeURIComponent(s.id)}`} className={cardClass}>
+                {body}
+              </Link>
+            );
+          })}
         </div>
       )}
+
+      {selecting && (
+        <div className="sticky bottom-4 z-20 flex items-center gap-3 rounded-lg border border-primary/40 bg-card/95 px-4 py-3 shadow-lg backdrop-blur">
+          <span className="text-sm">已勾選 {selected.size} 家製作商</span>
+          <button
+            onClick={() =>
+              setSelected(
+                new Set(
+                  list
+                    .filter((s) => !activeIds.has(s.id) && (s.pikpak_count ?? s.work_count) > 0)
+                    .map((s) => s.id)
+                )
+              )
+            }
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            全選目前列表
+          </button>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            清除
+          </button>
+          <Link href="/gdrive" className="text-xs text-primary hover:underline">
+            查看搬移佇列
+          </Link>
+          <button
+            disabled={selected.size === 0}
+            onClick={() => setDialogOpen(true)}
+            className="ml-auto rounded-md bg-primary px-4 py-1.5 text-sm text-primary-foreground disabled:opacity-40"
+          >
+            搬到 Google Drive…
+          </button>
+        </div>
+      )}
+
+      <GDriveMigrateDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        studios={data.studios.filter((s) => selected.has(s.id))}
+        onDone={() => {
+          exitSelecting();
+          load();
+        }}
+      />
     </div>
   );
 }

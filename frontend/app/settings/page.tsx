@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import BackupSection from "@/components/settings/BackupSection";
 import ChangePasswordSection from "@/components/settings/ChangePasswordSection";
+import GDriveSection from "@/components/settings/GDriveSection";
 import HygieneSweepsSection from "@/components/settings/HygieneSweepsSection";
 import NotifySection from "@/components/settings/NotifySection";
 import PCloudSection from "@/components/settings/PCloudSection";
@@ -439,6 +440,8 @@ export default function SettingsPage() {
       </section>
 
       <PCloudSection setMsg={setMsg} />
+
+      <GDriveSection setMsg={setMsg} />
 
       <ReorganizeSection setMsg={setMsg} />
 

@@ -17,6 +17,8 @@ const NOTIFY_EVENTS: { key: string; label: string; hint: string }[] = [
   { key: "duplicates_found", label: "定期重複掃描", hint: "需在 .env 開 DUPLICATES_SCAN_ENABLED；發現重複只通知不自動刪" },
   { key: "transfer_done", label: "pCloud 傳輸完成", hint: "一檔一則,整資料夾轉存會很吵,預設關閉" },
   { key: "transfer_failed", label: "pCloud 傳輸失敗", hint: "自動重試用盡仍失敗時通知" },
+  { key: "gdrive_done", label: "Google Drive 搬移完成", hint: "整個製作商搬完(含 PikPak 原檔處理結果)時通知一則" },
+  { key: "gdrive_failed", label: "Google Drive 搬移未完成", hint: "製作商有檔案重試用盡仍失敗、原檔保留時通知" },
 ];
 
 type NotifySettings = {

@@ -26,7 +26,7 @@ async def _bind(tmp_path, monkeypatch):
     monkeypatch.setattr(missing_svc, "SessionLocal", maker)
     async with maker() as s:
         # ABC-002 lives only on Drive (moved, PikPak copy trashed).
-        s.add(GDriveLocation(code="ABC-002", account_id=1, drive_file_id="F1", path="p"))
+        s.add(GDriveLocation(code="ABC-002", account_id=1, drive_file_id="F1", path="p", is_video=True))
         await s.commit()
     return engine, maker
 

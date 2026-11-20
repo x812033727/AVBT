@@ -2,7 +2,8 @@
 
 A listing on JavBus (e.g. all works in series MIDV) gives us the full
 expected catalog. The PikPak presence index gives us which codes are
-already on disk. Missing = catalog − presence.
+already on disk; works moved to Google Drive count as held too
+(``_owned_codes``). Missing = catalog − held.
 
 Catalog walks are persisted to the ``listing_catalog`` table (with the
 in-memory ``_listing_cache`` as L1 parse cache), so summary rebuilds and
@@ -42,10 +43,18 @@ from .pikpak_presence import presence_index
 
 
 async def drive_codes() -> set[str]:
-    """Normalized codes stored on Google Drive (``gdrive_location``)."""
+    """Normalized codes stored on Google Drive (``gdrive_location``).
+    Only video rows count: a stray cover/subtitle upload must not mark a
+    work as held."""
     try:
         async with SessionLocal() as session:
-            rows = (await session.execute(select(GDriveLocation.code).distinct())).scalars().all()
+            rows = (
+                await session.execute(
+                    select(GDriveLocation.code)
+                    .where(GDriveLocation.is_video.is_(True))
+                    .distinct()
+                )
+            ).scalars().all()
     except Exception as exc:  # noqa: BLE001 — Drive lookup down ≠ missing page down
         logger.warning("drive_codes lookup failed: %s", exc)
         return set()

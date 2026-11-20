@@ -302,6 +302,36 @@ class Settings(BaseSettings):
     # 重試退避基數(秒),第 n 次失敗後等 base * 2^(n-1)。
     pcloud_transfer_retry_base_seconds: int = 60
 
+    # ----- Google Drive: 依製作商把 PikPak 影片搬到多個 Drive 帳號 -----
+    # OAuth client(Google Cloud Console → 憑證 → OAuth 用戶端 ID,類型
+    # 「網頁應用程式」)。同意畫面要發布為「正式版」,測試模式的
+    # refresh token 7 天就失效。
+    gdrive_client_id: str = ""
+    gdrive_client_secret: str = ""
+    # 加密 DB 內 refresh token 的 Fernet 金鑰(44 字元 urlsafe base64)。
+    # 產生:python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+    # 未設定 → Drive 功能整區停用。換金鑰 = 所有帳號要重新授權。
+    gdrive_token_key: str = ""
+    # Google 授權完導回的後端網址(要與 Console 登記的 redirect URI 完全一致)。
+    gdrive_redirect_uri: str = "http://localhost:8000/api/gdrive/oauth/callback"
+    # 授權完成後把瀏覽器送回前端的哪裡(留空 = CORS_ORIGINS 第一個 + /settings)。
+    gdrive_frontend_url: str = ""
+    # Drive 上鏡像 PikPak 路徑的根(PikPak 的 AVBT/製作商/... 原樣放到這下面)。
+    # 空字串 = Drive 根目錄(路徑本身已以 AVBT/ 開頭)。
+    gdrive_root_folder: str = ""
+    # 同時上傳幾個檔。資料都經後端串流,VPS 頻寬有限時維持 1。
+    gdrive_transfer_concurrency: int = 1
+    # resumable upload 每塊大小(MB,會對齊 256 KiB)。也是記憶體用量上限。
+    gdrive_chunk_mb: int = 32
+    gdrive_transfer_max_attempts: int = 5
+    gdrive_transfer_retry_base_seconds: int = 120
+    # Google 每帳號每日上傳上限 750 GB;留一點餘裕。
+    gdrive_account_daily_limit_gb: float = 740.0
+    # 「每日」流量預算與允許時段用的時區。
+    gdrive_timezone: str = "Asia/Taipei"
+    notify_gdrive_done: bool = True
+    notify_gdrive_failed: bool = True
+
 
 settings = Settings()
 

@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 
 from ..database import SessionLocal
-from ..models import MovieDetailCache
+from ..models import GDriveLocation, MovieDetailCache
 from ..schemas import MovieDetail, MovieListItem
+from .jav_code import normalize_code
 from .pikpak_presence import presence_index
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,11 @@ class StudioEntry:
     sample_cover: str = ""
     work_count: int = 0
     series: dict[str, SeriesEntry] = field(default_factory=dict)
+    # Where the works physically are: PikPak (presence index) and/or
+    # Google Drive (gdrive_location, after a move).
+    pikpak_count: int = 0
+    gdrive_count: int = 0
+    gdrive_account_ids: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -58,6 +64,8 @@ class StudioAggregation:
     studios: dict[str, StudioEntry] = field(default_factory=dict)
     downloaded_total: int = 0
     indexed_total: int = 0
+    # code → Drive account ids holding it (normalized codes).
+    gdrive_codes: dict[str, set[int]] = field(default_factory=dict)
 
 
 _cache: StudioAggregation | None = None
@@ -91,10 +99,25 @@ async def _build() -> StudioAggregation:
                 select(MovieDetailCache.code, MovieDetailCache.detail)
             )
         ).all()
+        loc_rows = (
+            await session.execute(
+                select(GDriveLocation.code, GDriveLocation.account_id).distinct()
+            )
+        ).all()
 
-    agg = StudioAggregation(downloaded_total=len(downloaded))
+    gdrive_codes: dict[str, set[int]] = {}
+    for loc_code, account_id in loc_rows:
+        gdrive_codes.setdefault(loc_code, set()).add(account_id)
+
+    agg = StudioAggregation(
+        downloaded_total=len(downloaded | set(gdrive_codes)),
+        gdrive_codes=gdrive_codes,
+    )
     for code, detail_json in rows:
-        if code not in downloaded:
+        norm = normalize_code(code) or code
+        in_pikpak = code in downloaded or norm in downloaded
+        on_drive = gdrive_codes.get(norm) or gdrive_codes.get(code)
+        if not in_pikpak and not on_drive:
             continue
         try:
             detail = MovieDetail.model_validate_json(detail_json)
@@ -122,6 +145,11 @@ async def _build() -> StudioAggregation:
             # A later row may carry the human-readable name.
             if studio.name:
                 entry.name = studio.name.strip()
+        if in_pikpak:
+            entry.pikpak_count += 1
+        if on_drive:
+            entry.gdrive_count += 1
+            entry.gdrive_account_ids |= on_drive
 
         series = detail.series
         ser_id = (series.id or "").strip() if series else ""

@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Play, TriangleAlert } from "lucide-react";
+import { Check, HardDrive, Play, TriangleAlert } from "lucide-react";
+import { api } from "@/lib/api";
 import type {
   MissingCodesResult,
   MovieListItem,
@@ -48,6 +49,21 @@ export default function MissingDetailPanel({
   onPlay: (file: PresenceFileItem) => void;
 }) {
   const [showPresent, setShowPresent] = useState(false);
+  // 已下載裡哪些在 Google Drive(搬走後 PikPak 可能已經沒有原檔)。
+  // 展開「已下載」時才一次查整批。
+  const [driveCodes, setDriveCodes] = useState<Set<string>>(new Set());
+  const presentKey = (detail?.present_codes ?? []).join(",");
+  useEffect(() => {
+    if (!showPresent || !presentKey) return;
+    let alive = true;
+    api
+      .post<{ codes: string[] }>("/api/gdrive/locate", { codes: presentKey.split(",") })
+      .then((r) => alive && setDriveCodes(new Set(r.codes)))
+      .catch(() => alive && setDriveCodes(new Set()));
+    return () => {
+      alive = false;
+    };
+  }, [showPresent, presentKey]);
   const [presentLimit, setPresentLimit] = useState(PRESENT_PREVIEW);
 
   function expectedPath(code: string) {
@@ -259,9 +275,21 @@ export default function MissingDetailPanel({
                       >
                         {code}
                       </Link>
-                      <span className="ml-auto">{playButton(code)}</span>
+                      {driveCodes.has(code) && (
+                        <Link
+                          href={`/movie/${encodeURIComponent(code)}`}
+                          className="inline-flex items-center gap-1 rounded bg-sky-400/15 px-1.5 py-0.5 text-[11px] text-sky-300 hover:underline"
+                          title="已搬到 Google Drive,到作品頁可直接播放"
+                        >
+                          <HardDrive className="h-3 w-3" aria-hidden />
+                          Drive
+                        </Link>
+                      )}
+                      {!driveCodes.has(code) && (
+                        <span className="ml-auto">{playButton(code)}</span>
+                      )}
                     </div>
-                    {filesBlock(code)}
+                    {!driveCodes.has(code) && filesBlock(code)}
                   </li>
                 ))}
               </ul>

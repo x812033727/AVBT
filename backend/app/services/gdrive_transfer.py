@@ -832,6 +832,12 @@ class GDriveTransferQueue:
             presence_index.invalidate()
         studio_index.invalidate()
         listing_codes.invalidate()
+        try:
+            from . import missing as missing_svc  # local: avoid import cycle
+
+            missing_svc.invalidate_result_caches()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("missing cache invalidate after gdrive move failed: %s", exc)
         return True
 
     # ---------- caller actions ----------

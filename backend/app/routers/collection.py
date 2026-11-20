@@ -18,6 +18,7 @@ from ..schemas import (
 )
 from ..scrapers.javbus import JavbusBlocked
 from ..services import bulk
+from ..services import missing as missing_svc
 from ..services.download_queue import all_sent_hashes
 from ..services.pikpak_presence import presence_index
 
@@ -112,7 +113,8 @@ async def sync_status(session: AsyncSession = Depends(get_session)):
     row exists) → done (the code is present in PikPak per the presence
     index, or its log row is archived). Never downgrades — a manually
     set「完成」stays even if the file was later removed."""
-    presence = await presence_index.get()
+    # Works moved to Google Drive count as downloaded too.
+    presence = (await presence_index.get()) | await missing_svc.drive_codes()
 
     rows = (await session.execute(select(CollectedMovie))).scalars().all()
     sent_codes = set(

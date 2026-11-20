@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 _META_KEY = "auto_backup:last"
 
 # Relative to the data dir (= the DB file's parent).
-_CREDENTIAL_FILES = ("auth_secret.txt", "pikpak_token.txt", "pcloud_token.json")
+_CREDENTIAL_FILES = (
+    "auth_secret.txt",
+    "pikpak_token.txt",
+    "pcloud_token.json",
+    # Drive secrets in the DB are useless without this key.
+    "gdrive_token_key.txt",
+)
 
 
 def _db_file() -> Path | None:

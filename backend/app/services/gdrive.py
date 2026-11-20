@@ -78,14 +78,10 @@ def chunk_size() -> int:
     return max(CHUNK_ALIGN, raw - raw % CHUNK_ALIGN)
 
 
-def oauth_configured() -> bool:
-    return bool(settings.gdrive_client_id and settings.gdrive_client_secret)
-
-
-def build_auth_url(state: str) -> str:
+def build_auth_url(state: str, creds: OAuthCreds, redirect_uri: str) -> str:
     params = {
-        "client_id": settings.gdrive_client_id,
-        "redirect_uri": settings.gdrive_redirect_uri,
+        "client_id": creds.client_id,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": f"{SCOPES} openid email",
         # offline + consent → Google always returns a refresh_token, also
@@ -152,6 +148,23 @@ def raise_for(resp: httpx.Response, what: str) -> None:
     raise GDriveError(text, resp.status_code, reason)
 
 
+@dataclass(frozen=True)
+class OAuthCreds:
+    """One Google Cloud OAuth client (client id + secret)."""
+
+    client_id: str
+    client_secret: str
+
+
+@dataclass(frozen=True)
+class AccountAuth:
+    """Everything needed to act as one Drive account."""
+
+    account_id: int
+    refresh_token: str
+    creds: OAuthCreds
+
+
 @dataclass
 class _Token:
     access: str
@@ -159,7 +172,7 @@ class _Token:
 
 
 class GDriveClient:
-    """Stateless w.r.t. accounts: callers pass ``(account_id, refresh_token)``.
+    """Stateless w.r.t. accounts: callers pass an ``AccountAuth``.
     Caches access tokens and folder ids keyed by account id."""
 
     def __init__(self) -> None:
@@ -181,6 +194,10 @@ class GDriveClient:
             await self._http.aclose()
             self._http = None
 
+    def forget_all(self) -> None:
+        """Drop cached access tokens (OAuth client or key changed)."""
+        self._tokens.clear()
+
     def forget(self, account_id: int) -> None:
         self._tokens.pop(account_id, None)
         for key in [k for k in self._folders if k[0] == account_id]:
@@ -188,30 +205,30 @@ class GDriveClient:
 
     # ---------- OAuth ----------
 
-    async def exchange_code(self, code: str) -> dict:
+    async def exchange_code(self, code: str, creds: OAuthCreds, redirect_uri: str) -> dict:
         resp = await self.http().post(
             TOKEN_URL,
             data={
                 "code": code,
-                "client_id": settings.gdrive_client_id,
-                "client_secret": settings.gdrive_client_secret,
-                "redirect_uri": settings.gdrive_redirect_uri,
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
             },
         )
         raise_for(resp, "OAuth 換 token 失敗")
         return resp.json()
 
-    async def access_token(self, account_id: int, refresh_token: str) -> str:
-        tok = self._tokens.get(account_id)
+    async def access_token(self, auth: AccountAuth) -> str:
+        tok = self._tokens.get(auth.account_id)
         if tok and tok.expires_at - 60 > time.monotonic():
             return tok.access
         resp = await self.http().post(
             TOKEN_URL,
             data={
-                "client_id": settings.gdrive_client_id,
-                "client_secret": settings.gdrive_client_secret,
-                "refresh_token": refresh_token,
+                "client_id": auth.creds.client_id,
+                "client_secret": auth.creds.client_secret,
+                "refresh_token": auth.refresh_token,
                 "grant_type": "refresh_token",
             },
         )
@@ -225,21 +242,21 @@ class GDriveClient:
         raise_for(resp, "刷新 access token 失敗")
         body = resp.json()
         tok = _Token(body["access_token"], time.monotonic() + float(body.get("expires_in", 3600)))
-        self._tokens[account_id] = tok
+        self._tokens[auth.account_id] = tok
         return tok.access
 
-    async def _headers(self, account_id: int, refresh_token: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {await self.access_token(account_id, refresh_token)}"}
+    async def _headers(self, auth: AccountAuth) -> dict[str, str]:
+        return {"Authorization": f"Bearer {await self.access_token(auth)}"}
 
     async def _request(
-        self, account_id: int, refresh_token: str, method: str, url: str, what: str, **kw
+        self, auth: AccountAuth, method: str, url: str, what: str, **kw
     ) -> httpx.Response:
-        headers = {**(kw.pop("headers", None) or {}), **await self._headers(account_id, refresh_token)}
+        headers = {**(kw.pop("headers", None) or {}), **await self._headers(auth)}
         resp = await self.http().request(method, url, headers=headers, **kw)
         if resp.status_code == 401:
             # Access token revoked early — refresh once and retry.
-            self._tokens.pop(account_id, None)
-            headers.update(await self._headers(account_id, refresh_token))
+            self._tokens.pop(auth.account_id, None)
+            headers.update(await self._headers(auth))
             resp = await self.http().request(method, url, headers=headers, **kw)
         raise_for(resp, what)
         return resp
@@ -259,9 +276,9 @@ class GDriveClient:
 
     _ABOUT_FIELDS = "user(emailAddress,displayName),storageQuota"
 
-    async def about(self, account_id: int, refresh_token: str) -> dict:
+    async def about(self, auth: AccountAuth) -> dict:
         resp = await self._request(
-            account_id, refresh_token, "GET", f"{API}/about",
+            auth, "GET", f"{API}/about",
             "查詢帳號資訊失敗", params={"fields": self._ABOUT_FIELDS},
         )
         return self._parse_about(resp.json())
@@ -276,74 +293,74 @@ class GDriveClient:
         raise_for(resp, "查詢帳號資訊失敗")
         return self._parse_about(resp.json())
 
-    async def get_file(self, account_id: int, refresh_token: str, file_id: str) -> dict:
+    async def get_file(self, auth: AccountAuth, file_id: str) -> dict:
         resp = await self._request(
-            account_id, refresh_token, "GET", f"{API}/files/{file_id}",
+            auth, "GET", f"{API}/files/{file_id}",
             "查詢檔案失敗", params={"fields": _FILE_FIELDS + ",trashed"},
         )
         return resp.json()
 
-    async def make_public(self, account_id: int, refresh_token: str, file_id: str) -> None:
+    async def make_public(self, auth: AccountAuth, file_id: str) -> None:
         """Anyone-with-the-link reader, so the /preview iframe plays without
         the viewer being signed into this particular Google account."""
         await self._request(
-            account_id, refresh_token, "POST", f"{API}/files/{file_id}/permissions",
+            auth, "POST", f"{API}/files/{file_id}/permissions",
             "設定分享權限失敗", json={"type": "anyone", "role": "reader"},
         )
 
-    async def trash(self, account_id: int, refresh_token: str, file_id: str) -> None:
+    async def trash(self, auth: AccountAuth, file_id: str) -> None:
         await self._request(
-            account_id, refresh_token, "PATCH", f"{API}/files/{file_id}",
+            auth, "PATCH", f"{API}/files/{file_id}",
             "刪除檔案失敗", json={"trashed": True},
         )
 
     # ---------- folders ----------
 
     async def _find_child_folder(
-        self, account_id: int, refresh_token: str, parent: str, name: str
+        self, auth: AccountAuth, parent: str, name: str
     ) -> str:
         q = (
             f"name = '{escape_q(name)}' and '{parent}' in parents "
             f"and mimeType = '{FOLDER_MIME}' and trashed = false"
         )
         resp = await self._request(
-            account_id, refresh_token, "GET", f"{API}/files", "查詢資料夾失敗",
+            auth, "GET", f"{API}/files", "查詢資料夾失敗",
             params={"q": q, "fields": "files(id,name)", "pageSize": 10, "spaces": "drive"},
         )
         files = resp.json().get("files") or []
         return files[0]["id"] if files else ""
 
     async def _create_folder(
-        self, account_id: int, refresh_token: str, parent: str, name: str
+        self, auth: AccountAuth, parent: str, name: str
     ) -> str:
         resp = await self._request(
-            account_id, refresh_token, "POST", f"{API}/files", "建立資料夾失敗",
+            auth, "POST", f"{API}/files", "建立資料夾失敗",
             params={"fields": "id"},
             json={"name": name, "mimeType": FOLDER_MIME, "parents": [parent]},
         )
         return resp.json()["id"]
 
-    async def ensure_path(self, account_id: int, refresh_token: str, path: str) -> str:
+    async def ensure_path(self, auth: AccountAuth, path: str) -> str:
         """Folder id for ``path`` (``a/b/c``), creating missing segments.
         Serialised per account so two uploads into the same new folder
         can't both create it (Drive happily allows duplicate names)."""
         segments = split_path(path)
         if not segments:
             return "root"
-        lock = self._folder_locks.setdefault(account_id, asyncio.Lock())
+        lock = self._folder_locks.setdefault(auth.account_id, asyncio.Lock())
         async with lock:
             parent = "root"
             walked: list[str] = []
             for seg in segments:
                 walked.append(seg)
-                key = (account_id, "/".join(walked))
+                key = (auth.account_id, "/".join(walked))
                 cached = self._folders.get(key)
                 if cached:
                     parent = cached
                     continue
-                fid = await self._find_child_folder(account_id, refresh_token, parent, seg)
+                fid = await self._find_child_folder(auth, parent, seg)
                 if not fid:
-                    fid = await self._create_folder(account_id, refresh_token, parent, seg)
+                    fid = await self._create_folder(auth, parent, seg)
                 self._folders[key] = fid
                 parent = fid
             return parent
@@ -352,8 +369,7 @@ class GDriveClient:
 
     async def start_upload(
         self,
-        account_id: int,
-        refresh_token: str,
+        auth: AccountAuth,
         *,
         name: str,
         folder_id: str,
@@ -361,7 +377,7 @@ class GDriveClient:
         mime: str = "application/octet-stream",
     ) -> str:
         resp = await self._request(
-            account_id, refresh_token, "POST", UPLOAD_API, "建立上傳工作失敗",
+            auth, "POST", UPLOAD_API, "建立上傳工作失敗",
             params={"uploadType": "resumable", "fields": _FILE_FIELDS},
             headers={
                 "X-Upload-Content-Type": mime,

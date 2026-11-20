@@ -37,6 +37,7 @@ from ..database import SessionLocal
 from ..models import GDriveAccount, GDriveJob, GDriveLocation, GDriveTransfer
 from . import gdrive_accounts, gdrive_policy, studio_index
 from .gdrive import (
+    AccountAuth,
     GDriveAuthError,
     GDriveError,
     GDriveQuotaError,
@@ -514,10 +515,10 @@ class GDriveTransferQueue:
             pikpak_fid = row.pikpak_file_id
             drive_dir = row.drive_dir
             session_uri = row.session_uri
-        _acc, token = await gdrive_accounts.credentials(account_id)
+        auth = await gdrive_accounts.credentials(account_id)
         await self._check_continue(rid, account_id)
 
-        folder_id = await gdrive_client.ensure_path(account_id, token, drive_dir)
+        folder_id = await gdrive_client.ensure_path(auth, drive_dir)
         offset = 0
         result: dict | None = None
         if session_uri:
@@ -527,14 +528,14 @@ class GDriveTransferQueue:
                 session_uri, offset = "", 0
         if not session_uri:
             session_uri = await gdrive_client.start_upload(
-                account_id, token, name=name, folder_id=folder_id, size=size
+                auth, name=name, folder_id=folder_id, size=size
             )
             offset = 0
         await self._save_progress(rid, session_uri=session_uri, offset=offset, folder_id=folder_id)
 
         if result is None:
             result = await self._stream(rid, account_id, pikpak_fid, session_uri, offset, size)
-        await self._complete(rid, result, token)
+        await self._complete(rid, result, auth)
 
     async def _stream(
         self, rid: int, account_id: int, pikpak_fid: str, session_uri: str, offset: int, size: int
@@ -614,7 +615,7 @@ class GDriveTransferQueue:
             await session.execute(update(GDriveTransfer).where(GDriveTransfer.id == rid).values(**values))
             await session.commit()
 
-    async def _complete(self, rid: int, result: dict, token: str) -> None:
+    async def _complete(self, rid: int, result: dict, auth: AccountAuth) -> None:
         async with SessionLocal() as session:
             row = await session.get(GDriveTransfer, rid)
             assert row is not None
@@ -629,7 +630,7 @@ class GDriveTransferQueue:
         if got and size and got != size:
             # Corrupt/short upload — drop it and start over.
             try:
-                await gdrive_client.trash(account_id, token, file_id)
+                await gdrive_client.trash(auth, file_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("trash of bad upload %s failed: %s", file_id, exc)
             async with SessionLocal() as session:
@@ -642,12 +643,12 @@ class GDriveTransferQueue:
         video = is_video(name)
         if video:
             try:
-                await gdrive_client.make_public(account_id, token, file_id)
+                await gdrive_client.make_public(auth, file_id)
             except Exception as exc:  # noqa: BLE001 — playback degrades to a link
                 logger.warning("make_public %s failed: %s", file_id, exc)
         code_folder_id = folder_id
         try:
-            code_folder_id = await gdrive_client.ensure_path(account_id, token, code_dir)
+            code_folder_id = await gdrive_client.ensure_path(auth, code_dir)
         except Exception as exc:  # noqa: BLE001
             logger.warning("code folder lookup failed for %s: %s", code_dir, exc)
 

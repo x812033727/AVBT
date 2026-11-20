@@ -3,25 +3,44 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, RefreshCw, TriangleAlert } from "lucide-react";
 import { confirmDialog } from "@/components/Toast";
-import { api, type GDriveAccount, type GDrivePolicy, type GDriveStatus } from "@/lib/api";
+import {
+  api,
+  type GDriveAccount,
+  type GDriveConfig,
+  type GDrivePolicy,
+  type GDriveStatus,
+} from "@/lib/api";
 import { fmtBytes, fmtDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import GDriveConfigPanel from "./GDriveConfigPanel";
 import type { SetMsg } from "./types";
 
 // Google Drive 帳號(OAuth)+ 流量控管。帳號 token 由後端加密保存,
 // 這裡只看得到 email / 配額 / 今日上傳量。
 export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
   const [status, setStatus] = useState<GDriveStatus | null>(null);
+  const [config, setConfig] = useState<GDriveConfig | null>(null);
+  const [clientPick, setClientPick] = useState<number | null>(null);
   const [newLabel, setNewLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [budget, setBudget] = useState("");
   const [windowStr, setWindowStr] = useState("");
 
   const load = useCallback(async () => {
-    const s = await api.get<GDriveStatus>("/api/gdrive/status").catch(() => null);
+    const [s, c] = await Promise.all([
+      api.get<GDriveStatus>("/api/gdrive/status").catch(() => null),
+      api.get<GDriveConfig>("/api/gdrive/config").catch(() => null),
+    ]);
     setStatus(s);
+    setConfig(c);
+    if (c) {
+      const enabled = c.clients.filter((x) => x.enabled);
+      setClientPick((prev) =>
+        prev !== null && enabled.some((x) => x.id === prev) ? prev : enabled[0]?.id ?? null
+      );
+    }
     if (s) {
       setBudget(String(s.queue.policy.daily_budget_gb || 0));
       setWindowStr(s.queue.policy.window || "");
@@ -49,12 +68,20 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
     window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
   }, [setMsg]);
 
-  async function startOAuth(accountId?: number) {
+  async function startOAuth(acc?: GDriveAccount) {
+    // 重新授權:沿用帳號原本的用戶端;若那組已刪除/停用,改用下拉選的。
+    const own = acc ? enabledClients.find((c) => c.id === acc.oauth_client_id) : undefined;
+    const clientId = own ? own.id : clientPick;
+    if (!clientId) {
+      setMsg({ kind: "err", text: "請先新增並選擇 OAuth 用戶端" });
+      return;
+    }
     setBusy(true);
     try {
       const res = await api.post<{ url: string }>("/api/gdrive/oauth/start", {
-        label: accountId ? "" : newLabel.trim(),
-        account_id: accountId ?? null,
+        label: acc ? "" : newLabel.trim(),
+        account_id: acc?.id ?? null,
+        oauth_client_id: clientId,
       });
       window.location.href = res.url;
     } catch (e: any) {
@@ -112,7 +139,10 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
     }
   }
 
-  if (!status) {
+  const enabledClients = (config?.clients ?? []).filter((c) => c.enabled);
+  const clientLabel = (id: number) => config?.clients.find((c) => c.id === id)?.label;
+
+  if (!status || !config) {
     return (
       <section className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-semibold">Google Drive</h2>
@@ -133,23 +163,16 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
         </p>
       </div>
 
-      {!ready && (
-        <div className="space-y-1 rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
-          <div className="inline-flex items-center gap-1 font-medium">
-            <TriangleAlert className="h-3.5 w-3.5" aria-hidden /> 尚未完成設定
-          </div>
-          {!status.oauth_configured && <div>・.env 缺少 GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET</div>}
-          {!status.key_configured && <div>・.env 缺少(或格式錯誤)GDRIVE_TOKEN_KEY</div>}
-          <div>
-            ・Google Cloud Console 的「已授權的重新導向 URI」要填:
-            <span className="ml-1 select-all font-mono">{status.redirect_uri}</span>
-          </div>
-          <div>・OAuth 同意畫面需「發布」為正式版,否則授權 7 天後失效。</div>
-        </div>
-      )}
+      <GDriveConfigPanel config={config} reload={load} setMsg={setMsg} />
 
       <div className="space-y-2">
-        <h3 className="text-sm font-medium">帳號</h3>
+        <h3 className="text-sm font-medium">Drive 帳號</h3>
+        {!ready && (
+          <p className="inline-flex items-center gap-1 text-xs text-amber-300">
+            <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
+            {!status.key_configured ? "請先設定加密金鑰" : "請先新增(並啟用)至少一組 OAuth 用戶端"}
+          </p>
+        )}
         {status.accounts.length === 0 && (
           <p className="text-sm text-muted-foreground">還沒有帳號。</p>
         )}
@@ -161,6 +184,11 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
                 <span className="font-medium">{a.label || a.email}</span>
                 {a.label && a.email && a.label !== a.email && (
                   <span className="text-xs text-muted-foreground">{a.email}</span>
+                )}
+                {clientLabel(a.oauth_client_id) ? (
+                  <span className="text-xs text-muted-foreground">用戶端:{clientLabel(a.oauth_client_id)}</span>
+                ) : (
+                  <span className="text-xs text-amber-300">用戶端已刪除,請重新授權</span>
                 )}
                 {a.authorized && !a.last_error ? (
                   <span className="inline-flex items-center gap-1 text-xs text-emerald-300">
@@ -197,7 +225,7 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
                 <Button size="sm" variant="outline" onClick={() => renameAccount(a)}>
                   改名稱
                 </Button>
-                <Button size="sm" variant="outline" disabled={!ready || busy} onClick={() => startOAuth(a.id)}>
+                <Button size="sm" variant="outline" disabled={!ready || busy} onClick={() => startOAuth(a)}>
                   重新授權
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => deleteAccount(a)}>
@@ -208,6 +236,20 @@ export default function GDriveSection({ setMsg }: { setMsg: SetMsg }) {
           );
         })}
         <div className="flex flex-wrap gap-2">
+          {enabledClients.length > 1 && (
+            <select
+              className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+              value={clientPick ?? ""}
+              onChange={(e) => setClientPick(Number(e.target.value))}
+              aria-label="使用的 OAuth 用戶端"
+            >
+              {enabledClients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  用戶端:{c.label}
+                </option>
+              ))}
+            </select>
+          )}
           <Input
             className="max-w-xs"
             placeholder="新帳號顯示名稱(可留空,預設 email)"

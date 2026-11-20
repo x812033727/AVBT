@@ -643,6 +643,7 @@ export type GDriveAccount = {
   email: string;
   enabled: boolean;
   authorized: boolean;
+  oauth_client_id: number;
   quota_total: number; // 0 = 無上限
   quota_used: number;
   quota_checked_at: string | null;
@@ -651,6 +652,24 @@ export type GDriveAccount = {
   last_error: string;
   stored_files: number;
   stored_bytes: number;
+};
+
+export type GDriveOAuthClient = {
+  id: number;
+  label: string;
+  client_id: string;
+  client_secret_masked: string; // 例如 "••••1234",永遠不會回傳明文
+  secret_ok: boolean;
+  enabled: boolean;
+  account_count: number;
+};
+
+export type GDriveConfig = {
+  key_source: "env" | "file" | "none";
+  key_configured: boolean;
+  redirect_uri: string;
+  redirect_source: "env" | "settings" | "default";
+  clients: GDriveOAuthClient[];
 };
 
 export type GDrivePolicy = {

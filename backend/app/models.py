@@ -295,6 +295,9 @@ class GDriveAccount(Base):
     label: Mapped[str] = mapped_column(String(128), default="")
     email: Mapped[str] = mapped_column(String(256), default="", index=True)
     refresh_token_enc: Mapped[str] = mapped_column(Text, default="")
+    # Which GDriveOAuthClient issued the refresh token (a token only
+    # refreshes with the client that minted it).
+    oauth_client_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     quota_total: Mapped[int] = mapped_column(Integer, default=0)  # 0 = unlimited
     quota_used: Mapped[int] = mapped_column(Integer, default=0)
@@ -302,6 +305,26 @@ class GDriveAccount(Base):
     daily_day: Mapped[str] = mapped_column(String(10), default="")
     daily_uploaded_bytes: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class GDriveOAuthClient(Base):
+    """One Google Cloud OAuth client (a Google Cloud project's "Web
+    application" credential), managed from the settings page. Several can
+    exist; each Drive account is bound to the client that authorised it.
+    ``client_secret_enc`` is Fernet-encrypted with the key from
+    services/gdrive_crypto.py (env or data/ file — never the DB)."""
+
+    __tablename__ = "gdrive_oauth_client"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    label: Mapped[str] = mapped_column(String(128), default="")
+    client_id: Mapped[str] = mapped_column(String(256), default="")
+    client_secret_enc: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

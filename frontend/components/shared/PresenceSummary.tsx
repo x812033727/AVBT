@@ -30,6 +30,30 @@ export function PresenceSummary({
   hideDownloaded?: boolean;
   onHideDownloadedChange?: (v: boolean) => void;
 }) {
+  if (meta && meta.total === 0) {
+    // JavBus 這次沒給目錄(404 / 驗證頁 / 限流)。不要顯示「共 0 部・缺漏 0」
+    // 誤導;卡片的「已下載」仍由 PikPak / Drive 直接判斷。
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+        <span className="inline-flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0" aria-hidden />
+          <span>
+            JavBus 目錄目前抓不到,無法計算缺漏(可能限流或暫時連不上)。
+            <span className="text-amber-200/70">卡片上的「已下載」仍以 PikPak / Drive 為準。</span>
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={busy}
+          className="ml-auto rounded-md border border-amber-300/40 px-2 py-0.5 transition hover:bg-amber-400/15 disabled:opacity-40"
+        >
+          {busy ? "重抓中…" : "重抓目錄"}
+        </button>
+      </div>
+    );
+  }
+
   if (meta) {
     const archived = meta.total - meta.missing;
     const pct = meta.total > 0 ? Math.round((100 * archived) / meta.total) : 0;
@@ -58,10 +82,11 @@ export function PresenceSummary({
             variant="outline"
             size="sm"
             className="ml-auto h-6 px-2 text-xs"
+            title="重抓 JavBus 目錄並重新比對 PikPak / Drive"
             onClick={onRefresh}
             disabled={busy}
           >
-            {busy ? "重建中…" : "重新整理 PikPak 索引"}
+            {busy ? "重算中…" : "重新計算缺漏"}
           </Button>
         </div>
         {meta.total > 0 && (

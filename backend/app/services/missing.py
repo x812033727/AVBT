@@ -468,7 +468,11 @@ async def fetch_all_listing_codes(
             kind, slug, uncensored=uncensored,
             with_magnets_only=with_magnets_only,
         )
-        if persisted is not None:
+        # An empty persisted catalog is never trusted: it is almost always
+        # a JavBus hiccup (404 / challenge page parsed as zero items) that
+        # got saved, and serving it "at any age" left listings stuck at
+        # 共 0 部 with every card marked 缺漏. Treat it as a miss and walk.
+        if persisted is not None and persisted[0]:
             items, pages, _fetched_at = persisted
             # L1 timestamp = load time, not fetch time: L1 is just a
             # parse cache over the DB row; the row's own fetched_at is
@@ -489,6 +493,29 @@ async def fetch_all_listing_codes(
             kind, slug, uncensored=uncensored, max_pages=cap,
             with_magnets_only=with_magnets_only,
         )
+
+        if not items:
+            # JavBus answered without raising but with zero works (404,
+            # challenge page, markup change). Don't let that wipe a good
+            # catalog: keep serving the previous one, and never persist
+            # the empty result — the next read walks again.
+            previous = await listing_catalog.get(
+                kind, slug, uncensored=uncensored,
+                with_magnets_only=with_magnets_only,
+            )
+            if previous is not None and previous[0]:
+                logger.warning(
+                    "listing walk %s/%s returned 0 works; keeping the "
+                    "persisted catalog (%d works)", kind, slug, len(previous[0]),
+                )
+                old_items, old_pages, _ = previous
+                _listing_cache[key] = (datetime.utcnow(), list(old_items), old_pages)
+                return list(old_items), old_pages
+            logger.warning("listing walk %s/%s returned 0 works; not persisting", kind, slug)
+            # In-memory only (L1 TTL), so a truly empty listing isn't
+            # re-walked on every read; refresh=True still bypasses it.
+            _listing_cache[key] = (datetime.utcnow(), [], pages)
+            return items, pages
 
         _listing_cache[key] = (datetime.utcnow(), list(items), pages)
         if max_pages is None:
@@ -534,6 +561,14 @@ def invalidate_listing(kind: str, slug: str) -> None:
         for mag in (False, True):
             _listing_cache.pop((kind, slug, unc, mag), None)
     invalidate_result_caches()
+
+
+async def held_subset(codes: list[str]) -> list[str]:
+    """The given codes that are held (PikPak or Drive), independent of any
+    JavBus catalog — listing pages mark 已下載 from this, so an empty or
+    stale catalog can't turn every card into 缺漏."""
+    owned = await _owned_codes()
+    return [c for c in codes if (normalize_code(c) or c.upper()) in owned]
 
 
 def _split_present_missing(

@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from ..schemas import (
     TrackedListingOut,
 )
 from ..scrapers import javbus as scraper
+from ..scrapers.javbus import JavbusBlocked
 from ..services import gdrive_accounts, gdrive_auto, listing_catalog, tracker, tracking_migration
 from ..services import missing as missing_svc
 from ..services.gdrive_transfer import ACTIVE_JOB_STATES
@@ -369,6 +371,12 @@ async def upsert_tracked(
 # to get_tracked with slug="abc/missing-codes" and the suffix is lost.
 
 
+@router.post("/held")
+async def held_codes(codes: list[str] = Body(..., embed=True)):
+    """Which of ``codes`` are already held (on PikPak or moved to Drive)."""
+    return {"codes": await missing_svc.held_subset(codes[:2000])}
+
+
 @router.get("/{kind}/{slug:path}/missing-codes", response_model=MissingCodesResult)
 async def missing_codes_for(
     kind: str,
@@ -394,9 +402,15 @@ async def missing_codes_for(
         raise HTTPException(status_code=404, detail="not tracked")
     row = await session.get(TrackedListing, (kind, slug))
     eff_uncensored = bool(row.uncensored) if row else uncensored
-    return await missing_svc.missing_for_listing(
-        kind, slug, uncensored=eff_uncensored, refresh=refresh, dedup=dedup
-    )
+    try:
+        return await missing_svc.missing_for_listing(
+            kind, slug, uncensored=eff_uncensored, refresh=refresh, dedup=dedup
+        )
+    except JavbusBlocked as exc:
+        raise HTTPException(status_code=451, detail=str(exc)) from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        # A failed JavBus catalog walk (network / 429 exhausted / 5xx).
+        raise HTTPException(status_code=502, detail=f"JavBus 目錄抓取失敗: {exc}") from exc
 
 
 @router.get("/{kind}/{slug:path}", response_model=TrackedListingOut)

@@ -11,8 +11,13 @@ library — ``社 区 最 新 情 报.mp4``, ``威尼斯人_真人棋牌…mp4``
 
 Rules, deliberately conservative:
 
-- **junk** = a video under ``JUNK_BYTES``, or a file that is not a video
-  and not a container (``CONTAINER_EXTS``)
+- **junk** = a file under ``JUNK_BYTES`` that is not a container
+  (``CONTAINER_EXTS``) — a small video is an ad clip, a small non-video
+  is a txt/screenshot. Size decides, never the name alone: a 7.57GB
+  file with no extension (``CAWD-087``, the torrent's only payload,
+  live 2026-09-01) is the work with its ``.mp4`` missing, and trashing
+  it on sight emptied the landing and lost the HD copy to the recycler.
+  Big non-videos are kept and logged for a human.
 - a container (``.iso``/``.zip``; e.g. the rescued SNIS-494.iso at
   23.8GB) is the video in disguise, so it survives — *until* a real
   playable video for the same code turns up **anywhere under 製作商**,
@@ -47,6 +52,7 @@ from .jav_code import (
 logger = logging.getLogger(__name__)
 
 JUNK_BYTES = 300 * 1024 * 1024
+GB = 1024 ** 3
 # How small a replacement may be, relative to the container it retires.
 # A disc image carries the film uncompressed, so an equal-quality mp4 is
 # legitimately a fraction of its size (live: IPTD-770 4.3GB → 2.3GB, 53%;
@@ -86,7 +92,10 @@ def is_series_junk(
             # set-aware sweep) retires the whole family together.
             return False
         if ext_of(name) not in CONTAINER_EXTS:
-            return True
+            # Judge by size like everything else: a small non-video is
+            # txt/jpg/nfo junk; a big one (or unknown-size, #220) is a
+            # video wearing no extension — keep it for a human.
+            return size is not None and size < JUNK_BYTES
         if size is None:
             # Unknown-size container — assume legit (#220 lesson: PikPak
             # can list real files with size=None; collapsing to 0 made a
@@ -179,6 +188,16 @@ async def purge_series_junk_stream(
             video_bytes=playable.get(code, 0) if code else 0,
         ):
             hits.append((f.id, path))
+        elif (
+            not is_video(f.name)
+            and not is_archive_volume(f.name)
+            and ext_of(f.name) not in CONTAINER_EXTS
+        ):
+            # Kept on purpose (big / unknown-size non-video) — say so.
+            logger.info(
+                "series junk: %s kept, %s non-video without a video "
+                "extension — not judged by name alone",
+                path, f"{(f.size or 0) / GB:.2f}GB" if f.size else "unknown-size")
         elif code and ext_of(f.name) in CONTAINER_EXTS and playable.get(code):
             # Kept on purpose — say so, or it looks like the sweep missed it.
             logger.info(

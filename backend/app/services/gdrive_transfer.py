@@ -48,7 +48,7 @@ from .gdrive import (
     gdrive_client,
 )
 from .jav_code import is_video, normalize_code
-from .pikpak import PikPakError, pikpak_service
+from .pikpak import PikPakError, PikPakLoginBlocked, pikpak_service
 from .pikpak_presence import presence_index
 from .supervisor import supervise
 from .webhook_queue import webhook_queue
@@ -60,10 +60,10 @@ ACTIVE_JOB_STATES = ("scanning", "transferring")
 _TERMINAL = ("done", "failed", "cancelled")
 
 
-# PikPakError messages meaning "PikPak can't be used right now" (login
-# cooldown after a throttled re-login, or no credentials) — not a problem
-# with the file. Transfers wait instead of burning retry attempts.
-_PIKPAK_UNAVAILABLE_MARKERS = ("登入冷卻中", "尚未登入")
+# PikPakError messages meaning "PikPak can't be used right now" without a
+# typed exception (no credentials configured). Login cooldowns raise
+# PikPakLoginBlocked instead. Transfers wait instead of burning retries.
+_PIKPAK_UNAVAILABLE_MARKERS = ("尚未登入",)
 
 
 def pikpak_unavailable() -> tuple[str, float] | None:
@@ -529,14 +529,17 @@ class GDriveTransferQueue:
                     "Google 回報今日上傳額度已滿,明天繼續",
                     gdrive_policy.seconds_until_tomorrow(gdrive_policy.now_local()),
                 )
+        except PikPakLoginBlocked as exc:
+            # An account-wide outage, not this file's fault: every claim
+            # fails instantly, and the retry ladder (120+240+480+960s) is
+            # exactly one 30-min cooldown — counting it would fail the
+            # whole queue before PikPak comes back. Park past the cooldown.
+            await self._park(
+                rid, "PikPak 登入冷卻中,冷卻結束後自動繼續", exc.remaining + 30.0
+            )
         except PikPakError as exc:
             if any(m in str(exc) for m in _PIKPAK_UNAVAILABLE_MARKERS):
-                blocked = pikpak_unavailable()
-                await self._park(
-                    rid,
-                    "PikPak 暫時無法使用(登入冷卻中或未登入),恢復後自動繼續",
-                    blocked[1] + 5 if blocked else 600.0,
-                )
+                await self._park(rid, "PikPak 尚未登入,登入後自動繼續", 600.0)
             else:
                 logger.warning("gdrive transfer %s PikPak error: %s", rid, exc)
                 await self._fail_or_retry(rid, f"PikPak 錯誤: {exc}")

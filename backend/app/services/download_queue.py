@@ -48,6 +48,7 @@ from ..models import OfflineTaskLog
 from ..schemas import OfflineSubmit, SendAllOptions
 from ..scrapers import javbus as scraper
 from ..scrapers.javbus import extract_btih, pick_best_magnet
+from . import traffic_budget
 from .pikpak import pikpak_service
 from .supervisor import supervise
 from .webhook_queue import webhook_queue
@@ -59,6 +60,7 @@ JobStatus = Literal[
     "sent",
     "skipped_no_magnet",
     "skipped_already_sent",
+    "skipped_traffic_gate",
     "failed",
     "cancelled",
 ]
@@ -137,6 +139,7 @@ class DownloadQueue:
             "sent": 0,
             "skipped_no_magnet": 0,
             "skipped_already_sent": 0,
+            "skipped_traffic_gate": 0,
             "failed": 0,
             "cancelled": 0,
         }
@@ -302,6 +305,24 @@ class DownloadQueue:
     async def _process(self, job: Job) -> JobResult:
         """Run one job end-to-end: pick magnet (if needed), submit to
         PikPak, log to DB, fire on_sent. Returns a ``JobResult``."""
+        # Monthly traffic budget, spread over the month. Checked before
+        # the JavBus detail fetch so a shut gate costs nothing: PikPak
+        # rejects every submit once the 40 TiB is gone, and the rota
+        # burned a whole listing scan per round discovering that (r494:
+        # 19 rows logged that could never be re-sent). force=True is the
+        # deliberate override — the same "I mean it" signal that already
+        # bypasses btih dedup — because one 6.5 GB submit against a
+        # 1.42 TB/day share is noise and a manual send should not need a
+        # kill-switch flip.
+        if not job.force:
+            allowed, why = await traffic_budget.gate_open()
+            if not allowed:
+                return JobResult(
+                    code=job.code,
+                    status="skipped_traffic_gate",
+                    message=why,
+                )
+
         # ---- direct-magnet branch (single POST /api/pikpak/offline) ----
         if job.direct_magnet:
             return await self._process_direct(job)

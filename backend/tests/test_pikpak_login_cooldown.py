@@ -9,6 +9,7 @@ exponentially after a too-frequent failure and fail fast (no network
 call) while the cooldown is active.
 """
 
+import json
 import time
 
 import pytest
@@ -152,3 +153,90 @@ async def test_status_exposes_cooldown(service):
     info = service.status()
     assert info["login_cooldown_seconds"] > 0
     assert "too frequent" in info["login_block_reason"]
+
+
+# ---- persistence across restarts -------------------------------------
+# 2026-11-21: a redeploy 30 min into a 2 h too-frequent cooldown built a
+# fresh PikPakService with no memory of it, fired a credential login into
+# PikPak's throttle window, and restarted the ladder at 30 min.
+
+
+@pytest.fixture()
+def cooldown_file(monkeypatch, tmp_path):
+    path = tmp_path / "login_cooldown.json"
+    monkeypatch.setattr(pikpak_mod, "LOGIN_COOLDOWN_FILE", path)
+    return path
+
+
+async def test_restart_inside_cooldown_does_not_login(service, cooldown_file):
+    FakePikPakApi.login_error = Exception(TOO_FREQUENT_MSG)
+    with pytest.raises(Exception, match="too frequent"):
+        await service._ensure()
+    assert cooldown_file.exists()
+
+    restarted = PikPakService()
+    assert restarted.status()["login_cooldown_seconds"] > 1700
+    with pytest.raises(PikPakError, match="冷卻"):
+        await restarted._ensure()
+    assert FakePikPakApi.login_calls == 1
+
+
+async def test_restart_keeps_the_backoff_ladder(service, cooldown_file):
+    """A retry that comes due right after a restart and fails again must
+    double the cooldown, not start over at 30 min."""
+    FakePikPakApi.login_error = Exception(TOO_FREQUENT_MSG)
+    with pytest.raises(Exception, match="too frequent"):
+        await service._ensure()
+    service._login_blocked_until = time.monotonic() - 1
+    with pytest.raises(Exception, match="too frequent"):
+        await service._ensure()  # streak 2 → 60 min
+
+    # Cooldown ran out while the process was down.
+    raw = json.loads(cooldown_file.read_text())
+    raw["until"] = time.time() - 5
+    cooldown_file.write_text(json.dumps(raw))
+
+    restarted = PikPakService()
+    assert restarted.status()["login_cooldown_seconds"] == 0
+    with pytest.raises(Exception, match="too frequent"):
+        await restarted._ensure()  # streak 3 → 120 min
+    assert restarted.status()["login_cooldown_seconds"] > 7000
+
+
+async def test_success_removes_persisted_cooldown(service, cooldown_file):
+    FakePikPakApi.login_error = Exception(TOO_FREQUENT_MSG)
+    with pytest.raises(Exception, match="too frequent"):
+        await service._ensure()
+    service._login_blocked_until = time.monotonic() - 1
+    FakePikPakApi.login_error = None
+    await service._ensure()
+    assert not cooldown_file.exists()
+    assert PikPakService().status()["login_cooldown_seconds"] == 0
+
+
+async def test_token_login_removes_persisted_cooldown(service, cooldown_file):
+    FakePikPakApi.login_error = Exception(TOO_FREQUENT_MSG)
+    with pytest.raises(Exception, match="too frequent"):
+        await service._ensure()
+    await service.login_with_token("tok-abc")
+    assert not cooldown_file.exists()
+
+
+def test_stale_or_corrupt_cooldown_file_is_ignored(service, cooldown_file):
+    cooldown_file.write_text(
+        json.dumps({"until": time.time() - 7 * 3600, "streak": 4, "reason": "x"})
+    )
+    stale = PikPakService()
+    assert stale._too_frequent_streak == 0
+    assert stale.status()["login_cooldown_seconds"] == 0
+
+    cooldown_file.write_text("{not json")
+    assert PikPakService().status()["login_cooldown_seconds"] == 0
+
+
+def test_restored_cooldown_is_capped(service, cooldown_file):
+    """A bad clock or a hand-edited file must not lock logins for days."""
+    cooldown_file.write_text(
+        json.dumps({"until": time.time() + 30 * 86400, "streak": 2, "reason": "x"})
+    )
+    assert PikPakService().status()["login_cooldown_seconds"] <= 6 * 3600

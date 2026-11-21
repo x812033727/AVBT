@@ -132,6 +132,18 @@ MOVE_SOURCES_FILE = Path(
 _LOGIN_COOLDOWN_TOO_FREQUENT = 1800  # throttled: start at 30 min...
 _LOGIN_COOLDOWN_MAX = 6 * 3600  # ...doubling up to 6 h
 
+# The cooldown persists here so a backend restart doesn't forget it. In
+# memory only, every deploy during a lockout fired a fresh credential
+# login straight into PikPak's throttle window and restarted the backoff
+# ladder at 30 min (2026-11-21: a redeploy 30 min into a 2 h cooldown).
+# Env override is a test hook: an empty value disables persistence.
+_LOGIN_COOLDOWN_ENV = os.environ.get("PIKPAK_LOGIN_COOLDOWN_FILE")
+LOGIN_COOLDOWN_FILE = Path(
+    _LOGIN_COOLDOWN_ENV
+    if _LOGIN_COOLDOWN_ENV is not None
+    else "data/pikpak_login_cooldown.json"
+)
+
 # Every phase in which a task still owes us files. pikpakapi's default
 # filter is RUNNING+ERROR, so PENDING — everything queued behind PikPak's
 # ~100-task concurrency cap — drops out unless asked for by name. Anything
@@ -230,6 +242,7 @@ class PikPakService:
         self._login_blocked_until: float = 0.0
         self._login_block_reason: str = ""
         self._too_frequent_streak: int = 0
+        self._restore_login_cooldown()
         # Move-settle tracking (see move_settled). Stamps are wall-clock
         # and persisted across restarts; only when there is NO usable
         # history file does boot count as "unknown history" — a restart
@@ -409,11 +422,70 @@ class PikPakService:
         logger.warning(
             "PikPak login failed (%s); cooling down %ds", exc, cooldown
         )
+        self._persist_login_cooldown(time.time() + cooldown)
 
     def _clear_login_cooldown(self) -> None:
         self._login_blocked_until = 0.0
         self._login_block_reason = ""
         self._too_frequent_streak = 0
+        if LOGIN_COOLDOWN_FILE.name:
+            try:
+                LOGIN_COOLDOWN_FILE.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("PikPak login cooldown clear failed: %s", exc)
+
+    def _persist_login_cooldown(self, until_wall: float) -> None:
+        if not LOGIN_COOLDOWN_FILE.name:
+            return
+        try:
+            LOGIN_COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LOGIN_COOLDOWN_FILE.write_text(
+                json.dumps(
+                    {
+                        "until": until_wall,
+                        "streak": self._too_frequent_streak,
+                        "reason": self._login_block_reason,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("PikPak login cooldown persist failed: %s", exc)
+
+    def _restore_login_cooldown(self) -> None:
+        """Pick up a cooldown left by the previous process. A cooldown
+        still running is honoured for its remaining time. One that ran
+        out while we were down no longer blocks — a retry is due — but
+        its streak is kept for a while so that retry, if it fails too,
+        continues the ladder instead of restarting it at 30 min."""
+        if not LOGIN_COOLDOWN_FILE.name:
+            return
+        try:
+            raw = json.loads(LOGIN_COOLDOWN_FILE.read_text(encoding="utf-8"))
+            until = float(raw["until"])
+            streak = max(0, int(raw.get("streak", 0)))
+            reason = str(raw.get("reason", ""))
+        except FileNotFoundError:
+            return
+        except Exception:  # noqa: BLE001 — corrupt file = no cooldown
+            logger.warning("PikPak login cooldown file unreadable; ignoring")
+            return
+        remaining = until - time.time()
+        if remaining <= -_LOGIN_COOLDOWN_MAX:
+            return  # long over: stale, start fresh
+        self._too_frequent_streak = streak
+        self._login_block_reason = reason
+        if remaining > 0:
+            # Never trust a file for longer than the ladder could have set.
+            remaining = min(remaining, _LOGIN_COOLDOWN_MAX)
+            self._login_blocked_until = time.monotonic() + remaining
+            logger.warning(
+                "PikPak login cooldown restored: %ds left (%s)",
+                remaining,
+                reason,
+            )
 
     # ---------- public ----------
 

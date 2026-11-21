@@ -356,6 +356,63 @@ async def test_account_daily_cap_defers_claim(env, monkeypatch):
     assert "額度" in tr.message
 
 
+# ---------------------------------------------------------------------------
+# PikPak login cooldown: wait, don't fail
+
+
+def test_pikpak_unavailable_reads_cooldown(monkeypatch):
+    monkeypatch.setattr(
+        gt.pikpak_service, "status",
+        lambda: {"login_cooldown_seconds": 0, "login_block_reason": ""},
+    )
+    assert gt.pikpak_unavailable() is None
+    monkeypatch.setattr(
+        gt.pikpak_service, "status",
+        lambda: {"login_cooldown_seconds": 3540, "login_block_reason": "operation is too frequent"},
+    )
+    reason, secs = gt.pikpak_unavailable()
+    assert secs == 3540 and "59 分鐘" in reason and "too frequent" in reason
+
+
+async def test_cooldown_parks_without_burning_attempts(env, monkeypatch):
+    async def blocked(fid):
+        raise gt.PikPakLoginBlocked(
+            "登入冷卻中(約剩 60 分鐘)。上次失敗原因: operation is too frequent", 3600.0
+        )
+
+    monkeypatch.setattr(gt.pikpak_service, "file_links", blocked)
+    monkeypatch.setattr(
+        gt.pikpak_service, "status",
+        lambda: {"login_cooldown_seconds": 3600, "login_block_reason": "too frequent"},
+    )
+    monkeypatch.setattr(settings, "gdrive_transfer_max_attempts", 1)  # would fail at once otherwise
+    q = gt.GDriveTransferQueue()
+    await _run(q, env.ids.transfer)
+
+    async with env.maker() as s:
+        tr = await s.get(GDriveTransfer, env.ids.transfer)
+        job = await s.get(GDriveJob, env.ids.job)
+    assert tr.status == "pending" and tr.attempts == 0
+    assert "PikPak" in tr.message and tr.session_uri  # resumable session kept
+    assert (tr.next_retry_at - datetime.utcnow()).total_seconds() > 3000
+    assert job.status == "transferring" and env.sent == []
+
+
+async def test_retry_all_requeues_every_partial_job(env):
+    async with env.maker() as s:
+        job = await s.get(GDriveJob, env.ids.job)
+        job.status = "partial"
+        tr = await s.get(GDriveTransfer, env.ids.transfer)
+        tr.status, tr.attempts = "failed", 5
+        await s.commit()
+    q = gt.GDriveTransferQueue()
+    assert await q.retry_all() == 1
+    async with env.maker() as s:
+        tr = await s.get(GDriveTransfer, env.ids.transfer)
+        job = await s.get(GDriveJob, env.ids.job)
+    assert tr.status == "pending" and tr.attempts == 0 and job.status == "transferring"
+
+
 async def test_pikpak_login_cooldown_parks_without_burning_attempts(env, monkeypatch):
     """A PikPak login cooldown is an outage, not a per-file failure.
 

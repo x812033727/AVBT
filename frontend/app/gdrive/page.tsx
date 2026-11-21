@@ -109,6 +109,14 @@ export default function GDrivePage() {
   if (!data) return <div className="text-sm text-muted-foreground">讀取中…</div>;
 
   const q = data.queue;
+  const failedTotal = data.jobs.reduce(
+    (n, j) =>
+      n +
+      (["partial", "error", "cancelled"].includes(j.status)
+        ? (j.counts.failed ?? 0) + (j.counts.cancelled ?? 0)
+        : 0),
+    0
+  );
   const policy = q.policy;
 
   return (
@@ -132,6 +140,20 @@ export default function GDrivePage() {
               </>
             )}
           </Button>
+          {failedTotal > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => act("/api/gdrive/jobs/retry-all", "已把所有失敗檔案重新排隊")}
+              title={
+                q.pikpak_blocked_reason
+                  ? "PikPak 冷卻結束後會自動開始,現在按不會再失敗一輪"
+                  : undefined
+              }
+            >
+              全部重試失敗({failedTotal})
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -144,6 +166,15 @@ export default function GDrivePage() {
           </Link>
         </div>
       </div>
+
+      {q.pikpak_blocked_reason && (
+        <div className="rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+          {q.pikpak_blocked_reason}。搬移已暫停,冷卻結束後自動繼續,不會標失敗。
+          <Link href="/settings" className="ml-2 text-primary hover:underline">
+            到設定頁重新登入 PikPak
+          </Link>
+        </div>
+      )}
 
       <div className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
         今日已搬 {fmtBytes(policy.used_today_bytes, "0")}

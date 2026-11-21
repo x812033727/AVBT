@@ -35,7 +35,7 @@ from ..models import (
     TrackedListing,
 )
 from . import gdrive_accounts, listing_codes
-from .gdrive_transfer import ACTIVE_JOB_STATES, gdrive_transfer_queue
+from .gdrive_transfer import ACTIVE_JOB_STATES, gdrive_transfer_queue, pikpak_unavailable
 from .jav_code import normalize_code
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,10 @@ async def reconcile(only: tuple[str, str] | None = None) -> int:
     """One pass over Drive-enabled listings (or just ``only``). Returns
     how many jobs were created. Serialised so a toggle-triggered run and
     the periodic loop can't both create a job for the same listing."""
+    # PikPak in a login cooldown: scans would fail and pile up error
+    # jobs (and poke PikPak again). Try again next cycle.
+    if pikpak_unavailable() is not None:
+        return 0
     async with _lock:
         async with SessionLocal() as session:
             q = select(TrackedListing).where(TrackedListing.gdrive_enabled.is_(True))

@@ -431,6 +431,11 @@ async def job_transfers(job_id: int, status: str = Query("")):
     ]
 
 
+@router.post("/jobs/retry-all")
+async def retry_all_jobs():
+    return {"requeued": await gdrive_transfer_queue.retry_all()}
+
+
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(job_id: int):
     return {"requeued": await gdrive_transfer_queue.retry_job(job_id)}

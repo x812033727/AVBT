@@ -141,14 +141,17 @@ async def test_throttle_counters_track_backoff_and_exhaustion(service, no_sleep)
     assert service.throttle_exhausted_total == 1   # ran out of retries
 
 
-async def test_stale_captcha_token_relogins_once(service, no_sleep, monkeypatch):
-    # PikPak rejects every call with "Verification code is invalid" once the
-    # client's X-Captcha-Token goes stale; only a fresh client heals it, so
-    # the message must route through the relogin path (case-insensitive).
-    async def noop_drop(c):
-        return None
+async def test_stale_captcha_token_retries_once(service, no_sleep, monkeypatch):
+    # "Verification code is invalid" means the request carried a stale
+    # X-Captcha-Token. The first answer is to clear it and re-issue the
+    # call on the same session (see test_pikpak_captcha_token_leak.py);
+    # the message still routes to the relogin path if that fails too.
+    dropped = []
 
-    monkeypatch.setattr(service, "_drop_for_relogin", noop_drop)
+    async def record_drop(c):
+        dropped.append(c)
+
+    monkeypatch.setattr(service, "_drop_for_relogin", record_drop)
     calls = {"n": 0}
 
     async def op(client):
@@ -158,5 +161,27 @@ async def test_stale_captcha_token_relogins_once(service, no_sleep, monkeypatch)
         return "ok"
 
     assert await service._call(op) == "ok"
-    assert calls["n"] == 2          # one relogin retry
-    assert no_sleep == []           # relogin path does not throttle-backoff
+    assert calls["n"] == 2          # one retry
+    assert dropped == []            # …that did not cost a login
+    assert no_sleep == []           # and does not throttle-backoff
+
+
+async def test_captcha_rejection_that_persists_relogins(service, no_sleep, monkeypatch):
+    dropped = []
+
+    async def record_drop(c):
+        dropped.append(c)
+
+    monkeypatch.setattr(service, "_drop_for_relogin", record_drop)
+    calls = {"n": 0}
+
+    async def op(client):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PikPakError("PikPak 錯誤: Verification code is invalid")
+        return "ok"
+
+    assert await service._call(op) == "ok"
+    assert calls["n"] == 3
+    assert len(dropped) == 1
+    assert no_sleep == []

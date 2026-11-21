@@ -88,6 +88,41 @@ _INVALID_TOKEN_MARKERS = (
 )
 
 
+# The one marker above that is about the per-request captcha token, not
+# the session: see ``_file_detail`` for how a client ends up resending a
+# stale one, and ``_call`` for the no-login recovery tried first.
+_STALE_CAPTCHA_MARKER = "verification code is invalid"
+
+
+def _is_stale_captcha_error(exc: BaseException) -> bool:
+    return _STALE_CAPTCHA_MARKER in str(exc).lower()
+
+
+def _clear_captcha_token(client: Any) -> None:
+    try:
+        client.captcha_token = None
+    except AttributeError:  # not a pikpakapi client (slots / stub)
+        pass
+
+
+async def _file_detail(client: PikPakApi, file_id: str) -> Any:
+    """``client.get_download_url`` without its captcha-token leak.
+
+    pikpakapi parks the file-scoped captcha token on the SHARED client
+    for the duration of the lookup and only clears it on success. Any
+    failure — a dangling file id (routine: wrappers are trashed after
+    archive), a timeout cancelling the await — left that token on the
+    client for good, and every later request resent it. Listings ignore
+    it, but offline-download submits are captcha-checked and came back
+    "Verification code is invalid", which ``_call`` answers with a full
+    password re-login; inside PikPak's login throttle that re-login is
+    what turned into the 2026-11-21 04:17 UTC 9.5-hour lockout."""
+    try:
+        return await client.get_download_url(file_id)
+    finally:
+        _clear_captcha_token(client)
+
+
 def _backfill_user_id(client: PikPakApi) -> None:
     """pikpakapi's ``decode_token()`` restores only the access/refresh
     tokens and leaves ``user_id`` as None. ``captcha_init`` then sends
@@ -359,7 +394,14 @@ class PikPakService:
     def _maybe_encode_token(self, client: PikPakApi) -> None:
         if hasattr(client, "encode_token"):
             try:
-                token = client.encode_token()
+                # pikpakapi's encode_token() returns None and leaves the
+                # result on ``encoded_token``; reading only the return
+                # value meant a fresh login was never written to disk, so
+                # every restart before the first token refresh cost
+                # another password login.
+                token = client.encode_token() or getattr(
+                    client, "encoded_token", ""
+                )
                 if token:
                     self._save_token(token)
             except Exception as exc:  # noqa: BLE001
@@ -586,10 +628,12 @@ class PikPakService:
     async def _call(self, op):
         """Run ``await op(client)`` with two independent recovery paths:
 
-        1. Refresh token invalidated by another session
-           (``_is_invalid_token_error``) → drop the cached client, re-login
-           once through ``_ensure``'s lock, and re-run. Unchanged from
-           before.
+        1. Session rejected (``_is_invalid_token_error``: refresh token
+           rotated elsewhere, token disabled, …) → drop the cached client,
+           re-login once through ``_ensure``'s lock, and re-run. A
+           "verification code is invalid" rejection first gets one
+           re-issue on the same client with the stale captcha token
+           cleared, and only reaches the re-login if that fails too.
         2. Operation throttled ("operation is too frequent",
            ``_is_too_frequent_error``) → exponential backoff and retry, up
            to ``settings.pikpak_throttle_max_retries`` times. Retrying is
@@ -632,15 +676,29 @@ class PikPakService:
         cap = max(0.0, float(settings.pikpak_throttle_max_seconds))
 
         attempt = 0
+        captcha_retried = False
         while True:
             client = await self._ensure()
             try:
                 return await _run(client)
             except Exception as exc:  # noqa: BLE001
+                if _is_stale_captcha_error(exc) and not captcha_retried:
+                    # Most often the request merely carried a captcha
+                    # token that a concurrent / failed file lookup left
+                    # on the shared client. Drop it and re-issue the
+                    # identical call once on the SAME session — a
+                    # password login is the expensive, throttled
+                    # recovery and is kept for when this is not enough.
+                    captcha_retried = True
+                    _clear_captcha_token(client)
+                    logger.warning(
+                        "PikPak rejected the captcha token (%s); cleared "
+                        "it and retrying without re-login", exc,
+                    )
+                    continue
                 if _is_invalid_token_error(exc):
                     logger.warning(
-                        "PikPak refresh token invalidated by another "
-                        "session (%s); re-logging in", exc,
+                        "PikPak session rejected (%s); re-logging in", exc,
                     )
                     await self._drop_for_relogin(client)
                     client = await self._ensure()
@@ -1128,7 +1186,7 @@ class PikPakService:
         - ``play_url`` is the high-speed streaming link from ``medias[0].link``
           (falls back to ``download_url`` if PikPak didn't surface one).
         """
-        resp = await self._call(lambda c: c.get_download_url(file_id))
+        resp = await self._call(lambda c: _file_detail(c, file_id))
         if not isinstance(resp, dict):
             url = str(resp or "")
             return {"download_url": url, "play_url": url, "mime_type": ""}
@@ -1158,7 +1216,7 @@ class PikPakService:
         files/{id} lookup as ``file_links`` — the response carries the
         file object, which is all we need to tell a bare file from a
         folder without listing its parent."""
-        resp = await self._call(lambda c: c.get_download_url(file_id))
+        resp = await self._call(lambda c: _file_detail(c, file_id))
         if not isinstance(resp, dict):
             return {}
         return {

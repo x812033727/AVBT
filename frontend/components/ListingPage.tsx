@@ -69,6 +69,8 @@ export default function ListingPage({
   const [presenceBusy, setPresenceBusy] = useState(false);
   const [presenceError, setPresenceError] = useState<string | null>(null);
   const [hideDownloaded, setHideDownloaded] = useState(false);
+  // 本頁哪些番號已持有(PikPak 或 Drive),不依賴 JavBus 目錄。
+  const [held, setHeld] = useState<Set<string> | null>(null);
   // 全部六種 kind 都可追蹤;類別目錄很大,tracked 頁開 auto_send 前會
   // 另行 confirm,補檔量由 backfill batch limit 節流。
   const trackable = true;
@@ -91,6 +93,13 @@ export default function ListingPage({
         }
         setData(res);
         setPage(p);
+        setHeld(null);
+        api
+          .post<{ codes: string[] }>("/api/tracked/held", {
+            codes: res.items.map((it) => it.code),
+          })
+          .then((r) => setHeld(new Set(r.codes)))
+          .catch(() => setHeld(null));
         // Best-effort card enrichment from the local detail cache — one
         // POST per page, hits only, silently absent otherwise. Never a
         // live JavBus fetch.
@@ -205,9 +214,17 @@ export default function ListingPage({
 
   // Hide-downloaded only filters the items already on this (server-paginated)
   // page — it can't reach ahead into pages that haven't been fetched yet.
+  // 「已下載」= 已持有(PikPak/Drive)或目錄比對為已下載。只有目錄真的
+  // 有資料時才把其他作品標「缺漏」;目錄抓不到就不下判斷。
+  const catalogOk = !!presence && (presenceMeta?.total ?? 0) > 0;
+  const presentOf = (code: string): boolean | undefined => {
+    if (held?.has(code) || presence?.has(code)) return true;
+    if (tracked && catalogOk) return false;
+    return undefined;
+  };
   const visibleItems =
-    hideDownloaded && presence && tracked
-      ? (data?.items ?? []).filter((it) => !presence.has(it.code))
+    hideDownloaded && tracked
+      ? (data?.items ?? []).filter((it) => presentOf(it.code) !== true)
       : data?.items ?? [];
 
   return (
@@ -327,7 +344,7 @@ export default function ListingPage({
                 <MovieCard
                   key={it.code + it.detail_url}
                   item={it}
-                  present={presence ? presence.has(it.code) : undefined}
+                  present={presentOf(it.code)}
                   meta={metaMap[it.code]}
                 />
               ))}

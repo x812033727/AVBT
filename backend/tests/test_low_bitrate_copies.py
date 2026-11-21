@@ -72,6 +72,50 @@ def test_same_size_copies_are_left_to_a_human():
     assert low_bitrate_copies(files) == []
 
 
+def _s(name, seconds, size):
+    return SimpleNamespace(name=name, duration=seconds, size=size,
+                           kind="drive#file", id=name)
+
+
+def test_same_torrent_480p_beside_its_720p_twin():
+    # HUNTC-057 (2026-11-20): the torrent ships 856x480 and 1280x720 of
+    # one film as _1/_2. 62.5% of the size slips the half-size gate, but
+    # the runtimes agree to the second (ffprobe: 12930.13 / 12930.09).
+    files = [_s("HUNTC-057_1.mp4", 12930, 2155610190),
+             _s("HUNTC-057_2.mp4", 12930, 3448383539)]
+    assert [c.name for c in low_bitrate_copies(files)] == ["HUNTC-057_1.mp4"]
+
+
+def test_identical_runtime_tolerates_a_rounding_second():
+    files = [_s("HUNTC-070_1.mp4", 11469, 1910000000),
+             _s("HUNTC-070_2.mp4", 11468, 3060000000)]
+    assert [c.name for c in low_bitrate_copies(files)] == ["HUNTC-070_1.mp4"]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # Same second count but nearly the same size: two rips a human
+        # must judge, never an obvious loser.
+        [_s("A-1_1.mp4", 7200, 5000000000), _s("A-1_2.mp4", 7200, 4300000000)],
+        # 62% of the size but the runtimes are a few seconds apart: that
+        # is what two real discs of unequal length look like.
+        [_s("A-1_1.mp4", 7200, 3100000000), _s("A-1_2.mp4", 7204, 5000000000)],
+    ],
+)
+def test_the_identical_runtime_gate_stays_narrow(files):
+    assert low_bitrate_copies(files) == []
+
+
+def test_the_plan_stops_numbering_the_480p_twin():
+    plan, members = _build_video_rename_plan(
+        [_s("HUNTC-057_1.mp4", 12930, 2155610190),
+         _s("HUNTC-057_2.mp4", 12930, 3448383539)],
+        500 * MB, is_video, require_marker=True,
+    )
+    assert plan == {} and members == set()
+
+
 @pytest.mark.parametrize(
     "files",
     [

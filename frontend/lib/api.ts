@@ -698,6 +698,8 @@ export type GDriveQueueStatus = {
   inflight: number;
   concurrency: number;
   policy: GDrivePolicy;
+  // 非空 = PikPak 登入冷卻中,整個佇列暫停到冷卻結束。
+  pikpak_blocked_reason: string;
 };
 
 export type GDriveStatus = {

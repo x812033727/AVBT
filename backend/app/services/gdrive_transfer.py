@@ -48,7 +48,7 @@ from .gdrive import (
     gdrive_client,
 )
 from .jav_code import is_video, normalize_code
-from .pikpak import pikpak_service
+from .pikpak import PikPakError, pikpak_service
 from .pikpak_presence import presence_index
 from .supervisor import supervise
 from .webhook_queue import webhook_queue
@@ -58,6 +58,27 @@ logger = logging.getLogger(__name__)
 _MAX_LEAF_DEPTH = 4
 ACTIVE_JOB_STATES = ("scanning", "transferring")
 _TERMINAL = ("done", "failed", "cancelled")
+
+
+# PikPakError messages meaning "PikPak can't be used right now" (login
+# cooldown after a throttled re-login, or no credentials) — not a problem
+# with the file. Transfers wait instead of burning retry attempts.
+_PIKPAK_UNAVAILABLE_MARKERS = ("登入冷卻中", "尚未登入")
+
+
+def pikpak_unavailable() -> tuple[str, float] | None:
+    """``(reason, seconds_left)`` while PikPak is in a login cooldown."""
+    try:
+        st = pikpak_service.status()
+    except Exception:  # noqa: BLE001 — status must never break the worker
+        return None
+    secs = float(st.get("login_cooldown_seconds") or 0)
+    if secs <= 0:
+        return None
+    minutes = max(1, int(secs // 60) + (1 if secs % 60 else 0))
+    why = st.get("login_block_reason") or ""
+    reason = f"PikPak 登入冷卻中(約剩 {minutes} 分鐘)" + (f":{why}" if why else "")
+    return reason, secs
 
 
 class Paused(Exception):  # noqa: N818 — control flow, not an error
@@ -389,6 +410,18 @@ class GDriveTransferQueue:
             self._wakeup.clear()
             wait = 30.0
             try:
+                blocked = pikpak_unavailable()
+                if blocked is not None:
+                    # Every claimed row would just fail on file_links (and
+                    # poke PikPak again, lengthening the cooldown) — hold
+                    # the whole queue until the cooldown ends.
+                    try:
+                        await asyncio.wait_for(
+                            self._stop.wait(), timeout=min(600.0, blocked[1] + 5)
+                        )
+                    except TimeoutError:
+                        pass
+                    continue
                 policy = await gdrive_policy.load()
                 now = gdrive_policy.now_local()
                 reason = policy.block_reason(now)
@@ -496,6 +529,17 @@ class GDriveTransferQueue:
                     "Google 回報今日上傳額度已滿,明天繼續",
                     gdrive_policy.seconds_until_tomorrow(gdrive_policy.now_local()),
                 )
+        except PikPakError as exc:
+            if any(m in str(exc) for m in _PIKPAK_UNAVAILABLE_MARKERS):
+                blocked = pikpak_unavailable()
+                await self._park(
+                    rid,
+                    "PikPak 暫時無法使用(登入冷卻中或未登入),恢復後自動繼續",
+                    blocked[1] + 5 if blocked else 600.0,
+                )
+            else:
+                logger.warning("gdrive transfer %s PikPak error: %s", rid, exc)
+                await self._fail_or_retry(rid, f"PikPak 錯誤: {exc}")
         except (GDriveAuthError, gdrive_accounts.AccountUnavailable) as exc:
             async with SessionLocal() as session:
                 row = await session.get(GDriveTransfer, rid)
@@ -842,6 +886,20 @@ class GDriveTransferQueue:
 
     # ---------- caller actions ----------
 
+    async def retry_all(self) -> int:
+        """Requeue every failed/cancelled file of every unfinished job
+        (``partial`` / ``error`` / ``cancelled``). Returns files requeued."""
+        async with SessionLocal() as session:
+            job_ids = (
+                await session.execute(
+                    select(GDriveJob.id).where(GDriveJob.status.in_(("partial", "error", "cancelled")))
+                )
+            ).scalars().all()
+        total = 0
+        for jid in job_ids:
+            total += await self.retry_job(jid)
+        return total
+
     async def retry_job(self, job_id: int) -> int:
         async with SessionLocal() as session:
             res = await session.execute(
@@ -931,6 +989,7 @@ class GDriveTransferQueue:
             "inflight": len(self._inflight),
             "concurrency": settings.gdrive_transfer_concurrency,
             "policy": policy.to_public(),
+            "pikpak_blocked_reason": (pikpak_unavailable() or ("", 0))[0],
         }
 
 

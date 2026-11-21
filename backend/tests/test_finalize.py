@@ -718,6 +718,54 @@ async def test_stream_ambiguous_presence_folders_abort(monkeypatch):
     assert not svc.moved and not svc.renamed and not svc.purged and not svc.trashed
 
 
+async def test_stream_resolves_videoname_wrapper_folder(monkeypatch):
+    """BT wrappers may name the FOLDER after the video file itself
+    (``u15x-REBDB-120.mp4`` the folder, real video inside). The leaf
+    spells like a video, but it is a per-code folder and must be found
+    through presence — skipping on name alone looped finalize on
+    找不到歸檔資料夾 forever (live 2026-08-12: REBDB-120, 1.49GB
+    stranded in the wrapper)."""
+    wrapper_path = "AVBT/製作商/REbecca/Arisa/u15x-REBDB-120.mp4"
+    svc = FakeSvc({
+        "series": [_folder("u15x-REBDB-120.mp4", "wrap")],
+        "wrap": [_file("www.youiv.pw-REBDB-120.mp4", "v1", 4000)],
+    }, path_ids={wrapper_path: "wrap"})
+
+    async def fake_resolve(code):
+        return "AVBT/製作商/REbecca/Arisa/REBDB-120"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    _patch_presence(monkeypatch, [wrapper_path])
+
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "REBDB-120", dry_run=False)]
+    done = events[-1]
+    assert done["type"] == "done" and done["result"]["errors"] == 0
+    assert ("wrap", "REBDB-120") in svc.renamed      # folder normalised
+    assert ("v1", "REBDB-120.mp4") in svc.renamed    # keeper normalised
+
+
+async def test_stream_loose_flattened_file_is_not_a_candidate(monkeypatch):
+    """A genuinely loose flattened video (a real FILE at the same kind of
+    path) must NOT become a candidate folder: the folder-typed lookup
+    resolves nothing for it, so the stream still reports the archive
+    folder as missing and mutates nothing."""
+    loose = "AVBT/製作商/REbecca/Arisa/REBDB-120.mp4"
+    svc = FakeSvc({}, path_ids={})  # lookup misses: the leaf is a file
+
+    async def fake_resolve(code):
+        return "AVBT/製作商/REbecca/Arisa/REBDB-120"
+
+    monkeypatch.setattr(arch, "_resolve_archive_path_by_code", fake_resolve)
+    _patch_presence(monkeypatch, [loose])
+
+    events = [e async for e in finalize_code_folder_stream(
+        svc, "REBDB-120", dry_run=False)]
+    assert events[0]["type"] == "error"
+    assert "找不到" in events[0]["message"]
+    assert not svc.moved and not svc.renamed and not svc.purged and not svc.trashed
+
+
 async def test_flattened_check_sees_bt_named_wrapper(monkeypatch):
     """A wrapper folder with a non-canonical name is still a per-code
     folder — _already_flattened must NOT stamp the row finalized."""

@@ -22,6 +22,16 @@ from app.services.rename_plan import _split_size_outliers
         ("ABC-123B", "ABC-123"),
         ("hhd800.com@ABC-123A", None),  # code derived internally
         ("ABC-123CD2", "ABC-123"),
+        # Hyphen/dot separators: as common in release names as the bare
+        # and space forms, and previously read as single-file. The live
+        # miss was the ``SDCA-014 DISC-2`` family — magnet picking scores
+        # multi-part releases off part_hint, so a blank hint silently
+        # demotes a disc set to "one big single file".
+        ("SDCA-014 DISC-2", "SDCA-014"),
+        ("ABC-123 DISC.1", "ABC-123"),
+        ("ABC-123 disk-2.mp4", "ABC-123"),
+        ("ABC-123 CD-2", "ABC-123"),
+        ("ABC-123 CD_2.mp4", "ABC-123"),
     ],
 )
 def test_part_hint_positive(name, code):
@@ -46,10 +56,26 @@ def test_part_hint_positive(name, code):
         ("300MIUM-1090.mp4", None),
         ("kfa55.com@483DAM-043.mkv", None),
         ("", None),
+        # The widened CD/DISC separator must stay word-anchored: a label
+        # that merely ENDS in those letters is not a disc marker.
+        ("HODCD-123.mp4", None),
+        ("ABCDISC-12.mp4", None),
+        ("ABC-123 DISC-ROM.mp4", "ABC-123"),  # no digit → no marker
+        # VOL keeps its narrow rule on purpose (see _PART_GENERIC_RES):
+        # compilations are titled "Vol.N", so widening it would read a
+        # whole single-file compilation as one part of a set.
+        ("ABC-123 vol-3.mp4", "ABC-123"),
     ],
 )
 def test_part_hint_negative(name, code):
     assert detect_part_hint(name, code) == "", name
+
+
+def test_part_hint_separator_forms_agree():
+    """Bare / space / hyphen / dot forms of one marker all resolve."""
+    for name in ("ABC-123 DISC2", "ABC-123 DISC 2",
+                 "ABC-123 DISC-2", "ABC-123 DISC.2"):
+        assert detect_part_hint(name, "ABC-123") != "", name
 
 
 def test_part_hint_returns_marker_text():

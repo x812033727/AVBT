@@ -55,6 +55,17 @@ class PikPakError(RuntimeError):
     pass
 
 
+class PikPakLoginBlocked(PikPakError):  # noqa: N818 — a state, like PikPakError
+    """Raised (without touching the network) while a login cooldown is
+    active. ``remaining`` is the seconds left, so queue workers can park
+    their work until PikPak is reachable instead of counting the outage
+    as a per-item failure."""
+
+    def __init__(self, message: str, remaining: float) -> None:
+        super().__init__(message)
+        self.remaining = remaining
+
+
 TOKEN_FILE = Path("data/pikpak_token.txt")
 
 
@@ -376,9 +387,10 @@ class PikPakService:
         if explicit and self._too_frequent_streak == 0:
             return
         minutes = max(1, int(remaining // 60) + (1 if remaining % 60 else 0))
-        raise PikPakError(
+        raise PikPakLoginBlocked(
             f"登入冷卻中(約剩 {minutes} 分鐘)。"
-            f"上次失敗原因: {self._login_block_reason}"
+            f"上次失敗原因: {self._login_block_reason}",
+            remaining,
         )
 
     def _note_login_failure(self, exc: BaseException) -> None:

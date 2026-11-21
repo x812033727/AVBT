@@ -1,7 +1,7 @@
 """PikPak → Google Drive mover: path mapping, traffic policy, token
 crypto, and the streaming upload worker end-to-end against fakes."""
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -354,3 +354,42 @@ async def test_account_daily_cap_defers_claim(env, monkeypatch):
         tr = await s.get(GDriveTransfer, env.ids.transfer)
     assert tr.status == "pending" and tr.next_retry_at is not None
     assert "額度" in tr.message
+
+
+async def test_pikpak_login_cooldown_parks_without_burning_attempts(env, monkeypatch):
+    """A PikPak login cooldown is an outage, not a per-file failure.
+
+    Live 2026-11-21: a 30-min cooldown failed every claim instantly, and
+    the 120/240/480/960s retry ladder sums to exactly 30 min — 821 queued
+    transfers hit max_attempts and went ``failed`` without one byte sent.
+    """
+    from app.services.pikpak import PikPakLoginBlocked
+
+    async def blocked(fid):
+        raise PikPakLoginBlocked("登入冷卻中(約剩 30 分鐘)。", 1800.0)
+
+    monkeypatch.setattr(gt.pikpak_service, "file_links", blocked)
+    q = gt.GDriveTransferQueue()
+    before = datetime.utcnow()
+    await _run(q, env.ids.transfer)
+
+    async with env.maker() as s:
+        tr = await s.get(GDriveTransfer, env.ids.transfer)
+        job = await s.get(GDriveJob, env.ids.job)
+    assert tr.status == "pending"
+    assert (tr.attempts or 0) == 0
+    assert "PikPak" in tr.message
+    assert tr.next_retry_at >= before + timedelta(seconds=1800)
+    assert job.status == "transferring"
+    assert env.trashed == [] and env.sent == []
+
+
+def test_login_cooldown_raises_typed_error_with_remaining():
+    from app.services.pikpak import PikPakError, PikPakLoginBlocked, PikPakService
+
+    svc = PikPakService()
+    svc._note_login_failure(RuntimeError("Your operation is too frequent"))
+    with pytest.raises(PikPakLoginBlocked) as ei:
+        svc._raise_if_login_blocked(explicit=False)
+    assert isinstance(ei.value, PikPakError)
+    assert 0 < ei.value.remaining <= 1800

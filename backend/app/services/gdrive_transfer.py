@@ -48,7 +48,7 @@ from .gdrive import (
     gdrive_client,
 )
 from .jav_code import is_video, normalize_code
-from .pikpak import pikpak_service
+from .pikpak import PikPakLoginBlocked, pikpak_service
 from .pikpak_presence import presence_index
 from .supervisor import supervise
 from .webhook_queue import webhook_queue
@@ -503,6 +503,12 @@ class GDriveTransferQueue:
             if aid:
                 await gdrive_accounts.set_error(aid, str(exc))
             await self._fail(rid, f"帳號無法使用: {exc}(重新授權後按重試)")
+        except PikPakLoginBlocked as exc:
+            # An account-wide outage, not this file's fault: every claim
+            # fails instantly, and the retry ladder (120+240+480+960s) is
+            # exactly one 30-min cooldown — counting it would fail the
+            # whole queue before PikPak comes back. Park past the cooldown.
+            await self._park(rid, f"PikPak {exc}", exc.remaining + 30.0)
         except Exception as exc:  # noqa: BLE001
             logger.warning("gdrive transfer %s failed: %s", rid, exc)
             await self._fail_or_retry(rid, str(exc) or exc.__class__.__name__)

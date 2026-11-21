@@ -280,13 +280,55 @@ def _strip_site_noise(stem: str) -> str:
     return stem
 
 
+# See _pick_match: hyphenated candidates with these labels are domain-tail
+# artifacts (``xxx.com-0127``), not catalog codes. Evidence-gated allowlist —
+# COM is the only shape in the live corpus; notably CLUB must NOT join it.
+_DEMOTED_HYPHEN_LABELS = {"COM"}
+
+
+def _pick_match(matches: list[str]) -> str:
+    """Choose the code among every code-like substring of a stem.
+
+    Default is the LAST match — real codes sit at the tail of dirty BT
+    names. But a hyphenated match outranks every squished one: the
+    tracker names wrappers "CODE + JavBus title", and title words such
+    as ``ACT03`` / ``PART02`` / ``CD02`` / ``SEX24`` fit the squished
+    shape, so last-wins minted ``ACT-03`` for ``ABW-305 風俗タワー
+    PREMIUM ACT03 濃厚中出しSEX 涼森れむ`` (live 2026-09-01: the wrapper
+    was unresolvable by name AND invisible to the presence walk, its
+    row churned 找不到歸檔資料夾 forever). Hyphenation is the catalog
+    form; the squished form only exists as the dirty-name fallback, so
+    it never outranks an explicit ``LABEL-NNN``. Among several
+    hyphenated matches the tail still wins (site-noise rescue keeps its
+    later-real-code priority).
+
+    One label is demoted from the hyphenated tier: ``COM``. Release
+    names glue a date onto a site domain (``one2048.com-0127-club604``),
+    and because the ``.com`` is followed by ``-`` the site-noise strip
+    deliberately leaves it alone (the CLUB-032 guard) — so ``COM-0127``
+    reads as a hyphenated code and would outrank the real squished code
+    after it (corpus: 12 live names, all this one generator). Demotion
+    only changes ranking: when nothing else matches, a lone ``COM-NNN``
+    still returns via the last-wins fallback, exactly as before. CLUB
+    et al. stay first-tier — CLUB is a real JavBus label.
+    """
+    hyphenated = [
+        m for m in matches
+        if "-" in m
+        and m.split("-", 1)[0].lstrip("0123456789").upper()
+        not in _DEMOTED_HYPHEN_LABELS
+    ]
+    return (hyphenated or matches)[-1]
+
+
 def extract_jav_code(name: str) -> str | None:
     """Return the canonical JAV code embedded in *name* (e.g. ``DAM-043``,
     ``300MIUM-1090``).
 
     Pipeline: strip site-noise wrapper (see ``_strip_site_noise``) → strip
     extension → scan for every code-like substring → take the LAST match
-    (real codes sit at the tail of dirty BT names) → upper-case →
+    (real codes sit at the tail of dirty BT names), hyphenated matches
+    outranking squished ones (see ``_pick_match``) → upper-case →
     re-insert a hyphen if the form was squished (``483DAM043`` →
     ``483DAM-043``) → drop any leading digit cluster (``259LUXU-1543`` →
     ``LUXU-1543``).
@@ -305,7 +347,7 @@ def extract_jav_code(name: str) -> str | None:
     matches = _CODE_RE.findall(stem)
     if not matches:
         return None
-    raw = matches[-1].upper()
+    raw = _pick_match(matches).upper()
     if "-" not in raw:
         m = _SPLIT_RE.match(raw)
         if not m:
@@ -347,7 +389,7 @@ def extract_jav_code_full(name: str) -> str | None:
     matches = _CODE_RE_FULL.findall(stem)
     if not matches:
         return None
-    raw = matches[-1].upper()
+    raw = _pick_match(matches).upper()
     # Split off any trailing variant letter so the existing
     # prefix/split helpers (which expect LABEL-NNN, no tail) still work.
     tail = ""

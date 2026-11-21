@@ -699,11 +699,17 @@ async def test_stream_resolves_bt_named_wrapper_via_presence(monkeypatch):
 
 
 async def test_stream_ambiguous_presence_folders_abort(monkeypatch):
-    """Two candidate per-code folders → refuse to guess, no mutations."""
+    """Two LIVE candidate per-code folders → refuse to guess, no mutations.
+
+    Each candidate holds a video: that is the genuinely ambiguous shape.
+    (Two settled EMPTY folders are no longer ambiguous — see
+    test_finalize_multi_candidate.py — so the fixture gives both a file.)"""
     p1, p2 = "AVBT/A/[Thz]dvdms-129", "AVBT/B/dvdms-129"
     svc = FakeSvc({
         "a": [_folder("[Thz]dvdms-129", "w1")],
         "b": [_folder("dvdms-129", "w2")],
+        "w1": [_file("dvdms-129.mp4", "v1", 1500)],
+        "w2": [_file("DVDMS-129.mp4", "v2", 2500)],
     }, path_ids={p1: "w1", p2: "w2"})
 
     async def fake_resolve(code):

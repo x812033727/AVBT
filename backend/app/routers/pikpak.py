@@ -35,7 +35,7 @@ from ..services import video_count as video_count_svc
 from ..services.download_queue import Job, download_queue
 from ..services.finalize import finalize_code_folder_stream as finalize_stream_svc
 from ..services.jav_code import extract_jav_code, is_video
-from ..services.pikpak import ACTIVE_PHASES, PikPakError, pikpak_service
+from ..services.pikpak import PikPakError, pikpak_service
 from ..services.pikpak_presence import presence_index
 from ..services.reorganize import reorganize_stream
 
@@ -143,7 +143,10 @@ async def list_tasks(size: int = Query(100, ge=1, le=500)):
     # made queued tasks read as dead — the exact misread that got
     # MMGO-005's replacement resent while it was still waiting its turn.
     try:
-        return await pikpak_service.list_tasks(size=size, phases=ACTIVE_PHASES)
+        # In-flight first: with tens of thousands of ERROR tasks on the
+        # account a plain newest-first page showed 500 ERROR / 0 RUNNING
+        # while 10 tasks were still downloading (2026-11-12).
+        return await pikpak_service.list_active_tasks(size=size)
     except Exception as exc:  # noqa: BLE001
         raise _wrap(exc) from exc
 

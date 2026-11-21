@@ -178,6 +178,11 @@ async def test_backs_off_after_failed_scan(env):
     assert await gauto.reconcile(("studio", "s1")) == 1  # retried after back-off
 
 
+async def test_reconcile_skips_while_pikpak_cooling_down(env, monkeypatch):
+    monkeypatch.setattr(gauto, "pikpak_unavailable", lambda: ("PikPak 登入冷卻中", 600.0))
+    assert await gauto.reconcile(("studio", "s1")) == 0
+
+
 async def test_reconcile_records_unusable_account(env):
     maker, ids = env
     async with maker() as s:

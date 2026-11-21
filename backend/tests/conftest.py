@@ -10,3 +10,4 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 # collide across tests). Persistence itself is covered by
 # test_move_settle_persist.py against tmp_path.
 os.environ.setdefault("PIKPAK_MOVE_LOG", "")
+os.environ.setdefault("PIKPAK_LOGIN_COOLDOWN_FILE", "")

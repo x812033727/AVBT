@@ -62,6 +62,64 @@ def collision_code(name: str) -> str:
     return code
 
 
+# ``CODE_2 (2).mp4``: a disc of a multi-part set that landed a second
+# time. Only this exact shape — bare code, ``_N`` part index, PikPak's
+# ``(K)`` — is recognised; anything else stays with the rename plan.
+_PART_COPY = re.compile(r"^(?P<stem>.+_\d+)\s*\(\d+\)$")
+
+
+def part_copy_original(name: str) -> str:
+    """The file name a part's collision copy duplicates, or "".
+
+    ``KAVR-527_1 (2).mp4`` → ``KAVR-527_1.mp4``. The stem must be the
+    code plus a part index and nothing else, so BT-noise names and
+    quality-tagged encodes never qualify.
+    """
+    if not is_video(name):
+        return ""
+    ext = ext_of(name)
+    stem = name[: -len(ext)] if ext else name
+    m = _PART_COPY.match(stem.strip())
+    if not m:
+        return ""
+    base = m.group("stem")
+    code = extract_jav_code(base)
+    if not code or not re.fullmatch(
+            re.escape(code) + r"_\d+", base, flags=re.IGNORECASE):
+        return ""
+    return f"{base}{ext}"
+
+
+def plan_part_copies(files: list) -> list:
+    """Collision copies of a disc that are safe to trash.
+
+    The bare-code rule (keep the biggest) does not carry over to discs:
+    ``CODE_1 (2)`` may be another release's first disc, cut differently.
+    So a copy only loses when the original it collided with is still in
+    the folder, both are fully written, and their sizes match to the
+    byte — the same file downloaded twice (live 2026-11-23: PikPak
+    finishing 4-day-old tasks re-landed MDVR-451 / PRVR-093 / KAVR-527
+    whole, ~200GB of ``_N (2)`` twins nothing owned). The original is
+    never touched and nothing is renamed.
+    """
+    def ready(e) -> bool:
+        return (getattr(e, "phase", "") or "") in ("", "PHASE_TYPE_COMPLETE")
+
+    by_name = {e.name.lower(): e for e in files}
+    losers = []
+    for e in files:
+        original_name = part_copy_original(e.name)
+        if not original_name:
+            continue
+        original = by_name.get(original_name.lower())
+        if original is None or not (ready(e) and ready(original)):
+            continue
+        if not e.size or not original.size or e.size != original.size:
+            continue
+        losers.append(e)
+    return losers
+
+
 def plan_group(entries: list) -> tuple[list, Any | None]:
     """(losers to trash, file to rename) for one code's copies.
 
@@ -139,9 +197,11 @@ async def sweep_dup_copies_stream(
             # trashing across folders would delete a file whose folder we
             # never examined.
             groups: dict[str, list] = {}
-            for f in await ls(series.id):
-                if f.kind == "drive#folder":
-                    continue
+            series_files = [f for f in await ls(series.id)
+                            if f.kind != "drive#folder"]
+            trash.extend((e, f"{base}/{e.name}")
+                         for e in plan_part_copies(series_files))
+            for f in series_files:
                 scanned += 1
                 code = collision_code(f.name)
                 if code:

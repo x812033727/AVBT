@@ -729,6 +729,20 @@ def _build_video_rename_plan(
                     getattr(holder, "size", None), f.size
                 ):
                     continue
+                # Same copy, different numbering: the set on disk was
+                # numbered in another order than this torrent's own
+                # markers, so the twin sits under a *different* index
+                # and the gate above sees a non-twin holder (live
+                # SIVR-525: two re-landings turned a four-part film
+                # into ``_1.._10``). Only when the marker's own slot is
+                # already taken — a part whose slot is free is a refill
+                # and gets numbered even in an equal-chunk release
+                # where every part is a size-twin of every other.
+                if holder is not None and any(
+                    _near_identical_size(getattr(h, "size", None), f.size)
+                    for h in slot_holders.values()
+                ):
+                    continue
             n = marker if marker > 0 else 1
             while n in used_indices:
                 n += 1

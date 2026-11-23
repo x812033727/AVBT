@@ -476,6 +476,59 @@ def test_plan_refill_twin_does_not_steal_missing_part_slot():
     assert "489155.com@MDVR-415.PART3_8K.mp4" not in plan
 
 
+def test_plan_marker_twin_of_other_slot_claims_no_slot():
+    # Live 2026-11-23 (SIVR-525). The set on disk was numbered in a
+    # different order than the re-landed torrent's own markers, so the
+    # copy carrying marker 2 is byte-identical to ``_4``, not to ``_2``.
+    # The same-slot twin gate saw a non-twin holder and skipped ahead:
+    # three copies became ``_8/_9/_10`` beside a four-part film (the
+    # previous re-landing had already produced ``_5/_6/_7`` this way).
+    # A file whose own slot is taken and which is a twin of a part we
+    # already hold is a copy — it must claim nothing.
+    children = [
+        _f("SIVR-525_1.mp4", 10_533_285_415),
+        _f("SIVR-525_2.mp4", 6_513_865_597),
+        _f("SIVR-525_3.mp4", 3_308_047_849),
+        _f("SIVR-525_4.mp4", 3_387_502_117),
+        _f("SIVR-525_1 (2).mp4", 10_533_285_415),
+        _f("SIVR-525_2 (2).mp4", 3_387_502_117),
+        _f("SIVR-525_3 (2).mp4", 6_513_865_597),
+        _f("SIVR-525_4 (2).mp4", 3_308_047_849),
+    ]
+    plan, _members = _build_video_rename_plan(
+        children, 500 * 1024 * 1024, _is_video, require_marker=True)
+    assert plan == {}
+
+
+def test_plan_marker_collision_with_new_content_still_skips_ahead():
+    # The cross-slot gate only withholds twins: a marker-bearing file
+    # whose slot is taken but whose size matches no part we hold is new
+    # content and keeps the old skip-ahead numbering.
+    children = [
+        _f("SIVR-525_1.mp4", 10_533_285_415),
+        _f("SIVR-525_2.mp4", 6_513_865_597),
+        _f("489155.com@SIVR-525.PART2_8K.mp4", 4_764_202_640),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan == {"489155.com@SIVR-525.PART2_8K.mp4": "SIVR-525_3.mp4"}
+
+
+def test_plan_equal_chunk_refill_of_free_slot_still_numbered():
+    # Equal-chunk release (every part the same size): the refill of a
+    # genuinely missing part is a size-twin of every part on disk. Its
+    # own slot is free, so the cross-slot gate must not withhold it.
+    chunk = 4_294_967_296
+    children = [
+        _f("ABCD-123_1.mp4", chunk),
+        _f("ABCD-123_3.mp4", chunk),
+        _f("489155.com@ABCD-123.PART2.mp4", chunk),
+    ]
+    plan, _members = _build_video_rename_plan(children, 500 * 1024 * 1024,
+                                              _is_video)
+    assert plan == {"489155.com@ABCD-123.PART2.mp4": "ABCD-123_2.mp4"}
+
+
 def test_plan_refill_gap_fill_keeps_existing_slots():
     # SIVR-468 shape: _2/_3 on disk, refill lands PART1/2/3. PART1 fills
     # the empty _1; the PART2/PART3 twins claim nothing.

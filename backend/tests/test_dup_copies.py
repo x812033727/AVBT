@@ -154,3 +154,44 @@ async def test_dry_run_touches_nothing():
     summary = await sweep_dup_copies(svc, dry_run=True)
     assert svc.trashed == [] and svc.renamed == []
     assert summary["trashed"] == 1 and summary["dry_run"] is True
+
+
+class SlowSvc(FakeSvc):
+    """Listings take a tick, so overlapping calls are observable."""
+
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.active = 0
+        self.peak = 0
+
+    async def list_all_files(self, folder_id, cap=5000):
+        import asyncio
+
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        return await super().list_all_files(folder_id, cap=cap)
+
+
+async def test_walk_lists_series_folders_concurrently_within_the_cap():
+    """Same serial-walk stall as the series junk sweep: the semaphore
+    must bound a real fan-out, and the plan must not depend on it."""
+    from app.services import dup_copies
+
+    tree = {
+        "studio-root": [_f("ABF", None, "s1", kind="drive#folder")],
+        "s1": [_f(f"系列{i}", None, f"ser{i}", kind="drive#folder")
+               for i in range(12)],
+    }
+    for i in range(12):
+        tree[f"ser{i}"] = [
+            _f(f"ABF-{100 + i}.mp4", 4 * GB, f"lose{i}"),
+            _f(f"ABF-{100 + i}(1).mp4", 13 * GB, f"keep{i}"),
+        ]
+    svc = SlowSvc(tree)
+    summary = await sweep_dup_copies(svc, dry_run=False)
+    assert 1 < svc.peak <= dup_copies._LIST_CONCURRENCY
+    assert svc.trashed == [f"lose{i}" for i in range(12)]
+    assert svc.renamed == []
+    assert summary["scanned"] == 24 and summary["trashed"] == 12

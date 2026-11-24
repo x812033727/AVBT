@@ -156,18 +156,28 @@ async def purge_series_junk_stream(
     # so a per-folder answer would keep every drifted container forever.
     # The walk already reads every file — decide against all of them.
     collected: list[tuple[Any, str]] = []  # (entry, display path)
+    # Fan the listings out under ``sem``. One at a time, the ~3,400
+    # series folders took an hour whenever PikPak answered slowly, and
+    # the archiver loop finalizes nothing while this walk runs (live
+    # 2026-11-24). gather keeps input order, so the verdicts and their
+    # order are exactly the serial walk's.
+    series_dirs: list[tuple[str, Any, Any]] = []  # (base, studio, series)
     for studio_path, root_id in roots:
-        for studio in await ls(root_id):
-            if studio.kind != "drive#folder":
+        studios = [s for s in await ls(root_id) if s.kind == "drive#folder"]
+        listings = await asyncio.gather(*(ls(s.id) for s in studios))
+        for studio, children in zip(studios, listings, strict=True):
+            series_dirs.extend(
+                (studio_path, studio, series) for series in children
+                if series.kind == "drive#folder")
+    file_lists = await asyncio.gather(
+        *(ls(series.id) for _p, _s, series in series_dirs))
+    for (studio_path, studio, series), files in zip(
+            series_dirs, file_lists, strict=True):
+        for f in files:
+            if f.kind == "drive#folder":
                 continue
-            for series in await ls(studio.id):
-                if series.kind != "drive#folder":
-                    continue
-                for f in await ls(series.id):
-                    if f.kind == "drive#folder":
-                        continue
-                    collected.append(
-                        (f, f"{studio_path}/{studio.name}/{series.name}/{f.name}"))
+            collected.append(
+                (f, f"{studio_path}/{studio.name}/{series.name}/{f.name}"))
 
     playable = _codes_with_video([e for e, _p in collected])
     hits: list[tuple[str, str]] = []  # (file id, display path)

@@ -124,35 +124,41 @@ async def sweep_dup_copies_stream(
     trash: list[tuple[Any, str]] = []
     renames: list[tuple[Any, str, str]] = []
     scanned = 0
-    studio_dirs: list[tuple[str, Any]] = []  # (base path, studio folder)
+    # Fan the listings out under ``sem``. One at a time, the ~3,400
+    # series folders took an hour whenever PikPak answered slowly, and
+    # the archiver loop finalizes nothing while this walk runs (live
+    # 2026-11-24). gather keeps input order, so the plan is exactly the
+    # serial walk's.
+    series_dirs: list[tuple[str, Any]] = []  # (display base, series folder)
     for studio_path, root_id in roots:
-        for studio in await ls(root_id):
-            if studio.kind == "drive#folder":
-                studio_dirs.append((studio_path, studio))
-    for studio_path, studio in studio_dirs:
-        for series in await ls(studio.id):
-            if series.kind != "drive#folder":
+        studios = [s for s in await ls(root_id) if s.kind == "drive#folder"]
+        listings = await asyncio.gather(*(ls(s.id) for s in studios))
+        for studio, children in zip(studios, listings, strict=True):
+            series_dirs.extend(
+                (f"{studio_path}/{studio.name}/{series.name}", series)
+                for series in children if series.kind == "drive#folder")
+    file_lists = await asyncio.gather(
+        *(ls(series.id) for _base, series in series_dirs))
+    for (base, _series), files in zip(series_dirs, file_lists, strict=True):
+        # Group per folder, not globally: two copies in two different
+        # series folders are the drift problem, not this one, and
+        # trashing across folders would delete a file whose folder we
+        # never examined.
+        groups: dict[str, list] = {}
+        for f in files:
+            if f.kind == "drive#folder":
                 continue
-            base = f"{studio_path}/{studio.name}/{series.name}"
-            # Group per folder, not globally: two copies in two different
-            # series folders are the drift problem, not this one, and
-            # trashing across folders would delete a file whose folder we
-            # never examined.
-            groups: dict[str, list] = {}
-            for f in await ls(series.id):
-                if f.kind == "drive#folder":
-                    continue
-                scanned += 1
-                code = collision_code(f.name)
-                if code:
-                    groups.setdefault(code, []).append(f)
-            for code, entries in groups.items():
-                losers, rename = plan_group(entries)
-                trash.extend((e, f"{base}/{e.name}") for e in losers)
-                if rename is not None:
-                    renames.append(
-                        (rename, f"{base}/{rename.name}",
-                         f"{code}{ext_of(rename.name)}"))
+            scanned += 1
+            code = collision_code(f.name)
+            if code:
+                groups.setdefault(code, []).append(f)
+        for code, entries in groups.items():
+            losers, rename = plan_group(entries)
+            trash.extend((e, f"{base}/{e.name}") for e in losers)
+            if rename is not None:
+                renames.append(
+                    (rename, f"{base}/{rename.name}",
+                     f"{code}{ext_of(rename.name)}"))
 
     for _e, path in trash:
         yield {"type": "progress", "action": "trash", "target": path}

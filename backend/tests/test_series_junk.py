@@ -138,3 +138,49 @@ async def test_dry_run_touches_nothing():
     summary = await purge_series_junk(svc, dry_run=True)
     assert svc.trashed == []
     assert summary["trashed"] == 2 and summary["dry_run"] is True
+
+
+class SlowSvc(FakeSvc):
+    """Listings take a tick, so overlapping calls are observable."""
+
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.active = 0
+        self.peak = 0
+
+    async def list_all_files(self, folder_id, cap=5000):
+        import asyncio
+
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        return list(self.tree.get(folder_id, [])), False
+
+
+def _wide_tree(n=12):
+    tree = {
+        "studio-root": [_f("MOONFORCE", None, "drive#folder", "studio1")],
+        "studio1": [_f(f"系列{i}", None, "drive#folder", f"series{i}")
+                    for i in range(n)],
+    }
+    for i in range(n):
+        tree[f"series{i}"] = [
+            _f(f"MFC-{300 + i}.mp4", 3 * GB, fid=f"keep{i}"),
+            _f(f"ZB-{500 + i}.mp4", 5 * MB, fid=f"junk{i}"),
+        ]
+    return tree
+
+
+async def test_walk_lists_series_folders_concurrently_within_the_cap():
+    """The walk blocks the archiver loop, so 3,400 series folders listed
+    one at a time is an hour of no finalize when PikPak is slow (live
+    2026-11-24). The semaphore was always meant to bound a fan-out."""
+    from app.services import series_junk
+
+    svc = SlowSvc(_wide_tree())
+    summary = await purge_series_junk(svc, dry_run=False)
+    assert 1 < svc.peak <= series_junk._LIST_CONCURRENCY
+    # Same verdicts, same order as the serial walk.
+    assert svc.trashed == [f"junk{i}" for i in range(12)]
+    assert summary == {"scanned": 24, "trashed": 12, "dry_run": False}

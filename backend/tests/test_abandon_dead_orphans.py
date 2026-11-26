@@ -509,3 +509,73 @@ async def test_container_only_code_is_not_abandoned(monkeypatch):
     assert await archiver._orphan_has_nothing_landed("IPTD-770") is False
     # …while a code presence has never heard of stays abandon-eligible.
     assert await archiver._orphan_has_nothing_landed("TRE-076") is True
+
+
+# --- flattened stamp vs. ad clips (RCTD-058) -------------------------------
+
+def test_only_ad_clips_verdict():
+    mb = 1024 * 1024
+    clip = {"name": "RCTD-058.mp4", "size": 39 * mb}
+    assert archiver._only_ad_clips([clip]) is True
+    assert archiver._only_ad_clips([clip, {"name": "X.mp4", "size": 10 * mb}])
+    # Uncertain or legitimate → never "only ad clips".
+    assert archiver._only_ad_clips([]) is False
+    assert archiver._only_ad_clips([{"name": "A.mp4", "size": None}]) is False
+    assert archiver._only_ad_clips([{"name": "A.mp4", "size": 0}]) is False
+    assert archiver._only_ad_clips([{"name": "A.mp4", "size": 300 * mb}]) is False
+    assert archiver._only_ad_clips([{"name": "A.iso", "size": 5 * mb}]) is False
+    assert archiver._only_ad_clips(
+        [clip, {"name": "RCTD-058_2.mp4", "size": 900 * mb}]
+    ) is False
+
+
+async def _flat_env(monkeypatch, files):
+    async def resolve(code):
+        return "AVBT/製作商/S/Ser/" + code
+
+    async def no_folder(path, **kw):
+        return None
+
+    async def no_bt_folders(svc, code):
+        return []
+
+    async def ffc(code):
+        return {"ok": True, "files": files, "source": "presence"}
+
+    async def clean(files):
+        return None
+
+    monkeypatch.setattr(archiver, "_resolve_archive_path_by_code", resolve)
+    monkeypatch.setattr(archiver.pikpak_service, "lookup_folder_id", no_folder)
+    monkeypatch.setattr(
+        "app.services.finalize.presence_code_folders", no_bt_folders
+    )
+    monkeypatch.setattr("app.services.video_count.files_for_code", ffc)
+    monkeypatch.setattr(archiver, "_cleanup_loose_parents_if_dirty", clean)
+    monkeypatch.setattr(archiver, "_flattened_file_depths", lambda: {4})
+
+
+async def test_flattened_stamp_refuses_lone_ad_clip(monkeypatch):
+    # Live RCTD-058: the purged task left only a 39MB promo in the series
+    # folder; the row must not be closed as finalized on it.
+    await _flat_env(monkeypatch, [{
+        "name": "RCTD-058.mp4", "size": 39300804,
+        "path": "AVBT/製作商/S/Ser/RCTD-058.mp4",
+    }])
+    assert await archiver._already_flattened("RCTD-058") is False
+
+
+async def test_flattened_stamp_still_accepts_real_video(monkeypatch):
+    await _flat_env(monkeypatch, [{
+        "name": "REAL-001.mp4", "size": 2 * 1024 ** 3,
+        "path": "AVBT/製作商/S/Ser/REAL-001.mp4",
+    }])
+    assert await archiver._already_flattened("REAL-001") is True
+
+
+async def test_flattened_stamp_unknown_size_keeps_old_behaviour(monkeypatch):
+    await _flat_env(monkeypatch, [{
+        "name": "UNK-001.mp4", "size": None,
+        "path": "AVBT/製作商/S/Ser/UNK-001.mp4",
+    }])
+    assert await archiver._already_flattened("UNK-001") is True

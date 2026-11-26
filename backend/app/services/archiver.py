@@ -1710,6 +1710,31 @@ async def _reap_orphan_rows() -> int:
     return done
 
 
+def _only_ad_clips(files: list[dict]) -> bool:
+    """True when every file is a video with a KNOWN size below the
+    ad-clip bar (series_junk.JUNK_BYTES — the same rule that trashes
+    them). Any non-video (a container is the only copy of a work), any
+    unknown size (PikPak lists real files with size=None) or any video
+    at/above the bar answers False, so the caller keeps its old
+    behaviour whenever the verdict is not certain."""
+    from .jav_code import is_video
+    from .series_junk import JUNK_BYTES
+
+    if not files:
+        return False
+    for f in files:
+        size = f.get("size")
+        if not is_video(f.get("name") or ""):
+            return False
+        try:
+            known = int(size) if size is not None else 0
+        except (TypeError, ValueError):
+            return False
+        if known <= 0 or known >= JUNK_BYTES:
+            return False
+    return True
+
+
 async def _already_flattened(code: str, *, strict: bool = False) -> bool:
     """True when ``code``'s video exists on PikPak even though it has no
     per-code archive folder — the sweep's flatten put ``CODE.ext``
@@ -1761,6 +1786,21 @@ async def _already_flattened(code: str, *, strict: bool = False) -> bool:
         # permanent (live: EKDV-039, stamped while EKDV039.avi sat in
         # (TVBOXNOW)_EKDV_038+039 inside the series folder). Keep the
         # row retrying instead.
+        return False
+    if _only_ad_clips(result["files"]):
+        # Everything presence holds for this code is a video below the
+        # ad-clip bar — the exact files series_junk trashes on its next
+        # sweep. A dead magnet that only ever delivered its 40MB promo
+        # is not an archived work: stamping finalized here closed the
+        # row as "done" on a file that is about to be thrown away (live:
+        # RCTD-058, 39MB / 83s clip stamped 2026-11-26 after PikPak
+        # purged the 0% task). Keep the row open; once the junk sweep
+        # has taken the clip the reaper dead-letters it like any other
+        # magnet that never landed.
+        logger.info(
+            "flattened check %s: only sub-junk video(s) on PikPak — "
+            "not stamping finalized", code,
+        )
         return False
     # The loose files exist, but their NAMES may still carry BT noise:
     # the sweep's phase-2 rename queue lives in memory only, so a

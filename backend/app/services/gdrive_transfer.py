@@ -19,7 +19,9 @@ Flow:
    videos) an anyone-with-link permission for the embedded player.
 4. When every file of a job is done, the PikPak source leaves are
    trashed (if ``delete_source``) and the indexes refreshed. Any failure
-   leaves the job ``partial`` and the source untouched.
+   leaves the job ``partial`` and the source untouched; the already-moved
+   originals of a partial job are only trashed on explicit request
+   (``trash_source``), never automatically.
 """
 
 from __future__ import annotations
@@ -849,21 +851,36 @@ class GDriveTransferQueue:
             webhook_queue.enqueue_nowait(msg, event="gdrive_done")
 
     async def trash_source(self, job_id: int) -> bool:
-        """Trash every PikPak leaf of a fully-done job. Safe to re-run."""
+        """Trash the PikPak leaves of a finished job. Safe to re-run.
+
+        ``done`` job: every leaf. ``partial`` job (explicit request only —
+        the automatic path never calls this for one): just the leaves whose
+        rows are all ``done``, i.e. already size-verified on Drive. A leaf
+        shared with a failed/cancelled row is kept, so nothing that has not
+        reached Drive is ever trashed. Without this a single permanently
+        failing file (e.g. its PikPak id went stale) pins every other
+        already-moved original on PikPak forever.
+        """
         async with SessionLocal() as session:
             job = await session.get(GDriveJob, job_id)
-            if job is None or job.status != "done":
+            if job is None or job.status not in ("done", "partial"):
                 return False
+            partial = job.status == "partial"
             rows = (
                 await session.execute(
                     select(GDriveTransfer.source_leaf_id, GDriveTransfer.code, GDriveTransfer.status)
                     .where(GDriveTransfer.job_id == job_id)
                 )
             ).all()
-        if any(st != "done" for _, _, st in rows):
+        if not partial and any(st != "done" for _, _, st in rows):
             return False
-        leaf_ids = sorted({leaf for leaf, _, _ in rows if leaf})
-        codes = sorted({c for _, c, _ in rows if c})
+        if partial and any(st not in ("done", "failed", "cancelled") for _, _, st in rows):
+            return False  # something is still queued/running — not settled
+        kept_leaves = {leaf for leaf, _, st in rows if leaf and st != "done"}
+        leaf_ids = sorted({leaf for leaf, _, st in rows if leaf and st == "done"} - kept_leaves)
+        codes = sorted({c for leaf, c, st in rows if c and st == "done" and leaf not in kept_leaves})
+        if partial and not leaf_ids:
+            return False
         try:
             for i in range(0, len(leaf_ids), 100):
                 await pikpak_service.trash_files(leaf_ids[i : i + 100])
@@ -871,7 +888,15 @@ class GDriveTransferQueue:
             logger.warning("gdrive job %s: PikPak trash failed: %s", job_id, exc)
             await self._set_job(job_id, source_state="trash_failed", message=f"PikPak 原檔刪除失敗: {exc}")
             return False
-        await self._set_job(job_id, source_state="trashed", message="PikPak 原檔已丟垃圾桶")
+        if partial:
+            kept = sum(1 for _, _, st in rows if st != "done")
+            await self._set_job(
+                job_id,
+                source_state="trashed",
+                message=f"已搬完的 {len(leaf_ids)} 個 PikPak 原檔已丟垃圾桶;{kept} 個未搬完的檔案原檔保留",
+            )
+        else:
+            await self._set_job(job_id, source_state="trashed", message="PikPak 原檔已丟垃圾桶")
         try:
             await presence_index.refresh_codes(codes, exclude_ids=set(leaf_ids))
         except Exception as exc:  # noqa: BLE001

@@ -398,6 +398,80 @@ async def test_cooldown_parks_without_burning_attempts(env, monkeypatch):
     assert job.status == "transferring" and env.sent == []
 
 
+async def _add_transfer(env, code, leaf, status):
+    async with env.maker() as s:
+        s.add(
+            GDriveTransfer(
+                job_id=env.ids.job, account_id=env.ids.account, code=code,
+                pikpak_file_id=f"pf-{code}-{status}", pikpak_name=f"{code}.mp4", pikpak_size=1,
+                pikpak_path=f"AVBT/製作商/S1/未分類/{code}.mp4", source_leaf_id=leaf,
+                drive_dir="AVBT/製作商/S1/未分類", drive_code_dir="AVBT/製作商/S1/未分類",
+                status=status,
+            )
+        )
+        await s.commit()
+
+
+async def _set_status(env, job_status, transfer_status):
+    async with env.maker() as s:
+        (await s.get(GDriveJob, env.ids.job)).status = job_status
+        (await s.get(GDriveTransfer, env.ids.transfer)).status = transfer_status
+        await s.commit()
+
+
+async def test_partial_job_trashes_only_done_leaves_on_request(env, monkeypatch):
+    """One permanently failed file must not pin every moved original on
+    PikPak: an explicit trash-source on a partial job trashes the done
+    rows' leaves and nothing else."""
+    await _set_status(env, "partial", "done")  # leaf1 done
+    await _add_transfer(env, "SSIS-002", "leaf2", "failed")
+    await _add_transfer(env, "SSIS-003", "leaf3", "cancelled")
+    # A folder leaf shared by a done part and a failed part stays.
+    await _add_transfer(env, "SSIS-004", "leaf4", "done")
+    await _add_transfer(env, "SSIS-004", "leaf4", "failed")
+    refreshed = []
+
+    async def refresh_codes(codes, **kw):
+        refreshed.append((list(codes), kw))
+        return 0
+
+    monkeypatch.setattr(gt.presence_index, "refresh_codes", refresh_codes)
+    q = gt.GDriveTransferQueue()
+    assert await q.trash_source(env.ids.job) is True
+    assert env.trashed == [["leaf1"]]
+    assert refreshed[0][0] == ["SSIS-001"]
+    async with env.maker() as s:
+        job = await s.get(GDriveJob, env.ids.job)
+    assert job.status == "partial" and job.source_state == "trashed"
+    assert "1 個" in job.message and "3 個" in job.message
+
+
+async def test_partial_job_trash_refused_when_unsettled_or_nothing_done(env):
+    q = gt.GDriveTransferQueue()
+    # Nothing done → nothing to trash.
+    await _set_status(env, "partial", "failed")
+    assert await q.trash_source(env.ids.job) is False
+    # A row still queued (job flipped back by a retry race) → refuse.
+    await _set_status(env, "partial", "done")
+    await _add_transfer(env, "SSIS-002", "leaf2", "pending")
+    assert await q.trash_source(env.ids.job) is False
+    # Still transferring → refuse, as before.
+    await _set_status(env, "transferring", "done")
+    assert await q.trash_source(env.ids.job) is False
+    assert env.trashed == []
+
+
+async def test_partial_outcome_never_trashes_automatically(env):
+    """The automatic settle path keeps every original of a partial job."""
+    await _add_transfer(env, "SSIS-002", "leaf2", "failed")
+    q = gt.GDriveTransferQueue()
+    await _run(q, env.ids.transfer)
+    async with env.maker() as s:
+        job = await s.get(GDriveJob, env.ids.job)
+    assert job.status == "partial" and job.source_state == "pending"
+    assert env.trashed == []
+
+
 async def test_retry_all_requeues_every_partial_job(env):
     async with env.maker() as s:
         job = await s.get(GDriveJob, env.ids.job)

@@ -450,7 +450,7 @@ async def cancel_job(job_id: int):
 async def trash_job_source(job_id: int):
     ok = await gdrive_transfer_queue.trash_source(job_id)
     if not ok:
-        raise HTTPException(status_code=409, detail="此工作尚未全部完成,或刪除 PikPak 原檔失敗")
+        raise HTTPException(status_code=409, detail="此工作尚未結束、沒有已搬完的檔案,或刪除 PikPak 原檔失敗")
     return {"ok": True}
 
 

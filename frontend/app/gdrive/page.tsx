@@ -257,6 +257,21 @@ export default function GDrivePage() {
                         重試刪除原檔
                       </Button>
                     )}
+                    {j.status === "partial" && j.source_state !== "trashed" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          act(
+                            `/api/gdrive/jobs/${j.id}/trash-source`,
+                            "已搬完的 PikPak 原檔已丟垃圾桶",
+                            `「${j.studio_name}」有檔案沒搬成功。只把已搬到 Drive 的原檔丟到 PikPak 垃圾桶(沒搬成功的保留)?`
+                          )
+                        }
+                      >
+                        刪除已搬完的原檔
+                      </Button>
+                    )}
                     {j.status === "done" && j.source_state === "keep" && (
                       <Button
                         size="sm"
